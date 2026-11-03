@@ -1,0 +1,418 @@
+{
+  "11371486": {
+    "sapCode": "DAR00005",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11371487": {
+    "sapCode": "DAR00027",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11264144": {
+    "sapCode": "DAR00018",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11064245": {
+    "sapCode": "CHS00033",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11064244": {
+    "sapCode": "CHS00042",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11375809": {
+    "sapCode": "CHS00053",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11066323": {
+    "sapCode": "CHS00052",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11375810": {
+    "sapCode": "CHS00039",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11062675": {
+    "sapCode": "CHS00055",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377162": {
+    "sapCode": "CHS00018",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377163": {
+    "sapCode": "CHS00022",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377164": {
+    "sapCode": "CHS00014",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377165": {
+    "sapCode": "CHS00013",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377166": {
+    "sapCode": "CHS00012",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377168": {
+    "sapCode": "CHS00016",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377173": {
+    "sapCode": "CHS00009",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377174": {
+    "sapCode": "CHS00004",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377175": {
+    "sapCode": "CHS00557",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11365702": {
+    "sapCode": "FVL00109",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365703": {
+    "sapCode": "FVL00107",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365704": {
+    "sapCode": "FVL00034",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365705": {
+    "sapCode": "FVL00037",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366443": {
+    "sapCode": "FVL00302",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366444": {
+    "sapCode": "FVL00303",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366445": {
+    "sapCode": "FVL00306",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366446": {
+    "sapCode": "FVL00332",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366447": {
+    "sapCode": "FVL00311",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366448": {
+    "sapCode": "FVL00316",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366449": {
+    "sapCode": "FVL00276",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366450": {
+    "sapCode": "FVL00307",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11366451": {
+    "sapCode": "FVL00322",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365707": {
+    "sapCode": "FVL00013",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365708": {
+    "sapCode": "FVL00014",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365709": {
+    "sapCode": "FVL00012",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11363841": {
+    "sapCode": "FVL00043",
+    "sapUnit": "Carton",
+    "sapPack": 4,
+    "kgPerPiece": null
+  },
+  "11363842": {
+    "sapCode": "FVL00042",
+    "sapUnit": "Carton",
+    "sapPack": 10,
+    "kgPerPiece": null
+  },
+  "11366167": {
+    "sapCode": "FVL00360",
+    "sapUnit": "Carton",
+    "sapPack": 12,
+    "kgPerPiece": null
+  },
+  "11377161": {
+    "sapCode": "CHS00005",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377171": {
+    "sapCode": "CHS00024",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377172": {
+    "sapCode": "CHS00070",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11062673": {
+    "sapCode": "CHS00620",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11062674": {
+    "sapCode": "CHS00621",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377177": {
+    "sapCode": "CHS00491",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377178": {
+    "sapCode": "CHS00469",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377179": {
+    "sapCode": "CHS00470",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11377180": {
+    "sapCode": "CHS00471",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11375990": {
+    "sapCode": "CHS00550",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11375991": {
+    "sapCode": "CHS00545",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11375992": {
+    "sapCode": "CHS00544",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11375993": {
+    "sapCode": "CHS00546",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11373686": {
+    "sapCode": "CHS00561",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11373687": {
+    "sapCode": "CHS00562",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11373688": {
+    "sapCode": "CHS00563",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11365998": {
+    "sapCode": "FVL00036",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365999": {
+    "sapCode": "FVL00035",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365700": {
+    "sapCode": "FVL00106",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11365701": {
+    "sapCode": "FVL00111",
+    "sapUnit": "Carton",
+    "sapPack": 20,
+    "kgPerPiece": null
+  },
+  "11367181": {
+    "sapCode": "FVL00016",
+    "sapUnit": "Carton",
+    "sapPack": 16,
+    "kgPerPiece": null
+  },
+  "11367182": {
+    "sapCode": "FVL00015",
+    "sapUnit": "Carton",
+    "sapPack": 16,
+    "kgPerPiece": null
+  },
+  "11366466": {
+    "sapCode": "PFS00003",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11366467": {
+    "sapCode": "PFS00179",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11750178": {
+    "sapCode": "PFS00172",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11750179": {
+    "sapCode": "PFS00181",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11265988": {
+    "sapCode": "DAR00003",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "11375989": {
+    "sapCode": "CHS00596",
+    "sapUnit": "Piece",
+    "sapPack": 1,
+    "kgPerPiece": null
+  },
+  "94234612": {
+    "sapCode": "FVL00016",
+    "sapUnit": "Carton",
+    "sapPack": 16,
+    "kgPerPiece": null
+  },
+  "11356461": {
+    "sapCode": "CFC00009",
+    "sapUnit": null,
+    "sapPack": 24
+  },
+  "11530181": {
+    "sapCode": "FVL00376",
+    "sapUnit": "Piece",
+    "sapPack": 1
+  },
+  "11356452": {
+    "sapCode": "CFC00195",
+    "sapUnit": "Carton",
+    "sapPack": 12
+  },
+  "94226889": {
+    "sapCode": "FOD00064",
+    "sapUnit": "Carton",
+    "sapPack": 40
+  }
+}
