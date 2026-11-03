@@ -15,15 +15,21 @@ const { d1, r2 } = hostingConfig;
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const managedLinux = readExecutionProfile() === "managed-linux";
 
-const localBindingConfig = {
+const localBindingConfig = (command: "build" | "serve") => ({
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
   d1_databases: d1
     ? [
         {
           binding: d1,
-          database_name: "site-creator-d1",
-          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          database_name: process.env.CLOUDFLARE_D1_DATABASE_NAME || "asqarya-mossa-db",
+          // Keep the placeholder only for local preview. Wrangler provisions
+          // and reuses a real D1 binding during production deployment.
+          ...(process.env.CLOUDFLARE_D1_DATABASE_ID
+            ? { database_id: process.env.CLOUDFLARE_D1_DATABASE_ID }
+            : command === "serve"
+              ? { database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID }
+              : {}),
         },
       ]
     : [],
@@ -35,7 +41,7 @@ const localBindingConfig = {
         },
       ]
     : [],
-};
+});
 
 export default defineConfig(async ({ command }) => {
   configureToolEnvironment(process.cwd());
@@ -60,7 +66,7 @@ export default defineConfig(async ({ command }) => {
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
         config: {
-          ...localBindingConfig,
+          ...localBindingConfig(command),
           ...(command === "serve"
             ? {
                 services: [
