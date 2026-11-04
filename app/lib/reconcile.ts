@@ -34,9 +34,11 @@ function reconcileManual(d:Draft,reference:Item[]){
  const base=reconcileLegacy({...d,mode:undefined,invoices:d.invoices.map(i=>({...i,complete:true,quantities:{}}))},reference);
  const problems=base.problems.filter(p=>!p.includes('اكتمال بنود'));
  if(d.invoices.some(i=>!i.complete))problems.push('أكد وجود كل فاتورة ورقية للمجموعة');
- const rows=base.rows.map(r=>{const c=d.checks?.[r.key],valid=c?.signature===checkSignature(r);const state=r.errors.length?'review':valid?c.state:'unchecked';return {...r,invoice:0,difference:null,state}});
- const unchecked=rows.filter(r=>r.state==='unchecked').length,review=rows.filter(r=>r.state==='review').length,differences=rows.filter(r=>r.state==='difference').length;
- if(unchecked)problems.push('باقي '+unchecked+' أصناف تحتاج تشييك مقابل الورقة الزرقاء');
+ const rows=base.rows.map(r=>{const c=d.checks?.[r.key],valid=c?.signature===checkSignature(r);const state=r.errors.length?'review':'match';return {...r,invoice:0,difference:null,state}});
+ const unchecked=0,review=rows.filter(r=>r.state==='review').length,differences=0;
+ const unassigned=rows.filter(r=>!d.pages?.[r.key]).length;
+ if(unassigned)problems.push('باقي '+unassigned+' أصناف لم تحدد رقم الفاتورة الزرقاء لها');
+ for(const r of rows){const page=d.pages?.[r.key];if(page&&(!/^\\d+$/.test(page)||Number(page)<1||Number(page)>d.invoices.length))problems.push('رقم الفاتورة الزرقاء للصنف '+(r.code||r.sapCode)+' غير موجود في الفواتير المسجلة');}
  const status=review||problems.length?'review':differences||base.priceDifference!==null&&base.priceDifference!==0?'difference':base.priceDifference===null?'priceMissing':'match';
  return {...base,rows,problems,review:review+unchecked,differences,status,invoiceCalculated:d.invoices.map(()=>null),invoiceAmountDiffs:d.invoices.map(()=>null)};
 }
