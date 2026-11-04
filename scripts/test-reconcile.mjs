@@ -1,0 +1,28 @@
+import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,checkSignature,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
+const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
+const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
+let r=reconcile(d,ref);assert.equal(r.status,'match');assert.equal(r.total,10500);assert.equal(r.expected,10500);assert.equal(r.rows[0].transfer,30);assert.equal(r.rows[0].invoice,30);assert.equal(r.rows[0].details.length,2);
+let changed=structuredClone(d);changed.invoices[1].quantities['11366443']='9';r=reconcile(changed,ref);assert.equal(r.status,'difference');assert.equal(r.rows[0].difference,-1);
+changed=structuredClone(d);changed.invoices[1].amount='3.501';assert.equal(reconcile(changed,ref).priceDifference,1);assert.equal(reconcile(changed,ref).status,'difference');
+changed=structuredClone(d);changed.invoices[0].complete=false;assert.equal(reconcile(changed,ref).status,'review');
+changed=structuredClone(d);changed.invoices[1].number='A';assert.equal(reconcile(changed,ref).status,'review');changed=structuredClone(d);changed.transfers[1].number='100';assert.equal(reconcile(changed,ref).status,'review');
+changed=structuredClone(d);changed.transfers[0].paste=changed.transfers[0].paste.replace('FVL00302','CHS00071');assert.equal(reconcile(changed,ref).review,1);
+changed=structuredClone(d);changed.transfers[0].paste=paste([['PFS00003',10,'KG']]);assert.equal(reconcile(changed,ref).rows.find(i=>i.sapCode==='PFS00003').transfer,null);
+const piece={...ref.find(i=>i.sapCode==='PFS00003'),kgPerPiece:1};assert.equal(convert({unit:'KG',quantity:10},piece),10);assert.equal(convert({unit:'Piece',quantity:5},ref.find(i=>i.sapCode==='CHS00033')),5);assert.equal(convert({unit:'Carton',quantity:2},ref.find(i=>i.sapCode==='FVL00311')),16);
+assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']])).lines[0].quantity,1);assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']]).replace('\t11\t','\t12\t')).excluded.length,1);assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']])+'\n\t\t\t\t1\t11').issues.length,1);
+const groups=[{id:'g',branch:'branch',payload:JSON.stringify(d)}];const serial='Document Number\tDocument Date\tBranch\n100\t01/11/2026\tbranch\n101\t02/11/2026\tbranch\n102\t03/11/2026\tbranch\n102\t03/11/2026\tbranch\n999\t31/10/2026\tbranch';let m=monthly(serial,'2026-11',{number:0,date:1,branch:2},false,'dmy',groups);assert.deepEqual(m.missing.map(r=>r.number),['102']);assert.equal(m.received.length,2);assert.equal(m.duplicates.length,1);assert.equal(m.outside.length,1);assert.equal(m.extra.length,0);
+changed=structuredClone(d);changed.invoices[0].complete=false;m=monthly(serial,'2026-11',{number:0,date:1,branch:2},false,'dmy',[{id:'g',branch:'branch',payload:JSON.stringify(changed)}]);assert.equal(m.pending.length,2);assert.equal(m.received.length,0);assert.equal(dateValue('31/02/2026'),null);assert.equal(monthly('No\n100','2026-11',{number:0,date:-1,branch:-1},false,'dmy',groups).problems.length,1);
+const zeroPrice=ref.map(i=>i.sapCode==='FVL00302'?{...i,price:null}:i);assert.equal(reconcile(d,zeroPrice).status,'quantityMatch');
+console.log('PASS: approved institution whitelist; two transfers/two invoices; fractional cartons; 8-pack strawberry; Quantity column isolation; unit-review blocking; duplicate docs; three-decimal prices; monthly missing, pending, duplicate and date boundaries.');
+
+const manual={...structuredClone(d),mode:'manual',checks:{},invoices:d.invoices.map(i=>({...i,quantities:{}}))};
+let mr=reconcile(manual,ref);assert.equal(mr.rows[0].transfer,30);assert.equal(mr.expected,10500);assert.equal(mr.rows[0].state,'unchecked');assert.equal(mr.status,'review');
+manual.checks[mr.rows[0].key]={signature:checkSignature(mr.rows[0]),state:'match'};
+assert.equal(reconcile(manual,ref).status,'match');
+manual.checks[mr.rows[0].key].state='difference';assert.equal(reconcile(manual,ref).status,'difference');
+manual.checks[mr.rows[0].key].state='match';const altered=structuredClone(manual);altered.transfers[1].paste=paste([['FVL00302',1,'Carton']]);assert.equal(reconcile(altered,ref).rows[0].state,'unchecked');
+assert.equal(reconcile(manual,ref.map(i=>i.sapCode==='FVL00302'?{...i,price:400}:i)).rows[0].state,'unchecked');
+const missingRef=ref.map(i=>i.sapCode==='FVL00302'?{...i,price:null}:i);mr=reconcile(manual,missingRef);manual.checks[mr.rows[0].key]={signature:checkSignature(mr.rows[0]),state:'match'};assert.equal(reconcile(manual,missingRef).status,'priceMissing');
+console.log('PASS: generated manual check sheet, no invoice quantities, explicit row approval, reported differences, stale approvals invalidated after transfer/price changes, missing prices blocked.');
