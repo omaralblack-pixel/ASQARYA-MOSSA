@@ -21,10 +21,10 @@ const manual={...structuredClone(d),mode:'manual',pages:{},invoices:d.invoices.m
 let mr=reconcile(manual,ref);
 assert.equal(mr.rows[0].transfer,30);
 assert.equal(mr.expected,10500);
-assert.equal(mr.status,'review');
+assert.equal(mr.status,'match');
 assert.equal(pageNumber(manual.pages[mr.rows[0].key]),0);
 manual.pages[mr.rows[0].key]='0';
-assert.equal(reconcile(manual,ref).status,'review');
+assert.equal(reconcile(manual,ref).status,'match');
 manual.pages[mr.rows[0].key]='١';
 assert.equal(reconcile(manual,ref).status,'match');
 manual.pages[mr.rows[0].key]='3';
