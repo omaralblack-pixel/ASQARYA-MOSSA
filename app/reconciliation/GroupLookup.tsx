@@ -1,6 +1,6 @@
 'use client';
 
-import {useId} from 'react';
+import {useId, useRef} from 'react';
 import {Combobox} from '@base-ui/react';
 import {digits} from '../lib/reconcile';
 
@@ -17,7 +17,8 @@ export default function GroupLookup({label, placeholder, items, value, onChange,
   required?: boolean;
 }) {
   const id = useId();
-  return <div className="group-lookup">
+  const container = useRef<HTMLDivElement>(null);
+  return <div className="group-lookup" ref={container}>
     <label htmlFor={id}>{label}{required&&<> <em>*</em></>}</label>
     <Combobox.Root items={items} value={value||null} onValueChange={item=>onChange(item||'')}
       filter={(item, query)=>normalize(item).includes(normalize(query))} autoHighlight>
@@ -25,14 +26,16 @@ export default function GroupLookup({label, placeholder, items, value, onChange,
         <Combobox.Input id={id} placeholder={placeholder} aria-required={required}/>
         <Combobox.Clear className="group-lookup-clear" aria-label={'مسح '+label}>×</Combobox.Clear>
       </div>
-      <Combobox.Positioner className="group-lookup-position" sideOffset={4}>
-        <Combobox.Popup className="group-lookup-popup">
-          <Combobox.Empty className="group-lookup-empty">ما في أسماء مطابقة</Combobox.Empty>
-          <Combobox.List className="group-lookup-list">
-            {(item: string)=><Combobox.Item key={item} value={item} className="group-lookup-item">{item}</Combobox.Item>}
-          </Combobox.List>
-        </Combobox.Popup>
-      </Combobox.Positioner>
+      <Combobox.Portal container={container}>
+        <Combobox.Positioner className="group-lookup-position" sideOffset={4}>
+          <Combobox.Popup className="group-lookup-popup">
+            <Combobox.Empty className="group-lookup-empty">ما في أسماء مطابقة</Combobox.Empty>
+            <Combobox.List className="group-lookup-list">
+              {(item: string)=><Combobox.Item key={item} value={item} className="group-lookup-item">{item}</Combobox.Item>}
+            </Combobox.List>
+          </Combobox.Popup>
+        </Combobox.Positioner>
+      </Combobox.Portal>
     </Combobox.Root>
   </div>;
 }
