@@ -19,3 +19,15 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 .qty-check:focus-visible{outline:2px solid #225fa5;outline-offset:2px}
 
 .card-title .invoice-title-input{width:auto;flex:1;min-width:0;min-height:28px;padding:3px 6px;color:inherit;font-size:12px;font-weight:700}
+
+.group-lookup-field{position:relative;margin-top:8px}
+.group-lookup-field input{padding-inline-end:35px}
+.group-lookup-clear{position:absolute;inset-inline-end:5px;top:50%;transform:translateY(-50%);width:28px;height:28px;border:0;border-radius:5px;background:transparent;color:#526d80}
+.group-lookup-clear:hover{background:#edf5ff}
+.group-lookup-position{z-index:10;width:var(--anchor-width)}
+.group-lookup-popup{overflow:hidden;border:1px solid #dbe3e9;border-radius:7px;background:#fff;box-shadow:0 5px 16px #18324722}
+.group-lookup-list{max-height:min(240px,var(--available-height));overflow:auto}
+.group-lookup-item,.group-lookup-empty{padding:9px 12px;font-size:12px}
+.group-lookup-item{cursor:pointer}
+.group-lookup-item[data-highlighted],.group-lookup-item[data-selected]{background:#e7f3fc;color:#214f80}
+.group-lookup-empty:empty{display:none}
