@@ -3,7 +3,7 @@ import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
 import branches from '../../branches.json';
 import drivers from '../../drivers.json';
-import {reconcile,groupReference,documentNo,dateValue,type Draft,type Item} from '../../lib/reconcile';
+import {reconcile,groupReference,sapReferences,documentNo,dateValue,type Draft,type Item} from '../../lib/reconcile';
 export const dynamic='force-dynamic';
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة');return env.DB};
@@ -20,11 +20,28 @@ if(linking){
  const item=b.item as Item;
  if(!item||item.active!==true)return json({error:'أكمل تعريف الصنف قبل الربط'},400);
  const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
- const existing=current.find(entry=>entry.sapCode===item.sapCode||entry.code===item.code);
- if(existing&&(existing.active||existing.sapCode!==item.sapCode||existing.code!==item.code))return json({error:'رقم المؤسسة أو كود SAP مرتبط مسبقًا. راجع مرجع الأصناف أو حدّث الصفحة.'},409);
- items=existing?current.map(entry=>entry.code===item.code?item:entry):[...current,item];
+ const existing=current.find(entry=>entry.code===item.code);
+ const occupied=sapReferences(current).find(entry=>entry.sapCode===item.sapCode);
+ if(occupied&&(occupied.code!==item.code||occupied.active||existing?.sapCode!==item.sapCode))return json({error:'كود SAP مرتبط مسبقًا. راجع مرجع الأصناف أو حدّث الصفحة.'},409);
+ if(existing&&existing.sapCode!==item.sapCode){
+  if(!existing.active)return json({error:'فعّل صنف المؤسسة في المرجع قبل إضافة كود SAP آخر.'},409);
+  const {sapCode,sapUnit,cartonPieces,kgPerPiece}=item;
+  items=current.map(entry=>entry===existing?{...entry,sapAliases:[...(entry.sapAliases||[]),{sapCode,sapUnit,cartonPieces,kgPerPiece}]}:entry);
+ }else{
+  items=existing?current.map(entry=>entry===existing?{...item,sapAliases:existing.sapAliases}:entry):[...current,item];
+ }
 }
-if(!Array.isArray(items)||items.length<1||items.length>500)return json({error:'قائمة الأصناف غير صالحة'},400);const codes=new Set(),sap=new Set();for(const i of items){if(!/^\d{8}$/.test(i.code)||!/^([A-Z]{2,6}\d{3,10})$/.test(i.sapCode)||!i.name?.trim()||i.name.length>350||codes.has(i.code)||sap.has(i.sapCode)||!['Piece','Carton','KG'].includes(i.sapUnit)||typeof i.active!=='boolean'||i.price!==null&&(!Number.isInteger(i.price)||i.price<0||i.price>100000000)||i.cartonPieces!==null&&(!Number.isInteger(i.cartonPieces)||i.cartonPieces<=0||i.cartonPieces>100000)||i.kgPerPiece!==null&&(!Number.isFinite(i.kgPerPiece)||i.kgPerPiece<=0||i.kgPerPiece>10000))return json({error:'راجع الأكواد والوحدات والأسعار والشدّات؛ لا يسمح بتكرار الكود'},400);codes.add(i.code);sap.add(i.sapCode)}const value=JSON.stringify(items);
+if(!Array.isArray(items)||items.length<1||items.length>500)return json({error:'قائمة الأصناف غير صالحة'},400);
+const codes=new Set<string>(),sap=new Set<string>();
+for(const item of items as Item[]){
+ if(!item||!/^\d{8}$/.test(item.code)||!item.name?.trim()||item.name.length>350||codes.has(item.code)||typeof item.active!=='boolean'||item.price!==null&&(!Number.isInteger(item.price)||item.price<0||item.price>100000000)||item.sapAliases!==undefined&&(!Array.isArray(item.sapAliases)||item.sapAliases.some(alias=>!alias||typeof alias!=='object')))return json({error:'راجع رقم المؤسسة وتسمية الصنف والسعر.'},400);
+ codes.add(item.code);
+ for(const entry of [item,...(item.sapAliases||[])]){
+  if(!/^[A-Z]{2,6}\d{3,10}$/.test(entry.sapCode)||sap.has(entry.sapCode)||!['Piece','Carton','KG'].includes(entry.sapUnit)||entry.cartonPieces!==null&&(!Number.isInteger(entry.cartonPieces)||entry.cartonPieces<=0||entry.cartonPieces>100000)||entry.kgPerPiece!==null&&(!Number.isFinite(entry.kgPerPiece)||entry.kgPerPiece<=0||entry.kgPerPiece>10000))return json({error:'راجع أكواد SAP والوحدات والشدّات. كل كود SAP يُربط بصنف مؤسسة واحد.'},400);
+  sap.add(entry.sapCode);
+ }
+}
+const value=JSON.stringify(items);
 if(linking){
  const write=before
   ?db().prepare('UPDATE settings SET value=? WHERE key=? AND value=?').bind(value,'reconciliationReference',before.value)
