@@ -26,8 +26,84 @@ export const labels:Record<string,string>={review:'بحاجة مراجعة',diff
 
 export function documentNo(s:string){return digits(s).trim().replace(/,/g,'').replace(/\s+/g,' ')}
 export function dateValue(s:string,format='dmy'):string|null{const n=digits(String(s)).trim().split(' ')[0];let m=n.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);let y,mo,day;if(m){y=+m[1];mo=+m[2];day=+m[3]}else{m=n.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);if(!m)return null;y=+m[3];mo=+(format==='mdy'?m[1]:m[2]);day=+(format==='mdy'?m[2]:m[1])}const d=new Date(Date.UTC(y,mo-1,day));if(d.getUTCFullYear()!==y||d.getUTCMonth()!==mo-1||d.getUTCDate()!==day)return null;return `${y}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}`}
+export function pageNumber(value?: string) {
+  return Number(digits(value ?? '').trim()) || 0;
+}
+const transferNumberPattern = /^(?:\d+|\d{1,3}(?:[,٬]\d{3})+)$/;
+export function isTransferNumber(value: string) {
+  return transferNumberPattern.test(digits(value.trim()));
+}
+export function transferNumbers(value: string) {
+  return value.split(/[+،]/).map(number => documentNo(number.replace(/٬/g, ','))).filter(Boolean);
+}
 export function serialHeaders(paste:string){return (paste.replace(/\r/g,'').split('\n').find(l=>l.trim())||'').split('\t').map(s=>s.trim())}
-export function monthly(paste:string,month:string,columns:{number:number;date:number;branch:number},filtered:boolean,format:string,groups:any[]){const missing:any[]=[],received:any[]=[],pending:any[]=[],outside:any[]=[],problems:string[]=[],duplicates:string[]=[];const lines=paste.replace(/\r/g,'').split('\n').filter(l=>l.trim());if(!/^\d{4}-\d{2}$/.test(month)||!lines.length)return {missing,received,pending,outside,problems:['حدد الشهر وألصق كشف الترحيلات مع العناوين'],duplicates,extra:[]};if(columns.number<0)return {missing,received,pending,outside,problems:['اختر عمود رقم الترحيل'],duplicates,extra:[]};if(columns.date<0&&!filtered)problems.push('اختر عمود التاريخ أو أكّد أن الكشف مفلتر للشهر المحدد');const saved=new Map<string,any>();for(const g of groups){const d=typeof g.payload==='string'?JSON.parse(g.payload):g.payload;for(const t of d.transfers||[]){saved.set(documentNo(t.number),{...g,transfer:t,draft:d})}}const seen=new Set<string>();for(let i=1;i<lines.length;i++){const c=lines[i].split('\t'),n=documentNo(c[columns.number]||'');if(!n){problems.push('سطر '+(i+1)+': رقم ترحيل مفقود');continue}const date=columns.date>=0?dateValue(c[columns.date]||'',format):null;if(columns.date>=0&&!date){problems.push('سطر '+(i+1)+' '+n+': تاريخ غير صالح');continue}if(date&&!date.startsWith(month)){outside.push({number:n,date});continue}if(seen.has(n)){duplicates.push(n);continue}seen.add(n);const row={number:n,date:date||month,branch:columns.branch>=0?c[columns.branch]||'':''},g=saved.get(n);if(!g)missing.push(row);else if(!g.transfer.date?.startsWith(month)){problems.push('الترحيل '+n+' محفوظ بتاريخ خارج الشهر؛ راجع التاريخين');pending.push({...row,group:g,reason:'اختلاف تاريخ'})}else if(!g.draft.invoices?.length||g.draft.invoices.some((v:any)=>!v.number?.trim()||!v.complete)){pending.push({...row,group:g,reason:'الفواتير غير مكتملة'})}else received.push({...row,group:g})}const extra=[...saved.entries()].filter(([n,g])=>g.transfer.date?.startsWith(month)&&!seen.has(n)).map(([n,g])=>({number:n,branch:g.branch,date:g.transfer.date}));return {missing,received,pending,outside,problems,duplicates,extra}}
+export function monthly(paste:string,month:string,columns:{number:number;date:number;branch:number},filtered:boolean,format:string,groups:any[]){
+ const result={missing:[] as any[],received:[] as any[],pending:[] as any[],outside:[] as any[],extra:[] as any[],problems:[] as string[],duplicates:[] as string[]};
+ const lines=paste.replace(/\r/g,'').split('\n').filter(line=>line.trim());
+ const plainNumbers=lines.every(isTransferNumber);
+ const hasDate=!plainNumbers&&columns.date>=0;
+ if(!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)||!lines.length){
+  result.problems.push('حدد الشهر وألصق أرقام الترحيلات أو جدول SAP');
+ }else if(!plainNumbers&&columns.number<0){
+  result.problems.push('اختر عمود رقم الترحيل');
+ }else if(!hasDate&&!filtered){
+  result.problems.push('اختر عمود التاريخ أو أكّد أن الكشف مفلتر للشهر المحدد');
+ }
+ if(result.problems.length)return result;
+
+ const saved=new Map<string,{group:any;date:string|null;complete:boolean}>();
+ for(const group of groups){
+  const draft=typeof group.payload==='string'?JSON.parse(group.payload):group.payload;
+  const complete=Boolean(draft.invoices?.length)&&draft.invoices.every((invoice:Invoice)=>invoice.number?.trim()&&invoice.complete);
+  for(const transfer of draft.transfers||[]){
+   for(const number of transferNumbers(transfer.number||'')){
+    if(!saved.has(number))saved.set(number,{group,date:dateValue(transfer.date||''),complete});
+   }
+  }
+ }
+ const seen=new Set<string>();
+ const numberColumn=plainNumbers?0:columns.number;
+ const numberHeader=plainNumbers?'':header(serialHeaders(paste)[numberColumn]||'');
+ for(let i=plainNumbers?0:1;i<lines.length;i++){
+  const cells=lines[i].split('\t');
+  const rawNumber=cells[numberColumn]||'';
+  if(numberHeader&&header(rawNumber)===numberHeader)continue;
+  if(!isTransferNumber(rawNumber)){
+   result.problems.push('سطر '+(i+1)+': رقم ترحيل غير صالح');
+   continue;
+  }
+  const number=transferNumbers(rawNumber)[0];
+  const date=hasDate?dateValue(cells[columns.date]||'',format):null;
+  if(hasDate&&!date){
+   result.problems.push('سطر '+(i+1)+' '+number+': تاريخ غير صالح');
+   continue;
+  }
+  if(date&&!date.startsWith(month)){
+   result.outside.push({number,date});
+   continue;
+  }
+  if(seen.has(number)){
+   result.duplicates.push(number);
+   continue;
+  }
+  seen.add(number);
+  const entry=saved.get(number);
+  const row={number,date:date||month,branch:!plainNumbers&&columns.branch>=0?cells[columns.branch]||'':''};
+  if(!entry){
+   result.missing.push(row);
+  }else if(!entry.date?.startsWith(month)){
+   result.problems.push('الترحيل '+number+' محفوظ بتاريخ مختلف أو غير صالح؛ راجع التاريخين');
+   result.pending.push({...row,group:entry.group,reason:'اختلاف تاريخ'});
+  }else if(!entry.complete){
+   result.pending.push({...row,group:entry.group,reason:'الفواتير غير مكتملة'});
+  }else{
+   result.received.push({...row,group:entry.group});
+  }
+ }
+ result.extra=[...saved].filter(([number,entry])=>entry.date?.startsWith(month)&&!seen.has(number))
+  .map(([number,entry])=>({number,branch:entry.group.branch,date:entry.date,group:entry.group}));
+ return result;
+}
 
 export function checkSignature(r:{name:string;unitPrice:number|null;transfer:number|null;details:TransferLine[]}){return JSON.stringify([r.name,r.unitPrice,r.transfer,r.details.map(l=>[l.transferNo,l.sapCode,l.quantity,l.unit,l.from,l.to]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))])}
 function reconcileManual(d:Draft,reference:Item[]){
@@ -36,9 +112,9 @@ function reconcileManual(d:Draft,reference:Item[]){
  if(d.invoices.some(i=>!i.complete))problems.push('أكد وجود كل فاتورة ورقية للمجموعة');
  const rows=base.rows.map(r=>{const c=d.checks?.[r.key],valid=c?.signature===checkSignature(r);const state=r.errors.length?'review':'match';return {...r,invoice:0,difference:null,state}});
  const unchecked=0,review=rows.filter(r=>r.state==='review').length,differences=0;
- const unassigned=rows.filter(r=>!d.pages?.[r.key]).length;
+ const unassigned=rows.filter(r=>pageNumber(d.pages?.[r.key])===0).length;
  if(unassigned)problems.push('باقي '+unassigned+' أصناف لم تحدد رقم الفاتورة الزرقاء لها');
- for(const r of rows){const page=d.pages?.[r.key];if(page&&(!/^\\d+$/.test(page)||Number(page)<1||Number(page)>d.invoices.length))problems.push('رقم الفاتورة الزرقاء للصنف '+(r.code||r.sapCode)+' غير موجود في الفواتير المسجلة');}
+ for(const r of rows){const page=d.pages?.[r.key];if(page&&(!/^\d+$/.test(digits(page))||pageNumber(page)>d.invoices.length))problems.push('رقم الفاتورة الزرقاء للصنف '+(r.code||r.sapCode)+' غير موجود في الفواتير المسجلة');}
  const status=review||problems.length?'review':differences||base.priceDifference!==null&&base.priceDifference!==0?'difference':base.priceDifference===null?'priceMissing':'match';
  return {...base,rows,problems,review:review+unchecked,differences,status,invoiceCalculated:d.invoices.map(()=>null),invoiceAmountDiffs:d.invoices.map(()=>null)};
 }

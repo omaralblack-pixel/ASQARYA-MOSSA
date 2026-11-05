@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,checkSignature,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -17,12 +17,27 @@ changed=structuredClone(d);changed.invoices[0].complete=false;m=monthly(serial,'
 const zeroPrice=ref.map(i=>i.sapCode==='FVL00302'?{...i,price:null}:i);assert.equal(reconcile(d,zeroPrice).status,'quantityMatch');
 console.log('PASS: approved institution whitelist; two transfers/two invoices; fractional cartons; 8-pack strawberry; Quantity column isolation; unit-review blocking; duplicate docs; three-decimal prices; monthly missing, pending, duplicate and date boundaries.');
 
-const manual={...structuredClone(d),mode:'manual',checks:{},invoices:d.invoices.map(i=>({...i,quantities:{}}))};
-let mr=reconcile(manual,ref);assert.equal(mr.rows[0].transfer,30);assert.equal(mr.expected,10500);assert.equal(mr.rows[0].state,'unchecked');assert.equal(mr.status,'review');
-manual.checks[mr.rows[0].key]={signature:checkSignature(mr.rows[0]),state:'match'};
+const manual={...structuredClone(d),mode:'manual',pages:{},invoices:d.invoices.map(i=>({...i,quantities:{}}))};
+let mr=reconcile(manual,ref);
+assert.equal(mr.rows[0].transfer,30);
+assert.equal(mr.expected,10500);
+assert.equal(mr.status,'review');
+assert.equal(pageNumber(manual.pages[mr.rows[0].key]),0);
+manual.pages[mr.rows[0].key]='0';
+assert.equal(reconcile(manual,ref).status,'review');
+manual.pages[mr.rows[0].key]='١';
 assert.equal(reconcile(manual,ref).status,'match');
-manual.checks[mr.rows[0].key].state='difference';assert.equal(reconcile(manual,ref).status,'difference');
-manual.checks[mr.rows[0].key].state='match';const altered=structuredClone(manual);altered.transfers[1].paste=paste([['FVL00302',1,'Carton']]);assert.equal(reconcile(altered,ref).rows[0].state,'unchecked');
-assert.equal(reconcile(manual,ref.map(i=>i.sapCode==='FVL00302'?{...i,price:400}:i)).rows[0].state,'unchecked');
-const missingRef=ref.map(i=>i.sapCode==='FVL00302'?{...i,price:null}:i);mr=reconcile(manual,missingRef);manual.checks[mr.rows[0].key]={signature:checkSignature(mr.rows[0]),state:'match'};assert.equal(reconcile(manual,missingRef).status,'priceMissing');
-console.log('PASS: generated manual check sheet, no invoice quantities, explicit row approval, reported differences, stale approvals invalidated after transfer/price changes, missing prices blocked.');
+manual.pages[mr.rows[0].key]='3';
+assert.equal(reconcile(manual,ref).status,'review');
+
+const combined=structuredClone(d);
+combined.transfers=[{...combined.transfers[0],number:'100+101'}];
+const combinedGroups=[{id:'g',branch:'branch',payload:JSON.stringify(combined)}];
+const noColumns={number:-1,date:-1,branch:-1};
+m=monthly('١٠٠\n101\n102\n102','2026-11',noColumns,true,'dmy',combinedGroups);
+assert.deepEqual(m.received.map(row=>row.number),['100','101']);
+assert.deepEqual(m.missing.map(row=>row.number),['102']);
+assert.deepEqual(m.duplicates,['102']);
+assert.equal(monthly('100\n101','2026-11',noColumns,false,'dmy',combinedGroups).received.length,0);
+assert.equal(monthly(serial.replace('101\t','Document Number\tDocument Date\tBranch\n101\t'),'2026-11',{number:0,date:1,branch:2},false,'dmy',groups).problems.length,0);
+console.log('PASS: page zero, Arabic page digits, out-of-range pages, plain M2026 numbers, and previously combined transfer numbers.');
