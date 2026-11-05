@@ -17,3 +17,5 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 .qty-check:hover{border-color:#2763a5;background:#edf5ff}
 .qty-check[aria-pressed="true"]{background:#225fa5;border-color:#225fa5;color:#fff}
 .qty-check:focus-visible{outline:2px solid #225fa5;outline-offset:2px}
+
+.card-title .invoice-title-input{width:auto;flex:1;min-width:0;min-height:28px;padding:3px 6px;color:inherit;font-size:12px;font-weight:700}

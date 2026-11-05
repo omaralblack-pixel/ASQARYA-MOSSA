@@ -1,6 +1,6 @@
 export type Item={code:string;sapCode:string;name:string;sourceName?:string;price:number|null;invoicePack:number|null;cartonPieces:number|null;sapUnit:string;warehouseUnit?:string|null;warehouseName?:string|null;kgPerPiece:number|null;active:boolean};
 export type TransferLine={transferNo?:string;row:number;sapCode:string;name:string;quantity:number;unit:string;from:string;to:string};
-export type Invoice={id:string;number:string;date:string;amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];quantities:Record<string,string>};
+export type Invoice={id:string;title?:string;number:string;date:string;amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];quantities:Record<string,string>};
 export type Transfer={id:string;number:string;date:string;paste:string};
 export type Draft={mode?:'manual';checks?:Record<string,{signature:string;state:'match'|'difference';note?:string}>;pages?:Record<string,string>;id?:string;version?:number;branch:string;driver:string;date:string;transfers:Transfer[];invoices:Invoice[];notes:string;referenceSnapshot?:Item[];useCurrentReference?:boolean;linkedSapCodes?:string[]};
 export function digits(v:string){return v.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)))}
