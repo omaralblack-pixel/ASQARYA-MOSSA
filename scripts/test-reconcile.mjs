@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -41,3 +41,15 @@ assert.deepEqual(m.duplicates,['102']);
 assert.equal(monthly('100\n101','2026-11',noColumns,false,'dmy',combinedGroups).received.length,0);
 assert.equal(monthly(serial.replace('101\t','Document Number\tDocument Date\tBranch\n101\t'),'2026-11',{number:0,date:1,branch:2},false,'dmy',groups).problems.length,0);
 console.log('PASS: page zero, Arabic page digits, out-of-range pages, plain M2026 numbers, and previously combined transfer numbers.');
+
+const link={...ref[0],code:'99999999',sapCode:'CFC00007',name:'معكرونة صدفه',price:800};
+const draftLink={...manual,pages:{'s:CFC00007':'1','i:other':'2'},transfers:[{...manual.transfers[0],paste:paste([['CFC00007',2,'Piece']])}]};
+assert.equal(reconcile(draftLink,ref).rows[0].transfer,null);
+const groupRef=groupReference(ref,[{...ref[0],price:999},...ref.slice(1),link],['CFC00007']);
+assert.equal(groupRef[0].price,ref[0].price);
+draftLink.pages=moveLinkedPage(draftLink.pages,link.sapCode,link.code);
+const linkedRow=reconcile(draftLink,groupRef).rows[0];
+assert.equal(linkedRow.transfer,2);
+assert.equal(linkedRow.expected,1600);
+assert.deepEqual(draftLink.pages,{'i:99999999':'1','i:other':'2'});
+console.log('PASS: linking updates the existing transfer row and preserves its page and the saved prices of other items.');
