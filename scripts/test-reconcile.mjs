@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -53,3 +53,10 @@ assert.equal(linkedRow.transfer,2);
 assert.equal(linkedRow.expected,1600);
 assert.deepEqual(draftLink.pages,{'i:99999999':'1','i:other':'2'});
 console.log('PASS: linking updates the existing transfer row and preserves its page and the saved prices of other items.');
+
+assert.equal(fils('664,25'),664250);
+assert.equal(fils('٦٦٤،٢٥٠'),664250);
+assert.equal(fils('664.25'),664250);
+assert.equal(fils('1,664.250'),1664250);
+assert.equal(fils('1,664'),1664000);
+assert.equal(fils('664,25')-665450,-1200);

@@ -5,7 +5,9 @@ export type Transfer={id:string;number:string;date:string;paste:string};
 export type Draft={mode?:'manual';checks?:Record<string,{signature:string;state:'match'|'difference';note?:string}>;pages?:Record<string,string>;id?:string;version?:number;branch:string;driver:string;date:string;transfers:Transfer[];invoices:Invoice[];notes:string;referenceSnapshot?:Item[];useCurrentReference?:boolean;linkedSapCodes?:string[]};
 export function digits(v:string){return v.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)))}
 export function numeric(v:unknown):number|null{const s=digits(String(v??'')).trim().replace(/٬/g,',').replace(/٫/g,'.');if(!s)return null;if(!/^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(s))return null;const n=Number(s.replace(/,/g,''));return Number.isFinite(n)?n:null}
-export function fils(v:string):number|null{const n=numeric(v);if(n===null||n<0||n>100000000||Math.abs(n*1000-Math.round(n*1000))>0.00001)return null;return Math.round(n*1000)}
+export function fils(v:string):number|null{
+ const amount=digits(v).trim().replace(/^(\d+),(\d{1,2})$/,'$1.$2').replace(/^(\d+)،(\d{1,3})$/,'$1.$2');
+ const n=numeric(amount);if(n===null||n<0||n>100000000||Math.abs(n*1000-Math.round(n*1000))>0.00001)return null;return Math.round(n*1000)}
 export const money=(n:number|null)=>n===null?'—':(n/1000).toLocaleString('en-US',{minimumFractionDigits:3,maximumFractionDigits:3});
 export const num=(n:number|null)=>n===null?'—':String(Number(n.toFixed(6)));
 const header=(s:string)=>s.toLowerCase().replace(/[\s._\-:]/g,'');
