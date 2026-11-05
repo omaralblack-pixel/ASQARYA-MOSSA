@@ -12,3 +12,8 @@
 h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36px}.app-shell{grid-template-columns:230px minmax(0,1fr)}.sidebar{padding:35px 20px}.workspace-nav{margin-bottom:25px}@media(max-width:900px){.app-shell{display:block}.sidebar{display:block;padding:12px}.workspace-nav{margin-bottom:0}}
 }
 @media print{@page{size:A4 portrait;margin:12mm}}
+
+.qty-check{min-width:42px;min-height:30px;padding:4px 8px;border:1px solid #c7d9eb;border-radius:5px;background:#fff;color:inherit;font-weight:inherit}
+.qty-check:hover{border-color:#2763a5;background:#edf5ff}
+.qty-check[aria-pressed="true"]{background:#225fa5;border-color:#225fa5;color:#fff}
+.qty-check:focus-visible{outline:2px solid #225fa5;outline-offset:2px}
