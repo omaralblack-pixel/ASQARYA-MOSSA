@@ -12,6 +12,7 @@ type SapTransfer={
   invoices:string[];
   lineCount:number;
   reversal:boolean;
+  canceledTransferNo?:string;
   issues:string[];
 };
 
@@ -68,7 +69,8 @@ export function parseSapImport(paste:string,branches:string[]):{groups:SapImport
     if(!date)itemIssues.push('تاريخ الترحيل غير صالح');
     if(!branch)itemIssues.push('الفرع غير معروف');
     if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length)itemIssues.push('راجع بنود الترحيل أو وحداته أو مستودعاته');
-    const member={transfer,branch,branchLabel:branchName||branchCode,remarks,invoices:entry.reversal?[]:readInvoices(remarks),lineCount:entry.lines.length,reversal:entry.reversal,issues:itemIssues};
+    const canceledTransferNo=digits(remarks).match(/\binventory transfer no\.?\s*(\d+)\s+has been canceled\b/i)?.[1];
+    const member={transfer,canceledTransferNo,branch,branchLabel:branchName||branchCode,remarks,invoices:entry.reversal?[]:readInvoices(remarks),lineCount:entry.lines.length,reversal:entry.reversal,issues:itemIssues};
     const keys=branch&&!entry.reversal&&!entry.conflict?member.invoices.map(invoice=>branch+'|'+invoice):[];
     const connected=[...new Set(keys.flatMap(key=>invoiceGroups.has(key)?[invoiceGroups.get(key)!]:[]))];
     const members=connected[0]||[];

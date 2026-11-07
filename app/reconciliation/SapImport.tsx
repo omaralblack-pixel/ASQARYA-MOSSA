@@ -5,7 +5,7 @@ import {documentNo,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
 
 type SavedRecord={id:string;branch:string;payload:string};
-type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean};
+type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;originalRecordId?:string};
 
 function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):PreviewGroup[]{
   const byTransfer=new Map<string,string>();
@@ -23,7 +23,8 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
     const transferIds=group.draft.transfers.map(transfer=>byTransfer.get(transfer.number));
     const invoiceIds=group.draft.invoices.map(invoice=>byInvoice.get(group.draft.branch+'|'+invoice.number));
     const savedIds=[...new Set([...transferIds,...invoiceIds].filter((id):id is string=>Boolean(id)))];
-    return {...group,savedIds,allTransfersSaved:transferIds.every(Boolean)};
+    const original=group.members[0].canceledTransferNo;
+    return {...group,savedIds,allTransfersSaved:transferIds.every(Boolean),originalRecordId:original?byTransfer.get(original):undefined};
   });
 }
 
@@ -47,12 +48,12 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   const [filter,setFilter]=useState('all');
   const ready=groups.filter(isReady);
   const selectedGroups=ready.filter(group=>selected.includes(keyOf(group)));
-  const shown=groups.filter(group=>filter==='all'||(
+  const reversals=groups.filter(group=>group.reversal);
+  const shown=groups.filter(group=>!group.reversal&&(filter==='all'||(
     filter==='ready'?isReady(group):
     filter==='saved'?group.allTransfersSaved:
-    filter==='reversal'?group.reversal:
-    !group.reversal&&!isReady(group)&&!group.allTransfersSaved
-  ));
+    !isReady(group)&&!group.allTransfersSaved
+  )));
 
   async function preview(){
     setBusy(true);
@@ -118,12 +119,36 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     {issues.length>0&&<div className="banner error" role="alert">{issues.join(' · ')}</div>}
     {groups.length>0&&<>
       <div className="table-controls">
+        <button className="button secondary" type="button" aria-pressed={filter==='reversal'} onClick={()=>setFilter(filter==='reversal'?'all':'reversal')}>
+          {filter==='reversal'?'رجوع لمعاينة الاستيراد':'الترحيلات الملغاة ('+reversals.length+')'}
+        </button>
+      </div>
+      {filter==='reversal'?<>
+        <h2>الترحيلات الملغاة</h2>
+        <p className="hint">رقم الترحيل الأصلي يُقرأ من Remarks. السطر أدناه يربط الأصل بمستند عكس الإلغاء.</p>
+        <div className="table-scroll"><table>
+          <thead><tr><th>مستند عكس الإلغاء</th><th>الترحيل الأصلي المقابل</th><th>تاريخ العكس</th><th>الفرع</th><th>البنود</th><th>Remarks</th><th>السجل</th></tr></thead>
+          <tbody>{reversals.map(group=>{
+            const member=group.members[0];
+            return <tr key={member.transfer.number}>
+              <td><code>{member.transfer.number}</code></td>
+              <td>{member.canceledTransferNo?<code>{member.canceledTransferNo}</code>:'رقم الأصل غير مذكور'}</td>
+              <td>{member.transfer.date||'—'}</td>
+              <td>{member.branch||member.branchLabel||'—'}</td>
+              <td>{member.lineCount}</td>
+              <td dir="auto">{member.remarks||'—'}</td>
+              <td>{group.originalRecordId?<button className="button secondary small" type="button" disabled={busy} onClick={()=>openSaved(group.originalRecordId!)}>فتح الترحيل الأصلي</button>:member.canceledTransferNo?'الأصل غير مسجّل هنا':'بحاجة لمراجعة'}</td>
+            </tr>;
+          })}</tbody>
+        </table></div>
+        {!reversals.length&&<p className="hint">ما في مستندات عكس إلغاء بالكشف الملصوق.</p>}
+      </>:<>
+      <div className="table-controls">
         <select aria-label="حالة الاستيراد" value={filter} onChange={event=>setFilter(event.target.value)}>
-          <option value="all">كل المجموعات ({groups.length})</option>
+          <option value="all">كل المجموعات ({groups.length-reversals.length})</option>
           <option value="ready">جاهزة للحفظ ({ready.length})</option>
           <option value="saved">مسجّلة سابقًا</option>
           <option value="review">بحاجة لمراجعة</option>
-          <option value="reversal">عكس الإلغاء</option>
         </select>
         <button className="button secondary" type="button" disabled={busy||!ready.length||!!issues.length} onClick={()=>setSelected(ready.map(keyOf))}>تحديد كل المجموعات الجاهزة</button>
         <button className="button primary" type="button" disabled={busy||!selectedGroups.length||!!issues.length} onClick={saveSelected}>حفظ المحدد ({selectedGroups.length})</button>
@@ -140,14 +165,15 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
             <td>{group.draft.branch||group.members[0].branchLabel||'—'}</td>
             <td dir="ltr">{group.draft.invoices.map(invoice=>invoice.number).filter(Boolean).join('، ')||'—'}</td>
             <td>{group.members.reduce((count,item)=>count+item.lineCount,0)}</td>
-            <td>{group.reversal?'عكس إلغاء — خارج الاستيراد':group.allTransfersSaved?'مسجّلة':group.savedIds.length?'مرتبطة بسجل سابق؛ راجع المجموعة قبل إضافة ترحيل جديد':group.issues.join('، ')||(group.draft.invoices.some(invoice=>!invoice.number)?'جاهزة للحفظ · رقم الفاتورة ناقص':'جاهزة للحفظ')}
+            <td>{group.allTransfersSaved?'مسجّلة':group.savedIds.length?'مرتبطة بسجل سابق؛ راجع المجموعة قبل إضافة ترحيل جديد':group.issues.join('، ')||(group.draft.invoices.some(invoice=>!invoice.number)?'جاهزة للحفظ · رقم الفاتورة ناقص':'جاهزة للحفظ')}
               {errors[key]&&<p className="red">{errors[key]}</p>}</td>
             <td>{group.savedIds.map((id,index)=><button key={id} type="button" className="button secondary small" disabled={busy} onClick={()=>openSaved(id)}>فتح المحفوظ{group.savedIds.length>1?' '+(index+1):''}</button>)}
-              {!group.reversal&&!group.savedIds.length&&<button type="button" className="button secondary small" disabled={busy} onClick={()=>openDraft(group.draft)}>فتح للمراجعة</button>}</td>
+              {!group.savedIds.length&&<button type="button" className="button secondary small" disabled={busy} onClick={()=>openDraft(group.draft)}>فتح للمراجعة</button>}</td>
           </tr>;
         })}</tbody>
       </table></div>
       {!shown.length&&<p className="hint">ما في مجموعات بهالحالة.</p>}
+      </>}
     </>}
   </details>;
 }
