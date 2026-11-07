@@ -36,3 +36,12 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 .sap-import .sap-import-check{width:16px;height:16px;min-height:0;accent-color:#21788f}
 .sap-import td details{margin:0}
 .sap-import td .button{margin:2px}
+
+.invoice-register-print{display:none}
+@media print{
+  .recon-app main>section.invoice-register-print{display:block!important}
+  .invoice-register-print h1{font-size:18px}
+  .invoice-register-print table{margin-top:12px;font-size:11px}
+  .invoice-register-print th,.invoice-register-print td{padding:7px;border:1px solid #b5c1ca;color:#183247;text-align:right}
+  .invoice-register-print thead{display:table-header-group}
+}

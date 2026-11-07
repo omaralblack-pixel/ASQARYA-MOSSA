@@ -8,6 +8,38 @@ type RecordSummary = {id: string; branch: string; doc_date: string; payload: str
 const institution = 'المؤسسة الاستهلاكية العسكرية';
 const headers = ['رقم الفاتورة', 'رقم الصفحة', 'أرقام ترحيلات المجموعة', 'اسم المؤسسة', 'الفرع', 'تاريخ الفاتورة', 'تاريخ المجموعة', 'مبلغ الفاتورة (د.أ)'];
 
+function registerRows(records: RecordSummary[]) {
+  return records.flatMap(record => {
+    const group: Pick<Draft, 'transfers' | 'invoices'> = JSON.parse(record.payload);
+    const transfers = new Map(group.transfers.flatMap(transfer => transferNumbers(transfer.number || '').map(number => [number, dateValue(transfer.date || '') || ''] as const)));
+    return group.invoices.flatMap((invoice, index) => {
+      if (!invoice.number?.trim()) return [];
+      const date = dateValue(invoice.date || '') || '';
+      const groupDate = dateValue(record.doc_date || '') || '';
+      const amount = fils(invoice.amount || '');
+      const values = [invoice.number, String(index + 1), [...transfers.keys()].join(' + '), institution, record.branch, date, groupDate, amount === null ? '' : money(amount)];
+      return [{key: record.id + ':' + index, record, date: date || groupDate, values, transfers}];
+    });
+  }).sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export function InvoiceRegisterPrint({records}: {records: RecordSummary[]}) {
+  const rows = registerRows(records);
+  return <section className="invoice-register-print">
+    <h1>سجل المطابقات · الفواتير الزرقاء</h1>
+    <p>{institution} · {rows.length} فاتورة</p>
+    <table>
+      <thead><tr><th>رقم الفاتورة الزرقاء</th><th>تاريخ الفاتورة</th><th>أرقام ترحيلات المجموعة وتواريخها</th><th>مبلغ الفاتورة (د.أ)</th></tr></thead>
+      <tbody>{rows.map(row=><tr key={row.key}>
+        <td dir="ltr">{row.values[0]}</td>
+        <td dir="ltr">{row.values[5]||'—'}</td>
+        <td>{[...row.transfers].map(([number,date])=><div key={number} dir="ltr">{number} — {date||'—'}</div>)}</td>
+        <td dir="ltr">{row.values[7]||'—'}</td>
+      </tr>)}</tbody>
+    </table>
+  </section>;
+}
+
 export default function InvoiceRegister({records, busy, refresh, open}: {
   records: RecordSummary[];
   busy: boolean;
@@ -16,18 +48,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
 }) {
   const [query, setQuery] = useState('');
   const [month, setMonth] = useState('');
-  const rows = useMemo(() => records.flatMap(record => {
-    const group: Pick<Draft, 'transfers' | 'invoices'> = JSON.parse(record.payload);
-    const transfers = [...new Set(group.transfers.flatMap(t => transferNumbers(t.number || '')))].join(' + ');
-    return group.invoices.flatMap((invoice, index) => {
-      if (!invoice.number?.trim()) return [];
-      const date = dateValue(invoice.date || '') || '';
-      const groupDate = dateValue(record.doc_date || '') || '';
-      const amount = fils(invoice.amount || '');
-      const values = [invoice.number, String(index + 1), transfers, institution, record.branch, date, groupDate, amount === null ? '' : money(amount)];
-      return [{key: record.id + ':' + index, record, date: date || groupDate, values}];
-    });
-  }).sort((a, b) => b.date.localeCompare(a.date)), [records]);
+  const rows = useMemo(() => registerRows(records), [records]);
   const visible = rows.filter(row => (!month || row.date.startsWith(month)) && digits(row.values.join(' ')).includes(digits(query.trim())));
 
   async function exportRegister() {
