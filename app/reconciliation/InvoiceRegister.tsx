@@ -13,7 +13,7 @@ function registerRows(records: RecordSummary[]) {
     const group: Pick<Draft, 'transfers' | 'invoices'> = JSON.parse(record.payload);
     const transfers = new Map(group.transfers.flatMap(transfer => transferNumbers(transfer.number || '').map(number => [number, dateValue(transfer.date || '') || ''] as const)));
     return group.invoices.flatMap((invoice, index) => {
-      if (!invoice.number?.trim()) return [];
+      if (!invoice.number?.trim() || invoice.complete !== true) return [];
       const date = dateValue(invoice.date || '') || '';
       const groupDate = dateValue(record.doc_date || '') || '';
       const amount = fils(invoice.amount || '');
@@ -63,7 +63,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
 
   return <>
     <div className="page-title">
-      <div><p className="eyebrow">الأرشيف</p><h1>سجل فواتير المؤسسة</h1><p>كل فاتورة ورقية محفوظة بسطر مستقل مع الترحيلات المرتبطة بمجموعتها.</p></div>
+      <div><p className="eyebrow">الأرشيف</p><h1>سجل فواتير المؤسسة</h1><p>الفواتير التي تم تأكيد وصول ورقها فقطة بسطر مستقل مع الترحيلات المرتبطة بمجموعتها.</p></div>
       <button className="button secondary" disabled={busy} onClick={refresh}><RefreshCw size={16}/>تحديث</button>
     </div>
     <section className="panel">
