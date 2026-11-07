@@ -60,3 +60,28 @@ assert.equal(fils('664.25'),664250);
 assert.equal(fils('1,664.250'),1664250);
 assert.equal(fils('1,664'),1664000);
 assert.equal(fils('664,25')-665450,-1200);
+
+const warehousePaste = (rows) => [
+  'Item No.\tItem Description\tQuantity\tFrom Warehouse\tTo Warehouse\tUoM Code',
+  ...rows.map(([code,quantity,from,to,unit]) => [code,'test',quantity,from,to,unit].join('\t')),
+].join('\n');
+const reverse = warehousePaste([
+  ['FVL00042','0.2','011','001','Carton'],
+  ['FVL00109','0.5','011','002','Carton'],
+]);
+const forward = warehousePaste([
+  ['FVL00042','1','001','011','Carton'],
+  ['FVL00109','1','002','011','Carton'],
+]);
+const net = reconcile({...manual, pages:{}, transfers:[
+  {...d.transfers[0],paste:forward},
+  {...d.transfers[1],paste:reverse},
+]},ref);
+assert.equal(net.rows.find(row=>row.sapCode==='FVL00042').transfer,8);
+assert.equal(net.rows.find(row=>row.sapCode==='FVL00109').transfer,10);
+assert.equal(net.expected,20040);
+assert.equal(parseTransfer(reverse).excluded.length,2);
+assert.equal(parseTransfer(reverse,{allowReverse:true}).excluded.length,0);
+const invalidReverse = warehousePaste([['FVL00042','-0.2','011','001','Carton']]);
+assert.equal(parseTransfer(invalidReverse,{allowReverse:true}).issues.length,1);
+console.log('PASS: reverse transfers subtract converted quantities and value, while bulk intake keeps its forward-only scope.');
