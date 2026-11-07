@@ -1,7 +1,7 @@
 export type SapAlias={sapCode:string;sapUnit:string;cartonPieces:number|null;kgPerPiece:number|null};
 export type Item={sapAliases?:SapAlias[];code:string;sapCode:string;name:string;sourceName?:string;price:number|null;invoicePack:number|null;cartonPieces:number|null;sapUnit:string;warehouseUnit?:string|null;warehouseName?:string|null;kgPerPiece:number|null;active:boolean};
 export type TransferLine={transferNo?:string;row:number;sapCode:string;name:string;quantity:number;unit:string;from:string;to:string};
-export type Invoice={id:string;title?:string;number:string;date:string;amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];quantities:Record<string,string>};
+export type Invoice={id:string;title?:string;number:string;date:string;dateTransferNos?:string[];amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];quantities:Record<string,string>};
 export type Transfer={id:string;number:string;date:string;paste:string};
 export type Draft={mode?:'manual';checks?:Record<string,{signature:string;state:'match'|'difference';note?:string}>;pages?:Record<string,string>;id?:string;version?:number;branch:string;driver:string;date:string;transfers:Transfer[];invoices:Invoice[];notes:string;referenceSnapshot?:Item[];useCurrentReference?:boolean;linkedSapCodes?:string[]};
 export function digits(v:string){return v.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)))}
@@ -44,6 +44,21 @@ export const labels:Record<string,string>={review:'بحاجة مراجعة',diff
 
 export function documentNo(s:string){return digits(s).trim().replace(/,/g,'').replace(/\s+/g,' ')}
 export function dateValue(s:string,format='dmy'):string|null{const n=digits(String(s)).trim().split(' ')[0];let m=n.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);let y,mo,day;if(m){y=+m[1];mo=+m[2];day=+m[3]}else{m=n.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);if(!m)return null;y=+m[3];mo=+(format==='mdy'?m[1]:m[2]);day=+(format==='mdy'?m[2]:m[1])}const d=new Date(Date.UTC(y,mo-1,day));if(d.getUTCFullYear()!==y||d.getUTCMonth()!==mo-1||d.getUTCDate()!==day)return null;return `${y}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}`}
+export function withInvoiceDates<T extends Draft>(draft:T):T {
+ const outgoing=draft.transfers.flatMap(transfer=>{
+  const date=dateValue(transfer.date);
+  if(!date||!parseTransfer(transfer.paste).lines.length)return [];
+  return [{number:documentNo(transfer.number),date}];
+ }).sort((a,b)=>a.date.localeCompare(b.date));
+ return {...draft,invoices:draft.invoices.map(invoice=>{
+  const linked=Array.isArray(invoice.dateTransferNos)&&outgoing.find(transfer=>invoice.dateTransferNos!.includes(transfer.number));
+  const source=linked||outgoing[0];
+  if(!source)return invoice;
+  const date=new Date(source.date+'T00:00:00Z');
+  date.setUTCDate(date.getUTCDate()-1);
+  return {...invoice,date:date.toISOString().slice(0,10)};
+ })};
+}
 export function pageNumber(value?: string) {
   return Number(digits(value ?? '').trim()) || 0;
 }

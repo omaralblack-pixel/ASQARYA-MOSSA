@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,withInvoiceDates,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -85,3 +85,14 @@ assert.equal(parseTransfer(reverse,{allowReverse:true}).excluded.length,0);
 const invalidReverse = warehousePaste([['FVL00042','-0.2','011','001','Carton']]);
 assert.equal(parseTransfer(invalidReverse,{allowReverse:true}).issues.length,1);
 console.log('PASS: reverse transfers subtract converted quantities and value, while bulk intake keeps its forward-only scope.');
+
+const dated = withInvoiceDates({...manual, transfers:[
+  {...d.transfers[0],date:'2026-11-01',paste:forward},
+  {...d.transfers[1],date:'2026-11-05',paste:forward},
+  {...d.transfers[1],number:'102',date:'2026-10-01',paste:reverse},
+], invoices:[
+  {...manual.invoices[0],date:''},
+  {...manual.invoices[1],date:'',dateTransferNos:['101']},
+]});
+assert.deepEqual(dated.invoices.map(invoice=>invoice.date),['2026-10-31','2026-11-04']);
+console.log('PASS: blue invoice dates subtract one calendar day, use linked outgoing transfers, and ignore reverse dates.');

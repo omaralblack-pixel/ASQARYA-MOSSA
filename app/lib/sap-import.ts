@@ -1,4 +1,4 @@
-import {dateValue,digits,numeric,parseTransfer,type Draft,type Transfer} from './reconcile';
+import {dateValue,digits,numeric,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
 
 const headers=['رقم الترحيل','تاريخ الترحيل','كود الفرع','اسم الفرع','Remarks','Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'];
 const normalize=(value:string)=>value.trim().toLowerCase();
@@ -95,11 +95,11 @@ export function parseSapImport(paste:string,branches:string[]):{groups:SapImport
       mode:'manual',checks:{},branch:members[0].branch,driver:'',date,
       transfers:members.map(item=>item.transfer),
       invoices:(invoiceNumbers.length?invoiceNumbers:['']).map((number,index)=>({
-        id:'invoice-'+(index+1),number,date:'',amount:'',complete:false,quantities:{},attachments:[],
+        id:'invoice-'+(index+1),number,date:'',dateTransferNos:members.filter(item=>item.invoices.includes(number)).map(item=>item.transfer.number),amount:'',complete:false,quantities:{},attachments:[],
       })),
       notes,
     };
-    groups.push({draft,members,issues:groupIssues,reversal:members[0].reversal});
+    groups.push({draft:withInvoiceDates(draft),members,issues:groupIssues,reversal:members[0].reversal});
   }
   if(!groups.length&&!issues.length)issues.push('لا توجد سطور ترحيلات في الجدول');
   return {groups,issues};
