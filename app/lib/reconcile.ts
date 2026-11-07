@@ -72,7 +72,7 @@ export function transferNumbers(value: string) {
 }
 export function serialHeaders(paste:string){return (paste.replace(/\r/g,'').split('\n').find(l=>l.trim())||'').split('\t').map(s=>s.trim())}
 export function monthly(paste:string,month:string,columns:{number:number;date:number;branch:number},filtered:boolean,format:string,groups:any[]){
- const result={missing:[] as any[],received:[] as any[],pending:[] as any[],outside:[] as any[],extra:[] as any[],problems:[] as string[],duplicates:[] as string[]};
+ const result={missing:[] as any[],received:[] as any[],pending:[] as any[],outside:[] as any[],extra:[] as any[],canceled:[] as any[],toCancel:[] as any[],reverse:[] as any[],problems:[] as string[],duplicates:[] as string[]};
  const lines=paste.replace(/\r/g,'').split('\n').filter(line=>line.trim());
  const plainNumbers=lines.every(isTransferNumber);
  const hasDate=!plainNumbers&&columns.date>=0;
@@ -95,6 +95,22 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
    }
   }
  }
+ const headers=plainNumbers?[]:serialHeaders(paste).map(header);
+ const col=(names:string[])=>headers.findIndex(h=>names.includes(h));
+ const fromCol=col(['fromwarehouse','منمستودع','المستودعالمصدر']);
+ const toCol=col(['towarehousecode','towarehouse','إلىمستودع','المستودعالهدف']);
+ const detailCol=col(['details','تفاصيل','التفاصيل']);
+ const remarksCol=col(['remarks','ملاحظات']);
+ const sourceRows=lines.slice(plainNumbers?0:1).map(line=>line.split('\t'));
+ const canceledBy=new Map<string,string>();
+ for(const cells of sourceRows){
+  const number=transferNumbers(cells[plainNumbers?0:columns.number]||'')[0];
+  const details=[detailCol,remarksCol].filter(index=>index>=0).map(index=>cells[index]||'').join(' ');
+  const original=details.match(/inventory\s+transfer\s+no\.?\s*(\d+)\s+has\s+been\s+canceled/i)?.[1];
+  if(original&&number)canceledBy.set(original,number);
+ }
+ const cashVan=/(?:كاش\s*فان|كاش\s*فإن|كاش\s*ڤان|cash[\s-]*van)/i;
+ const institution=/المؤسسة\s*الاستهلاكية\s*العسكرية|مستودع\s*المؤسسة|\b011\b/i;
  const seen=new Set<string>();
  const numberColumn=plainNumbers?0:columns.number;
  const numberHeader=plainNumbers?'':header(serialHeaders(paste)[numberColumn]||'');
@@ -123,6 +139,22 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
   seen.add(number);
   const entry=saved.get(number);
   const row={number,date:date||month,branch:!plainNumbers&&columns.branch>=0?cells[columns.branch]||'':''};
+  const details=[detailCol,remarksCol].filter(index=>index>=0).map(index=>cells[index]||'').join(' ');
+  const from=fromCol>=0?cells[fromCol]||'':'';
+  const to=toCol>=0?cells[toCol]||'':'';
+  const cancelMatch=details.match(/inventory\s+transfer\s+no\.?\s*(\d+)\s+has\s+been\s+canceled/i);
+  if(cancelMatch||canceledBy.has(number)){
+   result.canceled.push({...row,reason:cancelMatch?'حركة إلغاء للترحيل '+cancelMatch[1]:'أُلغي بحركة رقم '+canceledBy.get(number),group:entry?.group});
+   continue;
+  }
+  if(cashVan.test(details)||cashVan.test(row.branch)){
+   result.toCancel.push({...row,reason:'كاش فان — مطلوب التحقق والإلغاء على SAP',group:entry?.group});
+   continue;
+  }
+  if(fromCol>=0&&toCol>=0&&institution.test(from)&&!institution.test(to)){
+   result.reverse.push({...row,reason:'ترحيل عكسي من المؤسسة إلى '+to,group:entry?.group});
+   continue;
+  }
   if(!entry){
    result.missing.push(row);
   }else if(!entry.complete){
