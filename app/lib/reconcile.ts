@@ -125,9 +125,6 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
   const row={number,date:date||month,branch:!plainNumbers&&columns.branch>=0?cells[columns.branch]||'':''};
   if(!entry){
    result.missing.push(row);
-  }else if(!entry.date?.startsWith(month)){
-   result.problems.push('الترحيل '+number+' محفوظ بتاريخ مختلف أو غير صالح؛ راجع التاريخين');
-   result.pending.push({...row,group:entry.group,reason:'اختلاف تاريخ'});
   }else if(!entry.complete){
    result.pending.push({...row,group:entry.group,reason:'الفواتير غير مكتملة'});
   }else{
