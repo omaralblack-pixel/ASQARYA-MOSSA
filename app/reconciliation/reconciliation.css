@@ -48,3 +48,5 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 
 .blue-comparison{display:flex;align-items:center;gap:8px;flex-basis:100%;font-weight:700}
 .blue-comparison small{color:#805c22}
+
+.invoice-fields>.invoice-date-field{grid-column:1/-1}

@@ -106,3 +106,11 @@ assert.equal(reconcile(approved,ref).priceDifference,1);
 assert.equal(reconcile({...approved,invoices:approved.invoices.map((invoice,index)=>index===0?{...invoice,amount:'7.002'}:invoice)},ref).status,'difference');
 assert.equal(reconcile({...approved,invoices:approved.invoices.map(invoice=>({...invoice,complete:false}))},ref).status,'review');
 console.log('PASS: approving a value difference retains the amount, expires when totals change, and cannot override incomplete review.');
+
+const editedDates = withInvoiceDates({...dated,invoices:[
+  {...dated.invoices[0],date:'2026-10-29',manualDate:true},
+  {...dated.invoices[1],date:'',manualDate:false},
+]});
+assert.deepEqual(editedDates.invoices.map(invoice=>invoice.date),['2026-10-29','2026-11-04']);
+assert.equal(withInvoiceDates({...editedDates,invoices:[{...editedDates.invoices[0],manualDate:false}]}).invoices[0].date,'2026-10-31');
+console.log('PASS: manual invoice date survives recalculation and can return to automatic mode.');

@@ -1,7 +1,7 @@
 export type SapAlias={sapCode:string;sapUnit:string;cartonPieces:number|null;kgPerPiece:number|null};
 export type Item={sapAliases?:SapAlias[];code:string;sapCode:string;name:string;sourceName?:string;price:number|null;invoicePack:number|null;cartonPieces:number|null;sapUnit:string;warehouseUnit?:string|null;warehouseName?:string|null;kgPerPiece:number|null;active:boolean};
 export type TransferLine={transferNo?:string;row:number;sapCode:string;name:string;quantity:number;unit:string;from:string;to:string};
-export type Invoice={id:string;title?:string;number:string;date:string;dateTransferNos?:string[];amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];quantities:Record<string,string>};
+export type Invoice={id:string;title?:string;number:string;date:string;dateTransferNos?:string[];manualDate?:boolean;amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];quantities:Record<string,string>};
 export type Transfer={id:string;number:string;date:string;paste:string};
 export type Draft={mode?:'manual';acceptedDifference?:{paper:number;calculated:number};checks?:Record<string,{signature:string;state:'match'|'difference';note?:string}>;pages?:Record<string,string>;id?:string;version?:number;branch:string;driver:string;date:string;transfers:Transfer[];invoices:Invoice[];notes:string;referenceSnapshot?:Item[];useCurrentReference?:boolean;linkedSapCodes?:string[]};
 export function digits(v:string){return v.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)))}
@@ -51,6 +51,7 @@ export function withInvoiceDates<T extends Draft>(draft:T):T {
   return [{number:documentNo(transfer.number),date}];
  }).sort((a,b)=>a.date.localeCompare(b.date));
  return {...draft,invoices:draft.invoices.map(invoice=>{
+  if(invoice.manualDate===true&&dateValue(invoice.date))return invoice;
   const linked=Array.isArray(invoice.dateTransferNos)&&outgoing.find(transfer=>invoice.dateTransferNos!.includes(transfer.number));
   const source=linked||outgoing[0];
   if(!source)return invoice;
