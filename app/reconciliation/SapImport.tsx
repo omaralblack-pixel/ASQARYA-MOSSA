@@ -1,7 +1,8 @@
 'use client';
 
 import {useState} from 'react';
-import {documentNo,transferNumbers,type Draft} from '../lib/reconcile';
+import {Search} from 'lucide-react';
+import {digits,documentNo,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
 
 type SavedRecord={id:string;branch:string;payload:string};
@@ -28,6 +29,7 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
   });
 }
 
+const searchText=(value:string)=>digits(value).trim().toLowerCase().replace(/[أإآٱ]/g,'ا').replace(/[\u064B-\u065F\u0670ـ]/g,'');
 const keyOf=(group:SapImportGroup)=>group.draft.transfers[0].number;
 const isReady=(group:PreviewGroup)=>!group.reversal&&!group.issues.length&&!group.savedIds.length;
 
@@ -46,14 +48,24 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   const [message,setMessage]=useState('');
   const [errors,setErrors]=useState<Record<string,string>>({});
   const [filter,setFilter]=useState('all');
+  const [query,setQuery]=useState('');
   const ready=groups.filter(isReady);
   const selectedGroups=ready.filter(group=>selected.includes(keyOf(group)));
+  const search=searchText(query);
+  const matching=groups.filter(group=>!search||[
+    group.draft.branch,
+    ...group.members.flatMap(member=>[member.transfer.number,member.branchLabel,member.canceledTransferNo||'']),
+    ...group.draft.invoices.map(invoice=>invoice.number),
+  ].some(value=>searchText(value).includes(search)));
   const reversals=groups.filter(group=>group.reversal);
-  const shown=groups.filter(group=>!group.reversal&&(filter==='all'||(
+  const visibleReversals=matching.filter(group=>group.reversal);
+  const shown=matching.filter(group=>!group.reversal&&(filter==='all'||(
     filter==='ready'?isReady(group):
     filter==='saved'?group.allTransfersSaved:
     !isReady(group)&&!group.allTransfersSaved
   )));
+  const shownReady=shown.filter(isReady);
+  const hiddenSelected=selectedGroups.filter(group=>!shown.includes(group)).length;
 
   async function preview(){
     setBusy(true);
@@ -67,6 +79,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       setIssues(result.issues);
       setGroups(compareWithSaved(result.groups,await readRecords()));
       setFilter('all');
+      setQuery('');
     }catch(error){
       setIssues([error instanceof Error?error.message:'تعذّر تجهيز المعاينة']);
     }finally{
@@ -113,12 +126,14 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       setGroups([]);
       setIssues([]);
       setSelected([]);
+      setQuery('');
       setMessage('');
     }}/></label>
     <button className="button primary" type="button" disabled={busy||!paste.trim()} onClick={preview}>معاينة الاستيراد</button>
     {issues.length>0&&<div className="banner error" role="alert">{issues.join(' · ')}</div>}
     {groups.length>0&&<>
       <div className="table-controls">
+        <div className="search"><Search size={16}/><input type="search" aria-label="بحث في نتائج استيراد SAP" placeholder="ابحث برقم الترحيل أو الفاتورة أو الفرع" value={query} onChange={event=>setQuery(event.target.value)}/></div>
         <button className="button secondary" type="button" aria-pressed={filter==='reversal'} onClick={()=>setFilter(filter==='reversal'?'all':'reversal')}>
           {filter==='reversal'?'رجوع لمعاينة الاستيراد':'الترحيلات الملغاة ('+reversals.length+')'}
         </button>
@@ -128,7 +143,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
         <p className="hint">رقم الترحيل الأصلي يُقرأ من Remarks. السطر أدناه يربط الأصل بمستند عكس الإلغاء.</p>
         <div className="table-scroll"><table>
           <thead><tr><th>مستند عكس الإلغاء</th><th>الترحيل الأصلي المقابل</th><th>تاريخ العكس</th><th>الفرع</th><th>البنود</th><th>Remarks</th><th>السجل</th></tr></thead>
-          <tbody>{reversals.map(group=>{
+          <tbody>{visibleReversals.map(group=>{
             const member=group.members[0];
             return <tr key={member.transfer.number}>
               <td><code>{member.transfer.number}</code></td>
@@ -141,7 +156,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
             </tr>;
           })}</tbody>
         </table></div>
-        {!reversals.length&&<p className="hint">ما في مستندات عكس إلغاء بالكشف الملصوق.</p>}
+        {!visibleReversals.length&&<p className="hint">{search?'ما في ترحيلات ملغاة بتطابق البحث.':'ما في مستندات عكس إلغاء بالكشف الملصوق.'}</p>}
       </>:<>
       <div className="table-controls">
         <select aria-label="حالة الاستيراد" value={filter} onChange={event=>setFilter(event.target.value)}>
@@ -150,9 +165,10 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
           <option value="saved">مسجّلة سابقًا</option>
           <option value="review">بحاجة لمراجعة</option>
         </select>
-        <button className="button secondary" type="button" disabled={busy||!ready.length||!!issues.length} onClick={()=>setSelected(ready.map(keyOf))}>تحديد كل المجموعات الجاهزة</button>
+        <button className="button secondary" type="button" disabled={busy||!shownReady.length||!!issues.length} onClick={()=>setSelected(shownReady.map(keyOf))}>تحديد المجموعات الجاهزة الظاهرة</button>
         <button className="button primary" type="button" disabled={busy||!selectedGroups.length||!!issues.length} onClick={saveSelected}>حفظ المحدد ({selectedGroups.length})</button>
       </div>
+      {hiddenSelected>0&&<p className="hint">المحدد يشمل {hiddenSelected} مجموعة خارج النتائج الظاهرة.</p>}
       <p className="hint">الحفظ يسجّل الترحيلات كغير مستلمة ورقيًا. إذا رقم الفاتورة ناقص، بتقدر تضيفه لما توصلك الورقة. إذا ظهر أكثر من رقم فاتورة، وزّع البنود بينها حسب الورق بعد فتح المجموعة.</p>
       {message&&<p role="status">{message}</p>}
       <div className="table-scroll"><table>
@@ -172,7 +188,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
           </tr>;
         })}</tbody>
       </table></div>
-      {!shown.length&&<p className="hint">ما في مجموعات بهالحالة.</p>}
+      {!shown.length&&<p className="hint">{search?'ما في مجموعات بتطابق البحث والفلتر.':'ما في مجموعات بهالحالة.'}</p>}
       </>}
     </>}
   </details>;
