@@ -31,3 +31,8 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 .group-lookup-item{cursor:pointer}
 .group-lookup-item[data-highlighted],.group-lookup-item[data-selected]{background:#e7f3fc;color:#214f80}
 .group-lookup-empty:empty{display:none}
+
+.sap-import>summary{font-size:15px;color:#285974}
+.sap-import .sap-import-check{width:16px;height:16px;min-height:0;accent-color:#21788f}
+.sap-import td details{margin:0}
+.sap-import td .button{margin:2px}
