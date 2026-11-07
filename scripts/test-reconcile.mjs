@@ -96,3 +96,13 @@ const dated = withInvoiceDates({...manual, transfers:[
 ]});
 assert.deepEqual(dated.invoices.map(invoice=>invoice.date),['2026-10-31','2026-11-04']);
 console.log('PASS: blue invoice dates subtract one calendar day, use linked outgoing transfers, and ignore reverse dates.');
+
+const withDifference = {...manual,pages:{},invoices:manual.invoices.map((invoice,index)=>index===0?{...invoice,amount:'7.001'}:invoice)};
+const outstanding = reconcile(withDifference,ref);
+assert.equal(outstanding.status,'difference');
+const approved = {...withDifference,acceptedDifference:{paper:outstanding.total,calculated:outstanding.expected}};
+assert.equal(reconcile(approved,ref).status,'match');
+assert.equal(reconcile(approved,ref).priceDifference,1);
+assert.equal(reconcile({...approved,invoices:approved.invoices.map((invoice,index)=>index===0?{...invoice,amount:'7.002'}:invoice)},ref).status,'difference');
+assert.equal(reconcile({...approved,invoices:approved.invoices.map(invoice=>({...invoice,complete:false}))},ref).status,'review');
+console.log('PASS: approving a value difference retains the amount, expires when totals change, and cannot override incomplete review.');
