@@ -103,6 +103,15 @@ function toggleQuantityCheck(key:string,signature:string){
     return {...d,checks};
   });
 }
+function checkInvoicePage(){
+  if(!selectedInvoice||difference!==0)return;
+  D(current=>{
+    if(!current)return current;
+    const checks={...current.checks};
+    for(const row of pageRows)checks[row.key]={state:'match',signature:checkSignature(row)};
+    return {...current,checks};
+  });
+}
 function removeInvoice(index:number){
   if(!draft)return;
   const removedPage=index+1;
@@ -179,6 +188,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
     <div className="blue-comparison">
       <span>{comparisonLabel}</span>
       {difference!==null?<Badge state={difference===0?'match':'difference'}/>:<small>{expected===null?'قيمة الأصناف غير مكتملة':'أدخل مبلغ الفاتورة الورقية لإظهار النتيجة'}</small>}
+      {selectedInvoice&&<button type="button" className="button secondary small no-print" disabled={busy||difference!==0} onClick={checkInvoicePage}><Check size={14}/>تشييك كل أصناف الفاتورة</button>}
     </div>
   </>}
 </div></div><p className="hint">رقم الفاتورة الزرقاء يحدد لأي ورقة ينتمي الصنف. اكتب رقم الفاتورة الورقية الحقيقي في بطاقة الفاتورة المقابلة، ولا تتغير كميات SAP أو الأسعار.</p>{query&&<p className="amber filter-warning">البحث يحدد البنود المعروضة والمطبوعة. الإجمالي يحسب كل أصناف الصفحة المختارة، أو كل أصناف المجموعة عند اختيار كل الصفحات.</p>}</section><section className="panel save-panel"><label>ملاحظات المجموعة<textarea value={draft.notes} maxLength={5000} onChange={e=>change({notes:e.target.value})} placeholder="أي ملاحظات على المستندات أو الفروقات…"/></label><div className="save-actions"><div><Badge state={result.status}/><small>يمكن حفظ مجموعة تحتاج مراجعة والعودة لإكمالها.</small></div><button className="button primary" disabled={busy} onClick={save}><Save size={17}/>{busy?'جارٍ الحفظ…':draft.id?'حفظ التعديلات':'حفظ مجموعة المطابقة'}</button></div></section></>}
