@@ -8,12 +8,12 @@ type RecordSummary = {id: string; branch: string; doc_date: string; payload: str
 const institution = 'المؤسسة الاستهلاكية العسكرية';
 const headers = ['رقم الفاتورة', 'رقم الصفحة', 'أرقام ترحيلات المجموعة', 'اسم المؤسسة', 'الفرع', 'تاريخ الفاتورة', 'تاريخ المجموعة', 'مبلغ الفاتورة (د.أ)'];
 
-function registerRows(records: RecordSummary[]) {
+function registerRows(records: RecordSummary[], status: 'received' | 'pending' = 'received') {
   return records.flatMap(record => {
     const group: Pick<Draft, 'transfers' | 'invoices'> = JSON.parse(record.payload);
     const transfers = new Map(group.transfers.flatMap(transfer => transferNumbers(transfer.number || '').map(number => [number, dateValue(transfer.date || '') || ''] as const)));
     return group.invoices.flatMap((invoice, index) => {
-      if (!invoice.number?.trim() || invoice.complete !== true) return [];
+      if (!invoice.number?.trim() || (status === 'received' ? invoice.complete !== true : invoice.complete === true)) return [];
       const date = dateValue(invoice.date || '') || '';
       const groupDate = dateValue(record.doc_date || '') || '';
       const amount = fils(invoice.amount || '');
@@ -48,12 +48,15 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
 }) {
   const [query, setQuery] = useState('');
   const [month, setMonth] = useState('');
-  const rows = useMemo(() => registerRows(records), [records]);
+  const [status, setStatus] = useState<'received' | 'pending'>('received');
+  const received = useMemo(() => registerRows(records, 'received'), [records]);
+  const pending = useMemo(() => registerRows(records, 'pending'), [records]);
+  const rows = status === 'received' ? received : pending;
   const visible = rows.filter(row => (!month || row.date.startsWith(month)) && digits(row.values.join(' ')).includes(digits(query.trim())));
 
   async function exportRegister() {
     const {invoiceWorkbook} = await import('../lib/invoice-workbook');
-    const url = URL.createObjectURL(invoiceWorkbook([headers, ...visible.map(row => row.values)]));
+    const url = URL.createObjectURL(invoiceWorkbook([headers, ...visible.filter(row => received.some(item => item.key === row.key)).map(row => row.values)]));
     const link = document.createElement('a');
     link.href = url;
     link.download = 'institution-invoices' + (month ? '-' + month : '') + '.xlsx';
@@ -63,16 +66,17 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
 
   return <>
     <div className="page-title">
-      <div><p className="eyebrow">الأرشيف</p><h1>سجل فواتير المؤسسة</h1><p>الفواتير التي تم تأكيد وصول ورقها فقطة بسطر مستقل مع الترحيلات المرتبطة بمجموعتها.</p></div>
+      <div><p className="eyebrow">الأرشيف</p><h1>سجل فواتير المؤسسة</h1><p>الفواتير الواصلة والمشيّكة منفصلة عن الفواتير التي لم يصل ورقها بعد.</p></div>
       <button className="button secondary" disabled={busy} onClick={refresh}><RefreshCw size={16}/>تحديث</button>
     </div>
-    <section className="panel">
+    <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 210px",gap:16,alignItems:"start"}}>
+    <section className="panel" style={{minWidth:0}}>
       <div className="table-controls">
         <div className="search"><Search size={16}/><input aria-label="بحث في سجل الفواتير" value={query} onChange={e => setQuery(e.target.value)} placeholder="ابحث بالفرع أو رقم الفاتورة أو الترحيل"/></div>
         <label>شهر الفاتورة<input type="month" value={month} onChange={e => setMonth(e.target.value)}/></label>
-        <button className="button secondary" disabled={!visible.length} onClick={exportRegister}><Download size={16}/>تصدير Excel</button>
+        <button className="button secondary" disabled={status !== "received" || !visible.length} onClick={exportRegister}><Download size={16}/>تصدير Excel</button>
       </div>
-      <p className="hint">{visible.length} فاتورة · عند غياب تاريخ الفاتورة يُستخدم تاريخ المجموعة في فلتر الشهر.</p>
+      <p className="hint">{status === "received" ? "فواتير وصلتني وشيّكتها" : "فواتير لم يصل ورقها"} · {visible.length} فاتورة · عند غياب تاريخ الفاتورة يُستخدم تاريخ المجموعة في فلتر الشهر.</p>
       <div className="table-scroll">
         <table><thead><tr>{headers.map(header => <th key={header}>{header}</th>)}<th>المجموعة</th></tr></thead>
           <tbody>{visible.map(row => <tr key={row.key}>
@@ -83,5 +87,12 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
         {!visible.length && <div className="empty">لا توجد فواتير ضمن العرض الحالي.</div>}
       </div>
     </section>
+    <aside className="panel" style={{position:"sticky",top:12,padding:12,display:"grid",gap:10}} aria-label="حالة وصول الفواتير">
+      <strong>حالة الفواتير</strong>
+      <button type="button" className={"button "+(status==="received"?"primary":"secondary")} onClick={()=>setStatus("received")}>واصلاني · شيّكتهم ({received.length})</button>
+      <button type="button" className={"button "+(status==="pending"?"primary":"secondary")} onClick={()=>setStatus("pending")}>لسه مو واصلاني ({pending.length})</button>
+      <p className="hint">الفاتورة تنتقل بين القائمتين حسب خيار «الفاتورة الورقية موجودة لدي» داخل المجموعة. تصدير Excel للفواتير الواصلة فقط.</p>
+    </aside>
+    </div>
   </>;
 }
