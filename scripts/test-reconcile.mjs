@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,withInvoiceDates,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,checkSignature,withInvoiceDates,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -125,3 +125,20 @@ assert.deepEqual(mixedParsed.lines.map(line=>line.from),['001','009']);
 assert.equal(mixedParsed.excluded.length,1);
 assert.equal(reconcile({...manual,transfers:[{...d.transfers[0],paste:mixedWarehouses}]},ref).rows[0].transfer,20);
 console.log('PASS: mixed 001 and 009 lines into 011 are both included.');
+
+// Exclusion affects only the current group and never deletes its SAP lines.
+{
+ const transferPaste=paste([['DAR00047',2,'Piece'],['FVL00302',1,'Carton']]);
+ const fixture={...structuredClone(d),mode:'manual',transfers:[{...d.transfers[0],paste:transferPaste}],invoices:[{...d.invoices[0],amount:'7.000'}]};
+ const localRef=ref.filter(item=>item.sapCode!=='DAR00047');
+ const initial=reconcile(fixture,localRef),unknown=initial.rows.find(row=>row.sapCode==='DAR00047');
+ assert.ok(unknown);assert.equal(initial.review,1);
+ const exclusions={[unknown.key]:checkSignature(unknown)};
+ const excluded=reconcile({...fixture,excludedItems:exclusions},localRef);
+ assert.equal(excluded.review,0);assert.equal(excluded.expected,7000);assert.equal(excluded.excludedRows.length,1);assert.equal(excluded.parsed.lines.length,2);
+ assert.equal(reconcile({...fixture,excludedItems:{}},localRef).review,1);
+ const changedPaste=transferPaste.replace('DAR00047\\ttest\\t99,999\\t2','DAR00047\\ttest\\t99,999\\t4');
+ assert.notEqual(changedPaste,transferPaste);
+ const changed=reconcile({...fixture,excludedItems:exclusions,transfers:[{...fixture.transfers[0],paste:changedPaste}]},localRef);
+ assert.equal(changed.review,1);assert.equal(changed.excludedRows.length,0);
+}

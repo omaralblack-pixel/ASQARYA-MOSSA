@@ -3,7 +3,7 @@ export type Item={sapAliases?:SapAlias[];code:string;sapCode:string;name:string;
 export type TransferLine={transferNo?:string;row:number;sapCode:string;name:string;quantity:number;unit:string;from:string;to:string};
 export type Invoice={id:string;title?:string;number:string;date:string;dateTransferNos?:string[];manualDate?:boolean;manualNumber?:boolean;amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];quantities:Record<string,string>};
 export type Transfer={id:string;number:string;date:string;paste:string};
-export type Draft={mode?:'manual';acceptedDifference?:{paper:number;calculated:number};checks?:Record<string,{signature:string;state:'match'|'difference';note?:string}>;pages?:Record<string,string>;id?:string;version?:number;branch:string;driver:string;date:string;transfers:Transfer[];invoices:Invoice[];notes:string;referenceSnapshot?:Item[];useCurrentReference?:boolean;linkedSapCodes?:string[]};
+export type Draft={excludedItems?:Record<string,string>;mode?:'manual';acceptedDifference?:{paper:number;calculated:number};checks?:Record<string,{signature:string;state:'match'|'difference';note?:string}>;pages?:Record<string,string>;id?:string;version?:number;branch:string;driver:string;date:string;transfers:Transfer[];invoices:Invoice[];notes:string;referenceSnapshot?:Item[];useCurrentReference?:boolean;linkedSapCodes?:string[]};
 export function digits(v:string){return v.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)))}
 export function numeric(v:unknown):number|null{const s=digits(String(v??'')).trim().replace(/٬/g,',').replace(/٫/g,'.');if(!s)return null;if(!/^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(s))return null;const n=Number(s.replace(/,/g,''));return Number.isFinite(n)?n:null}
 export function fils(v:string):number|null{
@@ -173,12 +173,16 @@ function reconcileManual(d:Draft,reference:Item[]){
  const base=reconcileLegacy({...d,mode:undefined,invoices:d.invoices.map(i=>({...i,complete:true,quantities:{}}))},reference);
  const problems=base.problems.filter(p=>!p.includes('اكتمال بنود'));
  if(d.invoices.some(i=>!i.complete))problems.push('أكد وجود كل فاتورة ورقية للمجموعة');
- const rows=base.rows.map(r=>{const c=d.checks?.[r.key],valid=c?.signature===checkSignature(r);const state=r.errors.length?'review':'match';return {...r,invoice:0,difference:null,state}});
+ const excludedRows=base.rows.filter(r=>d.excludedItems?.[r.key]===checkSignature(r));
+ const included=base.rows.filter(r=>d.excludedItems?.[r.key]!==checkSignature(r));
+ const rows=included.map(r=>{const c=d.checks?.[r.key],valid=c?.signature===checkSignature(r);const state=r.errors.length?'review':'match';return {...r,invoice:0,difference:null,state}});
+ const expected=base.rows.length&&rows.every(r=>r.expected!==null)?rows.reduce((sum,r)=>sum+r.expected!,0):null;
+ const priceDifference=base.total===null||expected===null?null:base.total-expected;
  const unchecked=0,review=rows.filter(r=>r.state==='review').length,differences=0;
  for(const r of rows){const page=d.pages?.[r.key];if(page&&(!/^\d+$/.test(digits(page))||pageNumber(page)>d.invoices.length))problems.push('رقم الفاتورة الزرقاء للصنف '+(r.code||r.sapCode)+' غير موجود في الفواتير المسجلة');}
- const status=review||problems.length?'review':differences||base.priceDifference!==null&&base.priceDifference!==0?'difference':base.priceDifference===null?'priceMissing':'match';
- const acceptedDifference=status==='difference'&&base.total!==null&&base.expected!==null
-  &&d.acceptedDifference?.paper===base.total&&d.acceptedDifference.calculated===base.expected;
- return {...base,rows,problems,review:review+unchecked,differences,status:acceptedDifference?'match':status,acceptedDifference,invoiceCalculated:d.invoices.map(()=>null),invoiceAmountDiffs:d.invoices.map(()=>null)};
+ const status=review||problems.length?'review':differences||priceDifference!==null&&priceDifference!==0?'difference':priceDifference===null?'priceMissing':'match';
+ const acceptedDifference=status==='difference'&&base.total!==null&&expected!==null
+  &&d.acceptedDifference?.paper===base.total&&d.acceptedDifference.calculated===expected;
+ return {...base,rows,excludedRows,expected,priceDifference,problems,review:review+unchecked,differences,status:acceptedDifference?'match':status,acceptedDifference,invoiceCalculated:d.invoices.map(()=>null),invoiceAmountDiffs:d.invoices.map(()=>null)};
 }
 labels.unchecked='لم يُشيّك';labels.priceMissing='التشييك مكتمل؛ الأسعار ناقصة';
