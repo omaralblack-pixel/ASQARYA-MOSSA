@@ -73,6 +73,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   const hiddenSelected=selectedGroups.filter(group=>!shown.includes(group)).length;
 
   useEffect(()=>{
+    if(!branches.length)return;
     let active=true;
     async function restore(){
       try{
@@ -89,7 +90,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     }
     void restore();
     return ()=>{active=false};
-  },[]);
+  },[branches]);
 
   async function preview(text=paste,isActive=()=>true){
     setBusy(true);
