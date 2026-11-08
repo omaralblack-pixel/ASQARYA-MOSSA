@@ -61,3 +61,10 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
   .recon-app main:has(> .blue-invoice) > :not(.blue-invoice),
   .recon-app .blue-invoice > :not(.blue-paper){display:none!important}
 }
+
+.notification-backdrop{z-index:100}
+.notification-dialog{max-width:480px;text-align:center}
+.notification-dialog p{color:#344f60;font-size:15px;line-height:1.8;margin:16px 0;overflow-wrap:anywhere;white-space:pre-wrap}
+.notification-heading{display:flex;align-items:center;justify-content:center;gap:10px}
+.notification-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:16px}
+@media print{.notification-backdrop{display:none!important}}

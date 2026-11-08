@@ -51,6 +51,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   const [selected,setSelected]=useState<string[]>([]);
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState('');
+  const [notification,setNotification]=useState<{text:string;error:boolean}|null>(null);
   const [errors,setErrors]=useState<Record<string,string>>({});
   const [filter,setFilter]=useState('all');
   const [query,setQuery]=useState('');
@@ -91,6 +92,10 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     void restore();
     return ()=>{active=false};
   },[branches]);
+
+  useEffect(()=>{if(fileError)setNotification({text:fileError,error:true})},[fileError]);
+  useEffect(()=>{if(issues.length)setNotification({text:issues.join(' · '),error:true})},[issues]);
+  useEffect(()=>{if(message)setNotification({text:message,error:message.startsWith('تعذّر')})},[message]);
 
   async function preview(text=paste,isActive=()=>true){
     setBusy(true);
@@ -213,7 +218,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     }
   }
 
-  return <details className="panel sap-import">
+  return <><details className="panel sap-import">
     <summary>استيراد ترحيلات SAP دفعة واحدة</summary>
     <p className="hint">الصق نتيجة كويري المؤسسة مع عناوين الأعمدة. المعاينة تجمع البنود حسب الترحيل وتقرأ أرقام الفواتير من Remarks.</p>
     <div className="table-controls">
@@ -298,5 +303,5 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       {!shown.length&&<p className="hint">{search?'ما في مجموعات بتطابق البحث والفلتر.':'ما في مجموعات بهالحالة.'}</p>}
       </>}
     </>}
-  </details>;
+  </details>{notification&&<div className="modal-backdrop notification-backdrop"><section className="modal panel notification-dialog" role="alertdialog" aria-modal="true" aria-label={notification.error?'تنبيه':'إشعار'}><h2>{notification.error?'تنبيه':'إشعار'}</h2><p>{notification.text}</p><div className="notification-actions"><button type="button" className="button primary" onClick={()=>setNotification(null)}>حسنًا</button></div></section></div>}</>;
 }
