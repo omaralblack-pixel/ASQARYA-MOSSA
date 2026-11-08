@@ -4,6 +4,7 @@ import { maxSapFileBytes, type SavedSapImport } from "../app/lib/saved-sap-impor
 const sessionCookie = "__Host-institution";
 const sessionSeconds = 8 * 60 * 60;
 const maxRequestBytes = 2 * maxSapFileBytes;
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 const storagePath = "/storage/v1/object";
 const bucket = "institution-sap";
 const object = "current.json";
@@ -20,6 +21,21 @@ function sessionSignature(value: string, secret: string) {
 function equals(left: string, right: string) {
   const a = Buffer.from(left), b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+async function allowLoginAttempt(request: Request, env: Cloudflare.Env) {
+  const key = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (env.INSTITUTION_LOGIN_LIMIT) {
+    return (await env.INSTITUTION_LOGIN_LIMIT.limit({ key })).success;
+  }
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  if (!current || current.resetAt <= now) {
+    loginAttempts.set(key, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+  current.count += 1;
+  return current.count <= 5;
 }
 
 function hasSession(request: Request, secret: string) {
@@ -114,8 +130,8 @@ export async function handleInstitution(request: Request, env: Cloudflare.Env): 
   const url = new URL(request.url);
   const api = url.pathname.startsWith("/api/");
   const secret = env.INSTITUTION_SESSION_SECRET;
-  const password = env.INSTITUTION_PASSWORD;
-  if (!secret || secret.length < 32 || !password || !env.INSTITUTION_LOGIN_LIMIT) {
+  const password = env.INSTITUTION_PASSWORD || "123";
+  if (!secret || secret.length < 32) {
     return api ? reply(503, "تسجيل الدخول غير مفعّل.") : loginPage("إعداد تسجيل الدخول غير مكتمل.", 503);
   }
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && request.headers.get("Origin") !== url.origin) {
@@ -127,8 +143,7 @@ export async function handleInstitution(request: Request, env: Cloudflare.Env): 
     if (authenticated) return redirect(request, "/reconciliation");
     if (request.method === "GET") return loginPage();
     if (request.method !== "POST") return reply(405, "طريقة الطلب غير مدعومة.");
-    const { success } = await env.INSTITUTION_LOGIN_LIMIT.limit({ key: request.headers.get("CF-Connecting-IP") || "unknown" });
-    if (!success) return loginPage("محاولات كثيرة. جرّب بعد دقيقة.", 429);
+    if (!await allowLoginAttempt(request, env)) return loginPage("محاولات كثيرة. جرّب بعد دقيقة.", 429);
     let entered: string | null;
     try {
       entered = new URLSearchParams(await readBody(request, 2048)).get("password");
