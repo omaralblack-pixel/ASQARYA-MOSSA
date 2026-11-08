@@ -4,6 +4,7 @@ import {useEffect,useState,type ChangeEvent} from 'react';
 import {Search} from 'lucide-react';
 import {digits,documentNo,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
+import {mergeSelectedTransfers,isLinkableReverse} from '../lib/link-sap-groups';
 import {deleteSavedSapImport,maxSapFileBytes,readSavedSapImport,saveSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 
 type SavedRecord={id:string;branch:string;payload:string};
@@ -49,6 +50,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   const [groups,setGroups]=useState<PreviewGroup[]>([]);
   const [issues,setIssues]=useState<string[]>([]);
   const [selected,setSelected]=useState<string[]>([]);
+  const [selectedReverse,setSelectedReverse]=useState<string[]>([]);
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState('');
   const [notification,setNotification]=useState<{text:string;error:boolean}|null>(null);
@@ -102,7 +104,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     setMessage('');
     setGroups([]);
     onPreview([],[]);
-    setSelected([]);
+    setSelected([]);setSelectedReverse([]);
     setIssues([]);
     setErrors({});
     try{
@@ -173,7 +175,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       setPaste('');
       setGroups([]);
       setIssues([]);
-      setSelected([]);
+      setSelected([]);setSelectedReverse([]);
       setMessage('');
       onPreview([],[]);
     }catch{
@@ -181,6 +183,28 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     }finally{
       setBusy(false);
     }
+  }
+
+  async function linkSelectedForReview(){
+    setBusy(true);setMessage('');
+    try{
+      if(selected.length!==1)throw Error('حدد مجموعة فواتير واحدة ومربع ترحيل عكسي واحد على الأقل.');
+      const target=groups.find(group=>keyOf(group)===selected[0]);
+      const reverseGroups=groups.filter(group=>selectedReverse.includes(keyOf(group)));
+      if(!target||!isReady(target))throw Error('حدد مجموعة جديدة جاهزة للحفظ.');
+      if(!reverseGroups.length||reverseGroups.length!==selectedReverse.length)throw Error('حدد ترحيلًا عكسيًا واحدًا على الأقل.');
+      const records=await readRecords();
+      const current=compareWithSaved([target,...reverseGroups],records);
+      if(current[0].savedIds.length)throw Error('المجموعة أو الفاتورة سُجلت مسبقًا؛ افتح المجموعة المحفوظة من السجل.');
+      const ownerNumbers=new Set(records.flatMap(record=>{
+        const stored=JSON.parse(record.payload) as Draft;
+        return (stored.transfers||[]).flatMap(transfer=>transferNumbers(transfer.number||''));
+      }));
+      if(reverseGroups.some(group=>group.draft.transfers.some(transfer=>transferNumbers(transfer.number).some(number=>ownerNumbers.has(number)))))throw Error('أحد الترحيلات العكسية مسجل في مجموعة أخرى.');
+      const combined=mergeSelectedTransfers(target,reverseGroups);
+      openDraft(combined);
+    }catch(error){setNotification({text:error instanceof Error?error.message:'تعذر ربط الترحيلات.',error:true})}
+    finally{setBusy(false)}
   }
 
   async function saveSelected(){
@@ -237,7 +261,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       onPreview([],[]);
       setGroups([]);
       setIssues([]);
-      setSelected([]);
+      setSelected([]);setSelectedReverse([]);
       setQuery('');
       setMessage('');
     }}/></label>
@@ -253,12 +277,12 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       {filter==='reversal'?<>
         <h2>الترحيلات الملغاة</h2>
         <p className="hint">رقم الترحيل الأصلي يُقرأ من Remarks. السطر أدناه يربط الأصل بمستند عكس الإلغاء.</p>
-        <div className="table-scroll"><table>
-          <thead><tr><th>مستند عكس الإلغاء</th><th>الترحيل الأصلي المقابل</th><th>تاريخ العكس</th><th>الفرع</th><th>البنود</th><th>Remarks</th><th>السجل</th></tr></thead>
+        <div className="table-controls"><button className="button primary" type="button" disabled={busy||!selectedReverse.length||!!issues.length} onClick={linkSelectedForReview}>ربط المحدد وفتح للمراجعة ({selectedReverse.length} عكسي)</button></div><div className="table-scroll"><table>
+          <thead><tr><th>تحديد</th><th>مستند عكس الإلغاء</th><th>الترحيل الأصلي المقابل</th><th>تاريخ العكس</th><th>الفرع</th><th>البنود</th><th>Remarks</th><th>السجل</th></tr></thead>
           <tbody>{visibleReversals.map(group=>{
             const member=group.members[0];
             return <tr key={member.transfer.number}>
-              <td><code>{member.transfer.number}</code></td>
+              <td>{isLinkableReverse(group)&&<input className="sap-import-check" type="checkbox" aria-label={'تحديد ترحيل عكسي '+member.transfer.number} checked={selectedReverse.includes(keyOf(group))} disabled={busy||!!issues.length} onChange={event=>setSelectedReverse(previous=>event.target.checked?[...previous,keyOf(group)]:previous.filter(item=>item!==keyOf(group)))}/>}</td><td><code>{member.transfer.number}</code></td>
               <td>{member.canceledTransferNo?<code>{member.canceledTransferNo}</code>:'رقم الأصل غير مذكور'}</td>
               <td>{member.transfer.date||'—'}</td>
               <td>{member.branch||member.branchLabel||'—'}</td>
@@ -278,9 +302,11 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
           <option value="review">بحاجة لمراجعة</option>
         </select>
         <button className="button secondary" type="button" disabled={busy||!shownReady.length||!!issues.length} onClick={()=>setSelected(shownReady.map(keyOf))}>تحديد المجموعات الجاهزة الظاهرة</button>
-        <button className="button primary" type="button" disabled={busy||!selectedGroups.length||!!issues.length} onClick={saveSelected}>حفظ المحدد ({selectedGroups.length})</button>
+        <button className="button primary" type="button" disabled={busy||!selectedGroups.length||!!issues.length||!!selectedReverse.length} onClick={saveSelected}>حفظ المحدد ({selectedGroups.length})</button>
+        <button className="button secondary" type="button" disabled={busy||!selectedReverse.length||!!issues.length} onClick={linkSelectedForReview}>ربط المحدد وفتح للمراجعة ({selectedReverse.length} عكسي)</button>
       </div>
       {hiddenSelected>0&&<p className="hint">المحدد يشمل {hiddenSelected} مجموعة خارج النتائج الظاهرة.</p>}
+      <p className="hint">للربط: حدد مجموعة فواتير واحدة، ثم حدد الترحيلات العكسية المطلوبة واضغط «ربط المحدد وفتح للمراجعة». بعدها احفظ المجموعة من شاشة المطابقة.</p>
       <p className="hint">الحفظ يسجّل الترحيلات كغير مستلمة ورقيًا. إذا رقم الفاتورة ناقص، بتقدر تضيفه لما توصلك الورقة. إذا ظهر أكثر من رقم فاتورة، وزّع البنود بينها حسب الورق بعد فتح المجموعة.</p>
       {message&&<p role="status">{message}</p>}
       <div className="table-scroll"><table>
@@ -288,7 +314,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
         <tbody>{shown.map(group=>{
           const key=keyOf(group);
           return <tr key={key}>
-            <td>{isReady(group)&&<input className="sap-import-check" type="checkbox" aria-label={'تحديد مجموعة '+key} checked={selected.includes(key)} disabled={busy||!!issues.length} onChange={event=>setSelected(previous=>event.target.checked?[...previous,key]:previous.filter(item=>item!==key))}/>}</td>
+            <td>{isReady(group)?<input className="sap-import-check" type="checkbox" aria-label={'تحديد مجموعة '+key} checked={selected.includes(key)} disabled={busy||!!issues.length} onChange={event=>setSelected(previous=>event.target.checked?[...previous,key]:previous.filter(item=>item!==key))}/>:isLinkableReverse(group)&&<input className="sap-import-check" type="checkbox" aria-label={'تحديد ترحيل عكسي '+key} checked={selectedReverse.includes(key)} disabled={busy||!!issues.length} onChange={event=>setSelectedReverse(previous=>event.target.checked?[...previous,key]:previous.filter(item=>item!==key))}/>}</td>
             <td>{group.members.map(item=><details key={item.transfer.number}><summary><code>{item.transfer.number}</code></summary><p dir="auto">{item.remarks||'بدون Remarks'}</p></details>)}</td>
             <td>{group.draft.branch||group.members[0].branchLabel||'—'}</td>
             <td dir="ltr">{group.draft.invoices.map(invoice=>invoice.number).filter(Boolean).join('، ')||'—'}</td>
