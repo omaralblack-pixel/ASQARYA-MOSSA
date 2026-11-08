@@ -8,6 +8,8 @@ export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer,inv
  if([a.number,b.number].some(x=>x&&documentNo(x)!==number))throw Error('رقم الفاتورة مختلف بين السجلين.');
  if(a.amount&&b.amount&&a.amount!==b.amount)throw Error('مبلغ الفاتورة مختلف بين السجلين.');
  if(a.date&&b.date&&a.date!==b.date)throw Error('تاريخ الفاتورة مختلف بين السجلين.');
+ if(a.title&&b.title&&a.title!==b.title)throw Error('عنوان الفاتورة مختلف بين السجلين.');
+ if((primary.notes+'\n'+other.notes).length>5000)throw Error('الملاحظات أطول من الحد؛ راجعها قبل الدمج.');
  if(JSON.stringify(primary.referenceSnapshot)!==JSON.stringify(other.referenceSnapshot))throw Error('مرجع السجلين مختلف؛ يلزم مراجعة الأسعار والشدات.');
  if(primary.driver&&other.driver&&primary.driver!==other.driver)throw Error('اسم السائق مختلف بين السجلين.');
  if(Object.keys(a.quantities||{}).length||Object.keys(b.quantities||{}).length)throw Error('توجد كميات فاتورة مدخلة يدويًا؛ يلزم مراجعتها.');
@@ -19,6 +21,8 @@ export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer,inv
  const transfers=[...primary.transfers,...other.transfers,reverse],numbers=transfers.flatMap(t=>transferNumbers(t.number));
  if(numbers.length!==new Set(numbers).size)throw Error('رقم ترحيل مكرر.');
  if(transfers.length>30)throw Error('عدد الترحيلات يتجاوز الحد.');
- const invoice={...a,number,amount:a.amount||b.amount,date:a.date||b.date,complete:a.complete||b.complete,manualNumber:true};
- return {...primary,driver:primary.driver||other.driver,invoices:[invoice],transfers,checks,pages:mergeMap(primary.pages,other.pages),excludedItems:mergeMap(primary.excludedItems,other.excludedItems),notes:[primary.notes,other.notes].filter(Boolean).join('\n'),acceptedDifference:undefined};
+ const invoice={...a,number,amount:a.amount||b.amount,date:a.date||b.date,title:a.title||b.title,complete:a.complete||b.complete,manualDate:a.manualDate||b.manualDate,manualNumber:true,dateTransferNos:[...new Set([...(a.dateTransferNos||[]),...(b.dateTransferNos||[])])]};
+ const firstOrder=(primary as Draft&{pageEntryOrder?:string[]}).pageEntryOrder||[],secondOrder=(other as Draft&{pageEntryOrder?:string[]}).pageEntryOrder||[];
+ const pageEntryOrder=[...new Set([...firstOrder,...secondOrder])];
+ return {...primary,pageEntryOrder,driver:primary.driver||other.driver,invoices:[invoice],transfers,checks,pages:mergeMap(primary.pages,other.pages),excludedItems:mergeMap(primary.excludedItems,other.excludedItems),notes:[primary.notes,other.notes].filter(Boolean).join('\n'),acceptedDifference:undefined};
 }
