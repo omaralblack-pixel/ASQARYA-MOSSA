@@ -1,0 +1,14 @@
+import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
+const compile=source=>ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+const asUrl=code=>'data:text/javascript;base64,'+Buffer.from(code).toString('base64');
+const reconcileUrl=asUrl(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
+const source=fs.readFileSync('app/lib/history-export.ts','utf8').replace("'./reconcile'","'"+reconcileUrl+"'");
+const {historyExportRows}=await import(asUrl(compile(source)));
+const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
+const paste=(from,to)=>header+'\nCHS00033\tCheese\t2\tPiece\t'+from+'\t'+to;
+const draft={transfers:[{number:'1001',paste:paste('001','011')},{number:'1002',paste:paste('011','001')},{number:'1003',paste:''}],invoices:[{number:'123',date:'2026-11-07',amount:'13.250',complete:true},{number:'124',date:'2026-11-08',amount:'',complete:false}]};
+const rows=historyExportRows([{id:'1',branch:'2 — أسواق طارق',doc_date:'2026-11-08',payload:JSON.stringify(draft)}]);
+assert.equal(rows.length,3);
+assert.deepEqual(rows[1],['123','2 — أسواق طارق','2026-11-07','1001','1002','1003','واصلاني','13.250']);
+assert.equal(rows[2][6],'غير مكتملة');assert.equal(rows[2][7],'');
+console.log('PASS: history export preserves all invoices and transfer directions');
