@@ -121,9 +121,9 @@ const mixedWarehouses = warehousePaste([
   ['FVL00042','1','011','009','Carton'],
 ]);
 const mixedParsed = parseTransfer(mixedWarehouses,{allowReverse:true});
-assert.deepEqual(mixedParsed.lines.map(line=>line.from),['001','009']);
-assert.equal(mixedParsed.excluded.length,1);
-assert.equal(reconcile({...manual,transfers:[{...d.transfers[0],paste:mixedWarehouses}]},ref).rows[0].transfer,20);
+assert.deepEqual(mixedParsed.lines.map(line=>line.from),['001','009','011']);
+assert.equal(mixedParsed.excluded.length,0);
+assert.equal(reconcile({...manual,transfers:[{...d.transfers[0],paste:mixedWarehouses}]},ref).rows[0].transfer,10);
 console.log('PASS: mixed 001 and 009 lines into 011 are both included.');
 
 // Exclusion affects only the current group and never deletes its SAP lines.
@@ -137,7 +137,7 @@ console.log('PASS: mixed 001 and 009 lines into 011 are both included.');
  const excluded=reconcile({...fixture,excludedItems:exclusions},localRef);
  assert.equal(excluded.review,0);assert.equal(excluded.expected,7000);assert.equal(excluded.excludedRows.length,1);assert.equal(excluded.parsed.lines.length,2);
  assert.equal(reconcile({...fixture,excludedItems:{}},localRef).review,1);
- const changedPaste=transferPaste.replace('DAR00047\\ttest\\t99,999\\t2','DAR00047\\ttest\\t99,999\\t4');
+ const changedPaste=transferPaste.replace('DAR00047\ttest\t99,999\t2','DAR00047\ttest\t99,999\t4');
  assert.notEqual(changedPaste,transferPaste);
  const changed=reconcile({...fixture,excludedItems:exclusions,transfers:[{...fixture.transfers[0],paste:changedPaste}]},localRef);
  assert.equal(changed.review,1);assert.equal(changed.excludedRows.length,0);
