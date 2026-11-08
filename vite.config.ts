@@ -17,6 +17,7 @@ const managedLinux = readExecutionProfile() === "managed-linux";
 
 const localBindingConfig = (command: "build" | "serve") => ({
   main: "./worker/index.ts",
+  keep_vars: true,
   compatibility_flags: ["nodejs_compat"],
   vars: { SUPABASE_URL: "https://kgzmusavcsbsxqftdjcg.supabase.co" },
   ratelimits: [{ name: "INSTITUTION_LOGIN_LIMIT", namespace_id: "1001", simple: { limit: 5, period: 60 as const } }],
