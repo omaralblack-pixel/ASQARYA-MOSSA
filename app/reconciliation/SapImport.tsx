@@ -82,7 +82,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
         setPaste(saved.text);
         await preview(saved.text,()=>active);
       }catch{
-        if(active)setFileError('تعذّر قراءة ملف SAP المحفوظ على هذا المتصفح.');
+        if(active)setFileError('تعذّر قراءة ملف SAP المحفوظ على Supabase.');
       }finally{
         if(active)setLoadingFile(false);
       }
@@ -158,7 +158,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   }
 
   async function removeFile(){
-    if(!confirm('حذف ملف SAP المحفوظ من هذا المتصفح؟'))return;
+    if(!confirm('حذف ملف SAP المحفوظ من Supabase؟'))return;
     setFileError('');
     setBusy(true);
     try{
@@ -224,7 +224,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       {savedFile&&<button className="button secondary" type="button" disabled={busy||loadingFile} onClick={removeFile}>حذف الملف المحفوظ</button>}
     </div>
     {loadingFile&&<p className="hint">جاري استرجاع كشف SAP المحفوظ…</p>}
-    {savedFile&&<p className="hint">الملف المحفوظ على هذا المتصفح <b dir="auto">{savedFile.name}</b>{paste!==savedFile.text?' · عندك تعديلات غير محفوظة':''}</p>}
+    {savedFile&&<p className="hint">الملف المحفوظ على Supabase <b dir="auto">{savedFile.name}</b>{paste!==savedFile.text?' · عندك تعديلات غير محفوظة':''}</p>}
     {fileError&&<div className="banner error" role="alert">{fileError}</div>}
     <label>كشف SAP<textarea className="serial-input" dir="ltr" value={paste} disabled={busy||loadingFile} onChange={event=>{
       setPaste(event.target.value);
