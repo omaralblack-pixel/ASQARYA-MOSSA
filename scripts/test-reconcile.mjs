@@ -114,3 +114,14 @@ const editedDates = withInvoiceDates({...dated,invoices:[
 assert.deepEqual(editedDates.invoices.map(invoice=>invoice.date),['2026-10-29','2026-11-04']);
 assert.equal(withInvoiceDates({...editedDates,invoices:[{...editedDates.invoices[0],manualDate:false}]}).invoices[0].date,'2026-10-31');
 console.log('PASS: manual invoice date survives recalculation and can return to automatic mode.');
+
+const mixedWarehouses = warehousePaste([
+  ['FVL00042','1','001','011','Carton'],
+  ['FVL00042','1','009','011','Carton'],
+  ['FVL00042','1','011','009','Carton'],
+]);
+const mixedParsed = parseTransfer(mixedWarehouses,{allowReverse:true});
+assert.deepEqual(mixedParsed.lines.map(line=>line.from),['001','009']);
+assert.equal(mixedParsed.excluded.length,1);
+assert.equal(reconcile({...manual,transfers:[{...d.transfers[0],paste:mixedWarehouses}]},ref).rows[0].transfer,20);
+console.log('PASS: mixed 001 and 009 lines into 011 are both included.');
