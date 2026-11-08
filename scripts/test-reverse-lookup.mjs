@@ -1,0 +1,17 @@
+import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
+const compile=source=>ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+const url=code=>'data:text/javascript;base64,'+Buffer.from(code).toString('base64');
+const reconcileUrl=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
+const {parseTransfer}=await import(reconcileUrl);
+const importer=fs.readFileSync('app/lib/sap-import.ts','utf8').replace("'./reconcile'","'"+reconcileUrl+"'");
+const {parseSapImport}=await import(url(compile(importer)));
+const route=fs.readFileSync('app/api/reconcile/route.ts','utf8');
+const pattern=route.match(/if\(!\/(\^.*?\$)\/\.test\(number\)\)return json\(\{error:'رقم الترحيل غير صالح'/);
+assert.ok(pattern);const valid=new RegExp(pattern[1]);assert.ok(valid.test('2616052'));assert.ok(!valid.test('x2616052'));
+const headers=['رقم الترحيل','تاريخ الترحيل','كود الفرع','اسم الفرع','Remarks','Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'];
+const row=['2616052','08/11/2026','1','Branch','Inventory transfer no. 2616000 has been canceled','DAR00047','Milk','2','Piece','011','001'];
+const parsed=parseSapImport(headers.join('\t')+'\n'+row.join('\t'),['1 — Branch']);
+const group=parsed.groups[0],member=group.members[0];
+assert.equal(group.reversal,true);assert.equal(member.reverseMovement,true);assert.deepEqual(member.issues,[]);
+assert.equal(parseTransfer(member.transfer.paste,{allowReverse:true}).lines[0].quantity,-2);
+console.log('PASS: transfer number validation and reverse quantities');

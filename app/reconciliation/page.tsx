@@ -166,7 +166,7 @@ async function addTransferFromSavedFile(){
     if(response.ok&&found.recordId!==draft.id){setSearchTransferError('الترحيل مسجل في مجموعة أخرى. افتح المجموعة من السجل لتجنب التكرار.');return}
     if(!response.ok&&response.status!==404)throw Error(found.error||'تعذّر التحقق من سجل الترحيلات.');
     if(!member){setSearchTransferMissing(true);return}
-    if(group?.reversal||member.issues.length){setSearchTransferError('الترحيل موجود في الملف لكنه يحتاج مراجعة: '+(member.issues.join('، ')||'راجع نوع الحركة.'));return}
+    if((group?.reversal&&!member.reverseMovement)||member.issues.length){setSearchTransferError('الترحيل موجود في الملف لكنه يحتاج مراجعة: '+(member.issues.join('، ')||'راجع نوع الحركة.'));return}
     if(draft.branch&&member.branch&&draft.branch!==member.branch){setSearchTransferError('الترحيل تابع لفرع '+member.branch+'، والمجموعة الحالية لفرع مختلف.');return}
     D(current=>{
       if(!current||current.transfers.some(row=>transferNumbers(row.number).includes(number)))return current;
