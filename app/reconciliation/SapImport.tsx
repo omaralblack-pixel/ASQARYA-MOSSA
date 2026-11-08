@@ -1,9 +1,10 @@
 'use client';
 
-import {useState} from 'react';
+import {useEffect,useState,type ChangeEvent} from 'react';
 import {Search} from 'lucide-react';
 import {digits,documentNo,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
+import {deleteSavedSapImport,maxSapFileBytes,readSavedSapImport,saveSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 
 type SavedRecord={id:string;branch:string;payload:string};
 type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;originalRecordId?:string};
@@ -42,6 +43,9 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   onPreview:(groups:SapImportGroup[],records:SavedRecord[])=>void;
 }){
   const [paste,setPaste]=useState('');
+  const [savedFile,setSavedFile]=useState<SavedSapImport>();
+  const [loadingFile,setLoadingFile]=useState(true);
+  const [fileError,setFileError]=useState('');
   const [groups,setGroups]=useState<PreviewGroup[]>([]);
   const [issues,setIssues]=useState<string[]>([]);
   const [selected,setSelected]=useState<string[]>([]);
@@ -68,7 +72,26 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   const shownReady=shown.filter(isReady);
   const hiddenSelected=selectedGroups.filter(group=>!shown.includes(group)).length;
 
-  async function preview(){
+  useEffect(()=>{
+    let active=true;
+    async function restore(){
+      try{
+        const saved=await readSavedSapImport();
+        if(!active||!saved)return;
+        setSavedFile(saved);
+        setPaste(saved.text);
+        await preview(saved.text,()=>active);
+      }catch{
+        if(active)setFileError('تعذّر قراءة ملف SAP المحفوظ على هذا المتصفح.');
+      }finally{
+        if(active)setLoadingFile(false);
+      }
+    }
+    void restore();
+    return ()=>{active=false};
+  },[]);
+
+  async function preview(text=paste,isActive=()=>true){
     setBusy(true);
     setMessage('');
     setGroups([]);
@@ -77,15 +100,78 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     setIssues([]);
     setErrors({});
     try{
-      const result=parseSapImport(paste,branches);
+      const result=parseSapImport(text,branches);
       setIssues(result.issues);
       const records=await readRecords();
+      if(!isActive())return;
       setGroups(compareWithSaved(result.groups,records));
       onPreview(result.issues.length?[]:result.groups,records);
       setFilter('all');
       setQuery('');
     }catch(error){
-      setIssues([error instanceof Error?error.message:'تعذّر تجهيز المعاينة']);
+      if(isActive())setIssues([error instanceof Error?error.message:'تعذّر تجهيز المعاينة']);
+    }finally{
+      if(isActive())setBusy(false);
+    }
+  }
+
+  async function persist(file:SavedSapImport){
+    if(!file.text.trim())throw Error('كشف SAP فارغ.');
+    const result=parseSapImport(file.text,branches);
+    if(result.issues.length||!result.groups.length)throw Error(result.issues[0]||'الملف لا يحتوي على ترحيلات قابلة للقراءة.');
+    await saveSapImport(file);
+    setSavedFile(file);
+    setPaste(file.text);
+    await preview(file.text);
+  }
+
+  async function uploadFile(event:ChangeEvent<HTMLInputElement>){
+    const input=event.currentTarget;
+    const file=input.files?.[0];
+    input.value='';
+    if(!file)return;
+    setFileError('');
+    setBusy(true);
+    try{
+      if(!/\.txt$/i.test(file.name))throw Error('اختار ملف TXT.');
+      if(file.size>maxSapFileBytes)throw Error('حجم الملف يتجاوز 16 ميغابايت.');
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      const encoding=bytes[0]===255&&bytes[1]===254?'utf-16le':bytes[0]===254&&bytes[1]===255?'utf-16be':'utf-8';
+      await persist({name:file.name,text:new TextDecoder(encoding,{fatal:true}).decode(bytes)});
+    }catch(error){
+      setFileError(error instanceof Error?error.message:'تعذّر رفع الملف وحفظه.');
+    }finally{
+      setBusy(false);
+    }
+  }
+
+  async function saveEdits(){
+    setFileError('');
+    setBusy(true);
+    try{
+      await persist({name:savedFile?.name||'SAP.txt',text:paste});
+    }catch(error){
+      setFileError(error instanceof Error?error.message:'تعذّر حفظ التعديلات.');
+    }finally{
+      setBusy(false);
+    }
+  }
+
+  async function removeFile(){
+    if(!confirm('حذف ملف SAP المحفوظ من هذا المتصفح؟'))return;
+    setFileError('');
+    setBusy(true);
+    try{
+      await deleteSavedSapImport();
+      setSavedFile(undefined);
+      setPaste('');
+      setGroups([]);
+      setIssues([]);
+      setSelected([]);
+      setMessage('');
+      onPreview([],[]);
+    }catch{
+      setFileError('تعذّر حذف ملف SAP المحفوظ.');
     }finally{
       setBusy(false);
     }
@@ -129,7 +215,18 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   return <details className="panel sap-import">
     <summary>استيراد ترحيلات SAP دفعة واحدة</summary>
     <p className="hint">الصق نتيجة كويري المؤسسة مع عناوين الأعمدة. المعاينة تجمع البنود حسب الترحيل وتقرأ أرقام الفواتير من Remarks.</p>
-    <label>كشف SAP<textarea className="serial-input" dir="ltr" value={paste} disabled={busy} onChange={event=>{
+    <div className="table-controls">
+      <label className="button secondary sap-file-picker">
+        {savedFile?'استبدال ملف TXT':'إرفاق ملف TXT'}
+        <input type="file" accept=".txt,text/plain" disabled={busy||loadingFile} aria-label={savedFile?'استبدال ملف TXT':'إرفاق ملف TXT'} onChange={uploadFile}/>
+      </label>
+      <button className="button secondary" type="button" disabled={busy||loadingFile||!paste.trim()||paste===savedFile?.text} onClick={saveEdits}>حفظ نص الكشف</button>
+      {savedFile&&<button className="button secondary" type="button" disabled={busy||loadingFile} onClick={removeFile}>حذف الملف المحفوظ</button>}
+    </div>
+    {loadingFile&&<p className="hint">جاري استرجاع كشف SAP المحفوظ…</p>}
+    {savedFile&&<p className="hint">الملف المحفوظ على هذا المتصفح <b dir="auto">{savedFile.name}</b>{paste!==savedFile.text?' · عندك تعديلات غير محفوظة':''}</p>}
+    {fileError&&<div className="banner error" role="alert">{fileError}</div>}
+    <label>كشف SAP<textarea className="serial-input" dir="ltr" value={paste} disabled={busy||loadingFile} onChange={event=>{
       setPaste(event.target.value);
       onPreview([],[]);
       setGroups([]);
@@ -138,7 +235,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       setQuery('');
       setMessage('');
     }}/></label>
-    <button className="button primary" type="button" disabled={busy||!paste.trim()} onClick={preview}>معاينة الاستيراد</button>
+    <button className="button primary" type="button" disabled={busy||loadingFile||!paste.trim()} onClick={()=>preview()}>معاينة الاستيراد</button>
     {issues.length>0&&<div className="banner error" role="alert">{issues.join(' · ')}</div>}
     {groups.length>0&&<>
       <div className="table-controls">
