@@ -132,7 +132,13 @@ async function savedImport(request: Request, env: Cloudflare.Env) {
   }
   try {
     const result = await fetch(url, { method: method === "PUT" ? "POST" : method, headers, body });
-    if (method === "GET" && result.status === 404) return Response.json(null, { headers: privateHeaders });
+    if (method === "GET" && !result.ok) {
+      const detail = await result.json().catch(() => null) as { code?: string; statusCode?: string | number; error?: string; message?: string } | null;
+      const missing = detail?.code === "NoSuchKey" ||
+        (result.status === 404 && !detail?.code) ||
+        (result.status === 400 && String(detail?.statusCode) === "404" && detail?.message === "Object not found");
+      if (missing) return Response.json(null, { headers: privateHeaders });
+    }
     if (!result.ok) return reply(502, "تعذّر الوصول إلى كشف SAP على Supabase.");
     if (method === "GET") {
       return new Response(result.body, { headers: { ...privateHeaders, "Content-Type": "application/json" } });
