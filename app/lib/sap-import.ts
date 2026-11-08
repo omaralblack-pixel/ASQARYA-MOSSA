@@ -12,6 +12,7 @@ type SapTransfer={
   invoices:string[];
   lineCount:number;
   reversal:boolean;
+  reverseMovement:boolean;
   canceledTransferNo?:string;
   issues:string[];
 };
@@ -63,15 +64,16 @@ export function parseSapImport(paste:string,branches:string[]):{groups:SapImport
     const date=dateValue(dateText.replace(/\./g,'/'))||'';
     const branch=branchesByCode.get(digits(branchCode))||(!branchCode&&branchName?branchesByName.get(branchName):'')||'';
     const transfer={id:'sap-'+number,number,date,paste:[transferHeader,...entry.lines].join('\n')};
-    const parsed=parseTransfer(transfer.paste);
+    const parsed=parseTransfer(transfer.paste,{allowReverse:true});
+    const reverseMovement=parsed.lines.some(line=>line.from==='011');
     const itemIssues:string[]=[];
     if(entry.conflict)itemIssues.push('بيانات الترحيل تختلف بين سطوره');
     if(!date)itemIssues.push('تاريخ الترحيل غير صالح');
-    if(!branch)itemIssues.push('الفرع غير معروف');
+    if(!branch&&!reverseMovement)itemIssues.push('الفرع غير معروف');
     if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length)itemIssues.push('راجع بنود الترحيل أو وحداته أو مستودعاته');
     const canceledTransferNo=digits(remarks).match(/\binventory transfer no\.?\s*(\d+)\s+has been canceled\b/i)?.[1];
-    const member={transfer,canceledTransferNo,branch,branchLabel:branchName||branchCode,remarks,invoices:entry.reversal?[]:readInvoices(remarks),lineCount:entry.lines.length,reversal:entry.reversal,issues:itemIssues};
-    const keys=branch&&!entry.reversal&&!entry.conflict?member.invoices.map(invoice=>branch+'|'+invoice):[];
+    const member={transfer,reverseMovement,canceledTransferNo,branch,branchLabel:branchName||branchCode,remarks,invoices:entry.reversal?[]:readInvoices(remarks),lineCount:entry.lines.length,reversal:entry.reversal,issues:itemIssues};
+    const keys=branch&&!entry.reversal&&!entry.conflict&&!reverseMovement?member.invoices.map(invoice=>branch+'|'+invoice):[];
     const connected=[...new Set(keys.flatMap(key=>invoiceGroups.has(key)?[invoiceGroups.get(key)!]:[]))];
     const members=connected[0]||[];
     for(const other of connected.slice(1)){
@@ -89,6 +91,7 @@ export function parseSapImport(paste:string,branches:string[]):{groups:SapImport
     const invoiceNumbers=[...new Set(members.flatMap(item=>item.invoices))];
     const date=members[0].transfer.date;
     const groupIssues=[...new Set(members.flatMap(item=>item.issues))];
+    if(members.some(item=>item.reverseMovement))groupIssues.push('ترحيل عكسي — اربطه بمجموعة الفواتير بإدخال رقمه');
     const notes=members.map(item=>item.transfer.number+' — '+item.remarks).join('\n');
     if(members.length>30||invoiceNumbers.length>30||notes.length>5000)groupIssues.push('المجموعة أكبر من حد الحفظ؛ قسّمها يدويًا');
     const draft:Draft={

@@ -33,12 +33,13 @@ const searchText=(value:string)=>digits(value).trim().toLowerCase().replace(/[أ
 const keyOf=(group:SapImportGroup)=>group.draft.transfers[0].number;
 const isReady=(group:PreviewGroup)=>!group.reversal&&!group.issues.length&&!group.savedIds.length;
 
-export default function SapImport({branches,readRecords,saveDraft,openDraft,openSaved}:{
+export default function SapImport({branches,readRecords,saveDraft,openDraft,openSaved,onPreview}:{
   branches:string[];
   readRecords:()=>Promise<SavedRecord[]>;
   saveDraft:(draft:Draft)=>Promise<string>;
   openDraft:(draft:Draft)=>void;
   openSaved:(id:string)=>void;
+  onPreview:(groups:SapImportGroup[],records:SavedRecord[])=>void;
 }){
   const [paste,setPaste]=useState('');
   const [groups,setGroups]=useState<PreviewGroup[]>([]);
@@ -71,13 +72,16 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     setBusy(true);
     setMessage('');
     setGroups([]);
+    onPreview([],[]);
     setSelected([]);
     setIssues([]);
     setErrors({});
     try{
       const result=parseSapImport(paste,branches);
       setIssues(result.issues);
-      setGroups(compareWithSaved(result.groups,await readRecords()));
+      const records=await readRecords();
+      setGroups(compareWithSaved(result.groups,records));
+      onPreview(result.issues.length?[]:result.groups,records);
       setFilter('all');
       setQuery('');
     }catch(error){
@@ -94,7 +98,9 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     let saved=0;
     let failed=0;
     try{
-      const current=compareWithSaved(selectedGroups,await readRecords());
+      const records=await readRecords();
+      const current=compareWithSaved(selectedGroups,records);
+      const newlySaved:SavedRecord[]=[];
       for(const group of current){
         const key=keyOf(group);
         try{
@@ -104,12 +110,14 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
           }
           const id=await saveDraft(group.draft);
           saved++;
+          newlySaved.push({id,branch:group.draft.branch,payload:JSON.stringify(group.draft)});
           setGroups(previous=>previous.map(row=>keyOf(row)===key?{...row,savedIds:[id],allTransfersSaved:true}:row));
         }catch(error){
           failed++;
           setErrors(previous=>({...previous,[key]:error instanceof Error?error.message:'تعذّر الحفظ'}));
         }
       }
+      onPreview(groups,[...records,...newlySaved]);
       setMessage('تم حفظ '+saved+' مجموعة'+(failed?'، و'+failed+' بحاجة لمراجعة.':'.'));
     }catch(error){
       setMessage(error instanceof Error?error.message:'تعذّر التحقق من السجل');
@@ -123,6 +131,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     <p className="hint">الصق نتيجة كويري المؤسسة مع عناوين الأعمدة. المعاينة تجمع البنود حسب الترحيل وتقرأ أرقام الفواتير من Remarks.</p>
     <label>كشف SAP<textarea className="serial-input" dir="ltr" value={paste} disabled={busy} onChange={event=>{
       setPaste(event.target.value);
+      onPreview([],[]);
       setGroups([]);
       setIssues([]);
       setSelected([]);
