@@ -48,10 +48,11 @@ function reverseProblem(group:PreviewGroup):string{
 }
 
 
-export default function SapImport({branches,readRecords,readSavedDraft,saveDraft,openDraft,openSaved,onPreview}:{
+export default function SapImport({branches,readRecords,readSavedDraft,mergeSavedGroups,saveDraft,openDraft,openSaved,onPreview}:{
   branches:string[];
   readRecords:()=>Promise<SavedRecord[]>;
   readSavedDraft:(id:string)=>Promise<Draft>;
+  mergeSavedGroups:(first:Draft,second:Draft,reverse:Draft['transfers'][number],invoice:string)=>Promise<void>;
   saveDraft:(draft:Draft)=>Promise<string>;
   openDraft:(draft:Draft)=>void;
   openSaved:(id:string)=>void;
@@ -249,6 +250,29 @@ export default function SapImport({branches,readRecords,readSavedDraft,saveDraft
     finally{setBusy(false)}
   }
 
+  async function mergeSavedForInvoice(){
+    setBusy(true);setMessage('');
+    try{
+      if(!savedTarget||selectedReverse.length!==1)throw Error('اختر سجلًا محفوظًا وحدد ترحيلًا عكسيًا واحدًا.');
+      const group=groups.find(g=>keyOf(g)===savedTarget.key);
+      const reverseGroup=groups.find(g=>keyOf(g)===selectedReverse[0]);
+      if(!group||group.savedIds.length!==2||!reverseGroup||!isLinkableReverse(reverseGroup)||reverseGroup.members.length!==1)throw Error('يلزم سجلان محفوظان وترحيل عكسي صالح.');
+      const invoiceNumbers=group.draft.invoices.map(i=>documentNo(i.number)).filter(Boolean);
+      if(invoiceNumbers.length!==1)throw Error('يلزم رقم فاتورة زرقاء واحد واضح في كشف SAP.');
+      const records=await readRecords();const fresh=compareWithSaved([group,reverseGroup],records);
+      if(fresh[0].savedIds.length!==2||!fresh[0].savedIds.includes(savedTarget.id))throw Error('تغيرت السجلات؛ أعد المعاينة.');
+      const otherId=fresh[0].savedIds.find(id=>id!==savedTarget.id)!;
+      const [first,second]=await Promise.all([readSavedDraft(savedTarget.id),readSavedDraft(otherId)]);
+      const member=reverseGroup.members[0];
+      if(member.branch&&member.branch!==first.branch)throw Error('الترحيل العكسي تابع لفرع آخر.');
+      if(!confirm('دمج السجلين في مجموعة واحدة مع الترحيل العكسي '+member.transfer.number+' للفاتورة '+invoiceNumbers[0]+'؟ ستُحفظ نسخة من السجلين الأصليين.'))return;
+      await mergeSavedGroups(first,second,member.transfer,invoiceNumbers[0]);
+      await preview(paste);
+      setMessage('تم دمج السجلين وإضافة الترحيل العكسي. افتح المجموعة لمراجعة المطابقة.');
+    }catch(error){setNotification({text:error instanceof Error?error.message:'تعذّر دمج السجلين.',error:true})}
+    finally{setBusy(false)}
+  }
+
   async function saveSelected(){
     setBusy(true);
     setMessage('');
@@ -345,7 +369,7 @@ export default function SapImport({branches,readRecords,readSavedDraft,saveDraft
         </select>
         <button className="button secondary" type="button" disabled={busy||!shownReady.length||!!issues.length} onClick={()=>setSelected(shownReady.map(keyOf))}>تحديد المجموعات الجاهزة الظاهرة</button>
         <button className="button primary" type="button" disabled={busy||!selectedGroups.length||!!issues.length||!!selectedReverse.length||!!selectedForward.length||!!savedTarget} onClick={saveSelected}>حفظ المحدد ({selectedGroups.length})</button>
-        <button className="button secondary" type="button" disabled={busy||(!selectedReverse.length&&!selectedForward.length)||!!issues.length} onClick={linkSelectedForReview}>ربط المحدد وفتح للمراجعة ({selectedForward.length} جديد، {selectedReverse.length} عكسي)</button>
+        <button className="button secondary" type="button" disabled={busy||(!selectedReverse.length&&!selectedForward.length)||!!issues.length} onClick={linkSelectedForReview}>ربط المحدد وفتح للمراجعة ({selectedForward.length} جديد، {selectedReverse.length} عكسي)</button><button className="button primary" type="button" disabled={busy||!savedTarget||selectedReverse.length!==1||!!issues.length} onClick={mergeSavedForInvoice}>دمج السجلين والعكسي</button>
       </div>
       {hiddenSelected>0&&<p className="hint">المحدد يشمل {hiddenSelected} مجموعة خارج النتائج الظاهرة.</p>}
       <p className="hint">تغيير نص البحث يلغي التحديد السابق حتى لا تربط ترحيلات مخفية بالخطأ. المحدد الآن: {selected.length+(savedTarget?1:0)} مجموعة و{selectedForward.length} ترحيل جديد و{selectedReverse.length} ترحيل عكسي.</p>

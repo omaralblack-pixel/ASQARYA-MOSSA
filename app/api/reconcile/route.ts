@@ -4,6 +4,7 @@ import schemaStatements from '../../lib/reconciliation-schema.json';
 import branches from '../../branches.json';
 import drivers from '../../drivers.json';
 import {reconcile,withInvoiceDates,groupReference,sapReferences,documentNo,dateValue,transferNumbers,type Draft,type Item} from '../../lib/reconcile';
+import {prepareGroupMerge} from '../../lib/prepare-merge';
 export const dynamic='force-dynamic';
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة');return env.DB};
@@ -50,6 +51,35 @@ if(linking){
  return json({reference:items});
 }
 await db().prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind('reconciliationReference',value).run();return json({ok:true})}
+if(b.action==='mergeGroups'){
+ const {firstId,secondId,firstVersion,secondVersion,reverse,invoiceNumber}=b;
+ if(typeof firstId!=='string'||typeof secondId!=='string'||firstId===secondId||!Number.isInteger(firstVersion)||!Number.isInteger(secondVersion)||typeof invoiceNumber!=='string'||!reverse||typeof reverse.number!=='string'||typeof reverse.date!=='string'||typeof reverse.paste!=='string'||reverse.paste.length>500000)return json({error:'بيانات الدمج غير صالحة.'},400);
+ const first:any=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(firstId).first();
+ const second:any=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(secondId).first();
+ if(!first||!second||first.version!==firstVersion||second.version!==secondVersion)return json({error:'تغير أحد السجلين؛ حدّث الصفحة وأعد المحاولة.'},409);
+ let combined:Draft;
+ try{combined=prepareGroupMerge({...JSON.parse(first.payload),id:first.id,version:first.version},{...JSON.parse(second.payload),id:second.id,version:second.version},reverse,invoiceNumber)}catch(error){return json({error:error instanceof Error?error.message:'تعذّر تجهيز الدمج.'},400)}
+ const numbers=combined.transfers.flatMap(t=>transferNumbers(t.number));const invoice=documentNo(invoiceNumber);
+ const others:any=await db().prepare("SELECT r.id,json_extract(t.value,'$.number') AS number FROM reconciliations r,json_each(r.payload,'$.transfers') t WHERE r.id<>? AND r.id<>?").bind(firstId,secondId).all();
+ const occupied=new Set((others.results||[]).flatMap((row:any)=>transferNumbers(String(row.number||''))));
+ if(numbers.some(n=>occupied.has(n)))return json({error:'أحد الترحيلات موجود في مجموعة أخرى.'},409);
+ const invoices:any=await db().prepare("SELECT json_extract(i.value,'$.number') AS number FROM reconciliations r,json_each(r.payload,'$.invoices') i WHERE r.id<>? AND r.id<>?").bind(firstId,secondId).all();
+ if((invoices.results||[]).some((row:any)=>documentNo(String(row.number||''))===invoice))return json({error:'رقم الفاتورة موجود في مجموعة ثالثة؛ يلزم مراجعتها.'},409);
+ const result=reconcile(combined,combined.referenceSnapshot||await refs());const now=new Date().toISOString(),token=crypto.randomUUID(),archiveId=crypto.randomUUID(),version=first.version+1;
+ const payload=JSON.stringify({...combined,version,summary:{status:result.status,total:result.total,expected:result.expected,priceDifference:result.priceDifference,differences:result.differences,review:result.review}});
+ const guard="EXISTS(SELECT 1 FROM reconciliations WHERE id=? AND revision_token=?)";
+ const statements:any[]=[
+  db().prepare("INSERT INTO reconciliation_merge_backup(id,created,first_record,second_record) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM reconciliations WHERE id=? AND version=?) AND EXISTS(SELECT 1 FROM reconciliations WHERE id=? AND version=?)").bind(archiveId,now,JSON.stringify(first),JSON.stringify(second),firstId,firstVersion,secondId,secondVersion),
+  db().prepare("UPDATE reconciliations SET transfer_no=?,payload=?,status=?,updated=?,version=?,revision_token=? WHERE id=? AND version=? AND EXISTS(SELECT 1 FROM reconciliations WHERE id=? AND version=?)").bind(combined.transfers[0].number,payload,result.status,now,version,token,firstId,firstVersion,secondId,secondVersion),
+  db().prepare("DELETE FROM transfer_keys WHERE group_id IN (?,?) AND "+guard).bind(firstId,secondId,firstId,token),
+  db().prepare("DELETE FROM invoice_keys WHERE group_id IN (?,?) AND "+guard).bind(firstId,secondId,firstId,token),
+  db().prepare("DELETE FROM reconciliations WHERE id=? AND version=? AND "+guard).bind(secondId,secondVersion,firstId,token)
+ ];
+ for(const n of numbers)statements.push(db().prepare("INSERT INTO transfer_keys(key,group_id) SELECT ?,? WHERE "+guard).bind(n,firstId,firstId,token));
+ statements.push(db().prepare("INSERT INTO invoice_keys(key,group_id) SELECT ?,? WHERE "+guard).bind('GLOBAL|'+invoice,firstId,firstId,token));
+ try{const outcome=await db().batch(statements);if(!outcome[0].meta.changes||!outcome[1].meta.changes||!outcome[4].meta.changes)return json({error:'تغير السجل أثناء الدمج؛ حدّث الصفحة.'},409)}catch{return json({error:'تعارض أثناء الدمج؛ لم يتم حفظ التعديل.'},409)}
+ return json({id:firstId,version,archiveId});
+}
 if(b.action==='save'){const d=b.draft as Draft;const branchSetting:any=await db().prepare('SELECT value FROM settings WHERE key=?').bind('branches').first();const allowedBranches=branchSetting?JSON.parse(branchSetting.value):branches;if(!d||!Array.isArray(d.transfers)||!d.transfers.length||d.transfers.length>30||!Array.isArray(d.invoices)||d.invoices.length<1||d.invoices.length>30||!allowedBranches.includes(d.branch)||typeof d.driver!=='string'||d.driver.length>120||!dateValue(d.date)||typeof d.notes!=='string'||d.notes.length>5000)return json({error:'أكمل الفرع والتاريخ ومجموعة الترحيلات والفواتير'},400);if(d.mode!==undefined&&d.mode!=='manual'||d.checks!==undefined&&(!d.checks||typeof d.checks!=='object'||Array.isArray(d.checks)||Object.keys(d.checks).length>500||Object.values(d.checks).some(c=>!c||typeof c.signature!=='string'||c.signature.length>200000||!['match','difference'].includes(c.state)||c.note!==undefined&&(typeof c.note!=='string'||c.note.length>1000))))return json({error:'بيانات التشييك غير صالحة'},400);const ts=d.transfers.map(t=>documentNo(String(t.number||'')));const ns=d.invoices.map(i=>documentNo(String(i.number||'')));if(ts.some(n=>!n||n.length>80)||ns.some((n,j)=>n.length>80||!n&&d.invoices[j].complete)||new Set(ts).size!==ts.length||new Set(ns).size!==ns.length||d.transfers.some(t=>!dateValue(t.date)||typeof t.paste!=='string'||t.paste.length>500000)||d.invoices.some(i=>i.title!==undefined&&(typeof i.title!=='string'||i.title.length>80)||typeof i.amount!=='string'||i.amount.length>30||typeof i.complete!=='boolean'||!i.quantities||typeof i.quantities!=='object'||Array.isArray(i.quantities)||Object.keys(i.quantities).length>500||Object.values(i.quantities).some(v=>typeof v!=='string'||v.length>40)||i.date&&!dateValue(i.date)))return json({error:'راجع أرقام المستندات والتواريخ؛ لا تكرر المستند داخل المجموعة'},400);const id=d.id||crypto.randomUUID();const old:any=d.id?await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(id).first():null;if(d.id&&!old)return json({error:'السجل غير موجود'},404);if(old&&old.version!==d.version)return json({error:'عُدّل السجل من جلسة أخرى؛ افتحه مجددًا قبل الحفظ'},409);if(old){const previous=JSON.parse(String(old.payload)) as Draft;for(const previousInvoice of previous.invoices||[]){if(previousInvoice.manualNumber&&previousInvoice.number){const incoming=d.invoices.find(i=>i.id===previousInvoice.id);if(incoming&&documentNo(incoming.number)!==documentNo(previousInvoice.number)&&!incoming.manualNumber)return json({error:'لا يمكن للاستيراد استبدال رقم الفاتورة الزرقاء الذي صُحّح يدويًا. افتح الفاتورة وعدّل رقمها بنفسك.'},409)}}}
 const transferKeys=ts.flatMap(transferNumbers);
 if(transferKeys.length!==new Set(transferKeys).size)return json({error:'رقم ترحيل مكرر داخل المجموعة.'},400);
