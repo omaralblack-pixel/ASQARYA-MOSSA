@@ -18,6 +18,23 @@ function sessionSignature(value: string, secret: string) {
   return createHmac("sha256", secret).update(value).digest("hex");
 }
 
+async function resolveSessionSecret(env: Cloudflare.Env) {
+  if (env.INSTITUTION_SESSION_SECRET && env.INSTITUTION_SESSION_SECRET.length >= 32) {
+    return env.INSTITUTION_SESSION_SECRET;
+  }
+  if (!env.DB) return null;
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS institution_security (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  ).run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO institution_security (key, value) VALUES ('session_secret', ?)",
+  ).bind(randomBytes(32).toString("hex")).run();
+  const row = await env.DB.prepare(
+    "SELECT value FROM institution_security WHERE key = 'session_secret'",
+  ).first<{ value: string }>();
+  return row?.value ?? null;
+}
+
 function equals(left: string, right: string) {
   const a = Buffer.from(left), b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
@@ -129,9 +146,9 @@ async function savedImport(request: Request, env: Cloudflare.Env) {
 export async function handleInstitution(request: Request, env: Cloudflare.Env): Promise<Response | undefined> {
   const url = new URL(request.url);
   const api = url.pathname.startsWith("/api/");
-  const secret = env.INSTITUTION_SESSION_SECRET;
+  const secret = await resolveSessionSecret(env);
   const password = env.INSTITUTION_PASSWORD || "123";
-  if (!secret || secret.length < 32) {
+  if (!secret) {
     return api ? reply(503, "تسجيل الدخول غير مفعّل.") : loginPage("إعداد تسجيل الدخول غير مكتمل.", 503);
   }
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && request.headers.get("Origin") !== url.origin) {
