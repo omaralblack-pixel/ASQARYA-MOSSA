@@ -5,7 +5,7 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {reconcile, groupReference, withInvoiceDates, transferNumbers, invoiceDocumentNo, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
+import {reconcile, parseTransfer, groupReference, withInvoiceDates, transferNumbers, invoiceDocumentNo, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
 type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:string; version:number; branch:string};
@@ -255,7 +255,12 @@ export default function InstantMatch({
   const result=useMemo(()=>draft?reconcile(draft,
     groupReference(draft.useCurrentReference?undefined:draft.referenceSnapshot,reference,draft.linkedSapCodes)):null,
     [draft,reference]);
-  const canSave=!!draft&&!!result&&result.status==='match'&&!!draft.branch
+  const transferWarnings=useMemo(()=>draft ? draft.transfers.flatMap(transfer=>{
+    const parsed=parseTransfer(transfer.paste,{allowReverse:true});
+    return [...parsed.issues,...parsed.excluded].map(issue=>'الترحيل '+transfer.number+': '+issue);
+  }):[],[draft]);
+  const canSave=!!draft&&!!result&&result.status==='match'&&result.priceDifference===0
+    &&transferWarnings.length===0&&!!draft.branch
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
     &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null);
   async function saveAndNext() {
@@ -358,10 +363,11 @@ export default function InstantMatch({
           <div className="stat"><span>قيمة الترحيلات بأسعار المؤسسة</span><strong>{money(result.expected)} د.أ</strong></div>
           <div className="stat"><span>الفرق (الفواتير − الترحيلات)</span><strong dir="ltr">{money(result.priceDifference)} د.أ</strong></div>
           <div className={'stat status-stat '+result.status}><span>الحالة</span>
-            <strong>{result.status==='match'?'مطابق':result.status==='difference'?'غير مطابق':'بحاجة مراجعة'}</strong></div>
+            <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?'مطابق':result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
         </div>
         {draft.invoices.length>1&&<p className="hint">النتيجة هنا لمجموع الفواتير المرتبطة؛ مطابقة مبلغ كل فاتورة منفردة تتطلب توزيع الأصناف على صفحاتها في شاشة المطابقة التفصيلية.</p>}
-        {(result.problems.length>0||result.review>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review})</summary>
+        {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
+          {transferWarnings.map((text,index)=><p key={'transfer-'+index}>{text}</p>)}
           {result.problems.map((text,index)=><p key={index}>{text}</p>)}
           {result.rows.filter(row=>row.errors.length).map(row=><p key={row.key}>
             {row.code||row.sapCode} — {row.errors.join('، ')}</p>)}
