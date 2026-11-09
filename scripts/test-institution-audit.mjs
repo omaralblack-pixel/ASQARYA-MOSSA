@@ -62,6 +62,18 @@ assert.equal(auditInvoiceQuantities([forward,reverse],reference,'11371486\t40','
 assert.equal(auditInvoiceQuantities([forward,reverse],reference,'').status,'missing-invoice');
 assert.equal(auditInvoiceQuantities([forward,reverse],reference,'11371487\t40','62.000').status,'review');
 
+const invoiceHeader='رقم المادة\tالكمية';
+const invoiceRows=`${invoiceHeader}\n١١٣٧١٤٨٦\t20\n${invoiceHeader}\n11371486\t20`;
+assert.equal(auditInvoiceQuantities([forward,reverse],reference,invoiceRows,'62.000').status,'match');
+assert.equal(auditInvoiceQuantities([forward,reverse],reference,'Item No.\tQuantity\n11371486\t40','62.000').status,'match');
+for(const badRow of ['رقم ناقص 1234\t7','رقم المادة\t7','Item code 1234\t7','\t7','رقم المادة\tالكمية\t7']){
+  const audited=auditInvoiceQuantities([forward,reverse],reference,`${invoiceRows}\n\n${badRow}`,'62.000');
+  assert.equal(audited.amountDifference,0);
+  assert.equal(audited.status,'review',`malformed invoice row must block a match: ${badRow}`);
+  assert.match(audited.issues[0],/السطر 6/);
+}
+assert.equal(auditInvoiceQuantities([forward,reverse],reference,invoiceHeader,'62.000').status,'missing-invoice');
+
 const paste='رقم المادة بالمؤسسة\tItem No.\tItem Description\tحبات الكرتونة\tUoM Name\n11371486\tDAR00005\tSAP changed name\t24\tCarton';
 const parsed=parseReplacementText(paste);
 assert.equal(parsed.errors.length,0);

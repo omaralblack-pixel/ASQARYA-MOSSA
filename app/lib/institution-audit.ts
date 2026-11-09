@@ -1,4 +1,4 @@
-import {convert, fils, numeric, parseTransfer, sapReferences, type Item, type Transfer} from './reconcile';
+import {convert, digits, fils, numeric, parseTransfer, sapReferences, type Item, type Transfer} from './reconcile';
 
 /**
  * Independent, read-only SAP scope audit.
@@ -123,6 +123,16 @@ export type QuantityAudit={
   rows:QuantityAuditRow[]; issues:string[]; invoiceTotal:number|null;
   expectedTotal:number|null; amountDifference:number|null;
 };
+const invoiceCodeHeaders = new Set([
+  'رقم المادة', 'رقم المادة بالمؤسسة', 'رقم مادة المؤسسة', 'رقم المادة في المؤسسة', 'رقم الصنف',
+  'item no.', 'item no', 'item number', 'item code', 'code', 'institution code', 'institution item code',
+]);
+const invoiceQuantityHeaders = new Set([
+  'الكمية', 'كمية', 'الكمية بالحبة', 'الكمية بالحبات', 'كمية الحبات', 'عدد الحبات',
+  'quantity', 'qty', 'qty.', 'pieces', 'quantity (pieces)',
+]);
+const invoiceHeader = (cell:string) => cell.toLowerCase().replace(/\s+/g,' ');
+
 /** Requires two tab-separated columns: institution item number and quantity in pieces. */
 export function auditInvoiceQuantities(
   transfers:Transfer[], reference:Item[], invoiceText:string, invoiceAmount=''
@@ -134,17 +144,24 @@ export function auditInvoiceQuantities(
   const sapPieces=new Map<string,number>();
   const invoicePieces=new Map<string,number>();
   const sapCodes=new Map<string,Set<string>>();
-  const paperLines=invoiceText.trim().replace(/\r/g,'').split('\n').filter(Boolean);
-  for(const line of paperLines){
-    const parts=line.split('\t').map(v=>v.trim());
-    const code=parts[0]?.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c))).trim();
+  const paperLines=invoiceText.replace(/\r/g,'').split('\n');
+  let hasInvoiceRows=false;
+  for(const [index,line] of paperLines.entries()){
+    if(!line.trim())continue;
+    const [codeCell,quantityCell='',...extraCells]=line.split('\t').map(cell=>cell.trim());
+    if(invoiceCodeHeaders.has(invoiceHeader(codeCell))&&invoiceQuantityHeaders.has(invoiceHeader(quantityCell))&&
+      extraCells.every(cell=>!cell))continue;
+    hasInvoiceRows=true;
+    const code=digits(codeCell);
+    const lineNumber=index+1;
     if(!/^\d{8}$/.test(code)){
-      if(/رقم|item|code/i.test(line))continue;
-      issues.push('سطر الفاتورة غير صالح: '+line.slice(0,100));continue;
+      issues.push(`رقم المادة غير صالح في السطر ${lineNumber} من الفاتورة: ${line.trim().slice(0,100)}`);
+      continue;
     }
-    const quantity=numeric(parts[1]);
+    const quantity=numeric(quantityCell);
     if(quantity===null||quantity<0||!Number.isFinite(quantity)){
-      issues.push('كمية فاتورة غير صحيحة للمادة '+code);continue;
+      issues.push(`كمية فاتورة غير صحيحة للمادة ${code} في السطر ${lineNumber}`);
+      continue;
     }
     if(!byCode.has(code))issues.push('رقم المادة '+code+' في الفاتورة غير معرّف بالمؤسسة.');
     invoicePieces.set(code,(invoicePieces.get(code)||0)+quantity);
@@ -173,7 +190,7 @@ export function auditInvoiceQuantities(
       sapCodes:[...(sapCodes.get(code)||[])],sapPieces:sap,invoicePieces:paper,
       difference:Number((paper-sap).toFixed(6)),price:item?.price??null};
   });
-  if(!paperLines.length)return {status:'missing-invoice',rows,issues,invoiceTotal:null,expectedTotal:null,amountDifference:null};
+  if(!hasInvoiceRows)return {status:'missing-invoice',rows,issues,invoiceTotal:null,expectedTotal:null,amountDifference:null};
   const invoiceTotal=invoiceAmount.trim()?fils(invoiceAmount):null;
   if(invoiceAmount.trim()&&invoiceTotal===null)issues.push('مبلغ الفاتورة غير صالح؛ أدخله حتى ثلاث منازل عشرية.');
   const expectedTotal=rows.length&&rows.every(row=>row.price!==null)
