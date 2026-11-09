@@ -49,11 +49,14 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
 }) {
   const [query, setQuery] = useState('');
   const [month, setMonth] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState('');
   const [status, setStatus] = useState<'received' | 'pending'>('received');
   const received = useMemo(() => registerRows(records, 'received'), [records]);
   const pending = useMemo(() => registerRows(records, 'pending'), [records]);
   const rows = status === 'received' ? received : pending;
-  const visible = rows.filter(row => (!month || row.date.startsWith(month)) && digits(row.values.join(' ')).includes(digits(query.trim())));
+  const selectedDate = dateValue(invoiceDate);
+  const visible = rows.filter(row => (!month || row.date.startsWith(month)) && (!invoiceDate.trim() || (selectedDate !== null && row.values[5] === selectedDate)) && digits(row.values.join(' ')).includes(digits(query.trim())));
+  const branchCount = new Set(visible.map(row => row.record.branch.trim()).filter(Boolean)).size;
 
   async function exportRegister() {
     const {invoiceWorkbook} = await import('../lib/invoice-workbook');
@@ -75,10 +78,12 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
     <section className="panel" style={{minWidth:0}}>
       <div className="table-controls">
         <div className="search"><Search size={16}/><input aria-label="البحث برقم الفاتورة أو الفرع أو الترحيل" value={query} onChange={e => setQuery(e.target.value)} placeholder="اكتب رقم الفاتورة للتأكد من وصولها، أو ابحث بالفرع أو الترحيل"/></div>
+        <label>تاريخ الفاتورة<input type="text" inputMode="numeric" dir="ltr" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} placeholder="1.11.2026" aria-label="تاريخ الفاتورة المحدد"/></label>
         <label>شهر الفاتورة<input type="month" value={month} onChange={e => setMonth(e.target.value)}/></label>
         <button className="button secondary" disabled={status !== "received" || !visible.length} onClick={exportRegister}><Download size={16}/>تصدير Excel</button>
       </div>
-      <p className="hint">{status === "received" ? "فواتير وصلتني وشيّكتها" : "فواتير لم يصل ورقها"} · {visible.length} فاتورة · الإكسل مرتب من أقدم تاريخ لأحدث تاريخ. عند غياب تاريخ الفاتورة يُستخدم تاريخ المجموعة للترتيب وفلتر الشهر.</p>
+      {invoiceDate.trim() && !selectedDate && <p role="alert">أدخل تاريخًا صحيحًا مثل 1.11.2026.</p>}
+      <p className="hint">{status === "received" ? "فواتير وصلتني وشيّكتها" : "فواتير لم يصل ورقها"} · <strong>{visible.length} فاتورة</strong> · <strong>{branchCount} فرع</strong> · العدد حسب التاريخ والبحث والفلاتر المختارة. البحث بيوم محدد يعتمد تاريخ الفاتورة نفسها. الإكسل مرتب من أقدم تاريخ لأحدث تاريخ؛ وعند غياب تاريخ الفاتورة يُستخدم تاريخ المجموعة للترتيب وفلتر الشهر.</p>
       <div className="table-scroll">
         <table><thead><tr>{headers.map(header => <th key={header}>{header}</th>)}<th>المجموعة</th></tr></thead>
           <tbody>{visible.map(row => <tr key={row.key}>
