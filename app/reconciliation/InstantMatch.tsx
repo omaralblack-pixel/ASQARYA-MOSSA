@@ -142,6 +142,9 @@ export default function InstantMatch({
       const candidate = imports.find(group=>group.members.some(member=>
         kind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
       if (candidate) {
+        if (candidate.reversal || candidate.members.some(member=>member.reversal || member.issues.length)) {
+          throw Error('أحد ترحيلات هذا المستند ملغى أو فيه مشكلة قراءة من SAP. افتح المطابقة الأساسية لمراجعته قبل اعتماد أي مبلغ.');
+        }
         const proposed = fromSap(candidate,searched,kind);
         const occupied = proposed.transfers.flatMap(item=>rows
           .filter(row=>matchesRecord(row,item.number,'transfer'))
@@ -154,7 +157,6 @@ export default function InstantMatch({
           // Keep a previously saved, invoice-free transfer as the owner of the new invoice.
           const original = await getJson('/api/reconcile?id='+encodeURIComponent(first.row.id));
           const base = JSON.parse(original.record.payload) as Draft;
-          const chosen = proposed.transfers.find(row=>row.number===first.number)!;
           const other = proposed.transfers.filter(row=>row.number!==first.number);
           const baseTransfer = base.transfers.find(row=>transferNumbers(row.number).includes(first.number));
           if (!baseTransfer || transferNumbers(baseTransfer.number).length!==1)
