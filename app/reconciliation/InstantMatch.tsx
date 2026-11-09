@@ -1,0 +1,385 @@
+'use client';
+
+import {useEffect, useMemo, useState} from 'react';
+import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
+import GroupLookup from './GroupLookup';
+import {readSavedSapImport} from '../lib/saved-sap-import';
+import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
+import {reconcile, groupReference, withInvoiceDates, transferNumbers, invoiceDocumentNo, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
+
+type Summary = {id:string; branch:string; version:number; payload:string};
+type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:string; version:number; branch:string};
+type SearchKind = 'invoice' | 'transfer';
+
+const localDate = () => new Date().toLocaleDateString('en-CA', {timeZone:'Asia/Amman'});
+const uuid = () => crypto.randomUUID();
+const invoice = (number = ''):Invoice => ({
+  id:uuid(), number, date:'', amount:'', manualNumber:!!number,
+  complete:true, quantities:{}, attachments:[]
+});
+const fresh = (number = ''):Draft => ({
+  mode:'manual', branch:'', driver:'', date:localDate(), notes:'',
+  transfers:[], invoices:[invoice(number)], checks:{}
+});
+
+async function getJson(url:string) {
+  const response = await fetch(url, {cache:'no-store'});
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error || 'تعذّر استرجاع البيانات');
+  return data;
+}
+async function saveJson(draft:Draft, sources:TransferSource[]) {
+  const response = await fetch('/api/reconcile', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'save', draft, transferSources:sources})
+  });
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error || 'تعذّر الحفظ');
+  return data as {id:string;version:number;referenceSnapshot:Item[]};
+}
+function recordDraft(row:Summary):Partial<Draft> {
+  try { return JSON.parse(row.payload) as Draft; } catch { return {}; }
+}
+function matchesRecord(row:Summary, number:string, kind:SearchKind) {
+  const saved = recordDraft(row);
+  return kind==='invoice'
+    ? (saved.invoices || []).some(item=>invoiceDocumentNo(item.number)===number)
+    : (saved.transfers || []).some(item=>transferNumbers(item.number).includes(number));
+}
+function fromSap(group:SapImportGroup, number:string, kind:SearchKind):Draft {
+  const imported = group.draft;
+  const originals = imported.invoices.filter(item=>invoiceDocumentNo(item.number));
+  const invoices = originals.map(item=>invoice(item.number));
+  if (kind==='invoice' && !invoices.some(item=>item.number===number)) invoices.push(invoice(number));
+  if (!invoices.length) invoices.push(invoice());
+  return withInvoiceDates({
+    mode:'manual', branch:imported.branch, driver:'', date:dateValue(imported.date)||localDate(),
+    transfers: imported.transfers.map(item=>({...item, id:uuid()})),
+    invoices, notes:'', checks:{}
+  });
+}
+
+export default function InstantMatch({
+  reference, branches, onDetailed
+}:{
+  reference:Item[];
+  branches:string[];
+  onDetailed:(draft:Draft, sources:Record<string,TransferSource>)=>void;
+}) {
+  const [records, setRecords] = useState<Summary[]>([]);
+  const [imports, setImports] = useState<SapImportGroup[]>([]);
+  const [fileWarning, setFileWarning] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [kind, setKind] = useState<SearchKind>('invoice');
+  const [number, setNumber] = useState('');
+  const [transferNumber, setTransferNumber] = useState('');
+  const [draft, setDraft] = useState<Draft|null>(null);
+  const [sources, setSources] = useState<Record<string,TransferSource>>({});
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [showItems, setShowItems] = useState(false);
+
+  async function refreshRecords() {
+    const data = await getJson('/api/reconcile?records=1');
+    const list = data.records as Summary[];
+    setRecords(list);
+    return list;
+  }
+
+  useEffect(()=>{
+    if (!branches.length) return;
+    let active = true;
+    setLoading(true);
+    async function initialize() {
+      const results = await Promise.allSettled([
+        getJson('/api/reconcile?records=1'),
+        readSavedSapImport()
+      ]);
+      if (!active) return;
+      if (results[0].status === 'fulfilled') setRecords(results[0].value.records || []);
+      else setFileWarning('تعذّر قراءة سجل المطابقات. ابحث مجددًا بعد تحديث الصفحة.');
+      if (results[1].status === 'fulfilled' && results[1].value?.text) {
+        const parsed = parseSapImport(results[1].value.text, branches);
+        setImports(parsed.groups);
+        if (parsed.issues.length) setFileWarning('في ملف SAP سطور تحتاج مراجعة: ' + parsed.issues[0]);
+      } else {
+        setFileWarning('كشف SAP المحفوظ غير متاح. يمكن البحث بالسجل أو إدخال الترحيل يدويًا، وارفع TXT من شاشة المطابقة الأساسية إذا لزم.');
+      }
+      setLoading(false);
+    }
+    void initialize();
+    return ()=>{active=false};
+  },[branches]);
+
+  function update(next:Draft) {
+    setDraft(withInvoiceDates(next));
+    setNotice('');
+  }
+  function updateInvoice(id:string, changes:Partial<Invoice>) {
+    if (!draft) return;
+    update({...draft, invoices:draft.invoices.map(row=>row.id===id?{...row,...changes}:row)});
+  }
+
+  async function loadRecord(record:Summary) {
+    const data = await getJson('/api/reconcile?id='+encodeURIComponent(record.id));
+    const saved = JSON.parse(data.record.payload) as Draft;
+    setDraft(withInvoiceDates({...saved,mode:'manual',id:data.record.id,version:data.record.version,checks:saved.checks||{}}));
+    setSources({});
+    setNotice('تم استرجاع الكشف المحفوظ. تقدر تعدّل الأسعار أو تضيف ترحيل بدون إنشاء سجل مكرر.');
+  }
+
+  async function lookup() {
+    const searched = digits(number).trim();
+    if (!/^\d{4,20}$/.test(searched)) {setError('اكتب رقم فاتورة أو ترحيل صحيحًا.');return}
+    setBusy(true);setError('');setNotice('');setShowItems(false);
+    try {
+      const rows = await refreshRecords();
+      const found = rows.filter(row=>matchesRecord(row,searched,kind));
+      if (found.length>1) throw Error('رقم المستند مكرر في السجل؛ يلزم مراجعة المطابقة الأساسية.');
+      if (found.length===1) { await loadRecord(found[0]);return; }
+
+      const candidate = imports.find(group=>group.members.some(member=>
+        kind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
+      if (candidate) {
+        const proposed = fromSap(candidate,searched,kind);
+        const occupied = proposed.transfers.flatMap(item=>rows
+          .filter(row=>matchesRecord(row,item.number,'transfer'))
+          .map(row=>({row,number:item.number})));
+        if (occupied.some(({row})=>(recordDraft(row).invoices||[]).some(inv=>invoiceDocumentNo(inv.number)))) {
+          throw Error('في ترحيل مرتبط بفاتورة زرقاء محفوظة. افتح الفاتورة من السجل بدل تكرارها.');
+        }
+        const first = occupied[0];
+        if (first) {
+          // Keep a previously saved, invoice-free transfer as the owner of the new invoice.
+          const original = await getJson('/api/reconcile?id='+encodeURIComponent(first.row.id));
+          const base = JSON.parse(original.record.payload) as Draft;
+          const chosen = proposed.transfers.find(row=>row.number===first.number)!;
+          const other = proposed.transfers.filter(row=>row.number!==first.number);
+          const baseTransfer = base.transfers.find(row=>transferNumbers(row.number).includes(first.number));
+          if (!baseTransfer || transferNumbers(baseTransfer.number).length!==1)
+            throw Error('الترحيل محفوظ مع أرقام أخرى في نفس البطاقة. افتحه من سجل المطابقات أولًا.');
+          const all = [{...baseTransfer},...other];
+          const nextSources:Record<string,TransferSource> = {};
+          for (const item of other) {
+            const owner = occupied.find(entry=>entry.number===item.number);
+            if (owner && owner.row.id!==first.row.id) {
+              nextSources[item.id]={number:item.number,recordId:owner.row.id,version:owner.row.version};
+            }
+          }
+          setSources(nextSources);
+          setDraft(withInvoiceDates({...proposed,id:original.record.id,version:original.record.version,
+            transfers:all,branch:proposed.branch||base.branch,
+            referenceSnapshot:base.referenceSnapshot,useCurrentReference:true}));
+          setNotice('تم جلب الترحيلات من SAP وربط السجل السابق الذي لا يحمل فاتورة، بدون تكراره.');
+        } else {
+          setSources({});
+          setDraft(proposed);
+          setNotice('تم العثور على الترحيلات المرتبطة في كشف SAP. أدخل مبلغ كل فاتورة زرقاء.');
+        }
+      } else if (kind==='transfer') {
+        const savedResponse = await fetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
+        if (savedResponse.ok) {
+          const saved = await savedResponse.json() as SavedTransfer;
+          const row = rows.find(item=>item.id===saved.recordId);
+          if (row) {await loadRecord(row);return}
+        } else if (savedResponse.status!==404) {
+          throw Error((await savedResponse.json()).error||'تعذّر البحث عن الترحيل.');
+        }
+        setSources({});
+        setDraft({...fresh(),transfers:[{id:uuid(),number:searched,date:localDate(),paste:''}]});
+        setNotice('الترحيل مش موجود بكشف SAP المحفوظ. ألصق جدوله يدويًا، واكتب رقم فاتورته الزرقاء.');
+      } else {
+        setSources({});
+        setDraft(fresh(searched));
+        setNotice('ما لقيت ترحيلات مرتبطة بهذا الرقم. أضف أرقام الترحيلات من الحقل الموجود تحت.');
+      }
+    } catch(e) {setError(e instanceof Error?e.message:'تعذّر البحث عن المستند.')}
+    finally {setBusy(false);}
+  }
+
+  async function addTransfer() {
+    if (!draft) return;
+    const searched = digits(transferNumber).trim();
+    if (!/^\d{4,20}$/.test(searched)) {setError('اكتب رقم ترحيل صحيحًا.');return}
+    if (draft.transfers.length>=30) {setError('الحد الأقصى 30 ترحيلًا للمطابقة.');return}
+    if (draft.transfers.some(item=>transferNumbers(item.number).includes(searched))) {
+      setError('الترحيل موجود أصلًا في الكشف الحالي.');return;
+    }
+    setBusy(true);setError('');setNotice('');
+    try {
+      let stored:SavedTransfer|null = null;
+      const response=await fetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
+      if (response.ok) stored=await response.json() as SavedTransfer;
+      else if (response.status!==404) throw Error((await response.json()).error||'تعذّر فحص الترحيل.');
+      if (stored && stored.recordId!==draft.id && stored.invoiceNumbers.length) {
+        throw Error('الترحيل '+searched+' يحمل فاتورة زرقاء رقم '+stored.invoiceNumbers.join('، ')+'، ولا يمكن إضافته كترحيل ثانٍ.');
+      }
+      if (stored && stored.recordId===draft.id) throw Error('الترحيل موجود مسبقًا في السجل الحالي.');
+      const member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
+      if (draft.transfers.length>0 && member?.invoices.length) {
+        throw Error('الترحيل '+searched+' يحمل فاتورة زرقاء في كشف SAP. أضف فقط ترحيلًا بلا فاتورة.');
+      }
+      if (member && draft.branch && member.branch && draft.branch!==member.branch) {
+        throw Error('الترحيل تابع لفرع '+member.branch+'، وليس فرع الفاتورة الحالية.');
+      }
+      if (stored && draft.branch && stored.branch && draft.branch!==stored.branch) {
+        throw Error('الترحيل المحفوظ تابع لفرع آخر.');
+      }
+      if (stored && transferNumbers(stored.transfer.number).length!==1) {
+        throw Error('هذا الترحيل محفوظ مع ترحيلات في بطاقة واحدة؛ يجب فصلها أولًا.');
+      }
+      if (stored && !draft.id && draft.transfers.length===0) {
+        const data=await getJson('/api/reconcile?id='+encodeURIComponent(stored.recordId));
+        const base=JSON.parse(data.record.payload) as Draft;
+        setDraft(withInvoiceDates({...base,id:stored.recordId,version:stored.version,
+          invoices:draft.invoices,branch:draft.branch||stored.branch,mode:'manual',checks:{}}));
+        setSources({});
+      } else {
+        const chosen = stored?.transfer || member?.transfer || {id:uuid(),number:searched,date:localDate(),paste:''};
+        const item = {...chosen,id:uuid(),number:searched};
+        update({...draft,branch:draft.branch||stored?.branch||member?.branch||'',
+          transfers:[...draft.transfers,item]});
+        if (stored && stored.recordId!==draft.id) {
+          setSources(current=>({...current,[item.id]:{number:searched,recordId:stored.recordId,version:stored.version}}));
+        }
+      }
+      setTransferNumber('');
+      setNotice(stored||member?'تمت إضافة الترحيل '+searched+' وأصنافه.':'الترحيل غير موجود في TXT؛ ألصق بنوده وتاريخه قبل الحفظ.');
+    } catch(e) {setError(e instanceof Error?e.message:'تعذّر إضافة الترحيل.')}
+    finally {setBusy(false);}
+  }
+
+  const result=useMemo(()=>draft?reconcile(draft,
+    groupReference(draft.useCurrentReference?undefined:draft.referenceSnapshot,reference,draft.linkedSapCodes)):null,
+    [draft,reference]);
+  const canSave=!!draft&&!!result&&result.status==='match'&&!!draft.branch
+    &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
+    &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null);
+  async function saveAndNext() {
+    if (!draft||!canSave) return;
+    setBusy(true);setError('');
+    try {
+      await saveJson(draft,Object.values(sources));
+      await refreshRecords();
+      setDraft(null);setSources({});setNumber('');setTransferNumber('');setShowItems(false);
+      setNotice('تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
+    } catch(e) {setError(e instanceof Error?e.message:'تعذّر حفظ المطابقة.')}
+    finally {setBusy(false);}
+  }
+
+  return <div className="instant-match" dir="rtl">
+    <div className="page-title">
+      <div><p className="eyebrow">سير عمل سريع</p><h1>مطابقة فورية</h1>
+        <p>اكتب رقم الفاتورة الزرقاء، اسحب ترحيلات SAP، أدخل مبالغ الفواتير، وراجع الفرق مباشرة.</p></div>
+      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setTransferNumber('');setError('');setNotice('')}}>
+        <RefreshCw size={16}/>مطابقة جديدة</button>
+    </div>
+    <section className="panel">
+      <div className="form-grid">
+        <label>نوع البحث<select value={kind} onChange={e=>setKind(e.target.value as SearchKind)}>
+          <option value="invoice">رقم الفاتورة الزرقاء</option><option value="transfer">رقم الترحيل</option>
+        </select></label>
+        <label>{kind==='invoice'?'رقم الفاتورة الزرقاء':'رقم الترحيل'}
+          <input dir="ltr" inputMode="numeric" value={number} onChange={e=>setNumber(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Enter')void lookup()}} placeholder={kind==='invoice'?'2624002303':'2615834'}/></label>
+        <div style={{display:'flex',alignItems:'end'}}>
+          <button type="button" className="button primary" disabled={busy||loading} onClick={()=>void lookup()}>
+            <Search size={16}/>{busy?'جارٍ البحث…':'بحث وسحب الترحيلات'}</button>
+        </div>
+      </div>
+      {loading&&<p className="hint">جارٍ تحميل سجل المطابقات وكشف SAP المحفوظ…</p>}
+      {fileWarning&&<p className="hint" role="status">{fileWarning}</p>}
+      {error&&<p role="alert" className="banner danger"><AlertTriangle size={16}/> {error}</p>}
+      {notice&&<p role="status" className="banner info"><CheckCircle2 size={16}/> {notice}</p>}
+    </section>
+
+    {draft&&<div style={{display:'grid',gap:16}}>
+      <section className="panel">
+        <div className="section-title"><h2>بيانات الفواتير والترحيلات</h2></div>
+        <div className="form-grid">
+          <GroupLookup label="الفرع" items={branches} required value={draft.branch} onChange={branch=>update({...draft,branch})} placeholder="ابحث باسم الفرع أو رقمه"/>
+          <label>تاريخ الكشف<input type="date" value={draft.date} onChange={e=>update({...draft,date:e.target.value})}/></label>
+        </div>
+        <h3>الفواتير الزرقاء</h3>
+        <p className="hint">مبلغ وتاريخ كل فاتورة مستقلين عن تاريخ الترحيل. إذا كان التاريخ تلقائيًا، يُحسب قبل الترحيل بيوم ويمكنك تعديله.</p>
+        <div className="invoice-grid">
+          {draft.invoices.map((item,index)=><article className="invoice-card" key={item.id}>
+            <div className="card-title"><b>الفاتورة {index+1}</b></div>
+            <div className="invoice-fields">
+              <label>رقم الفاتورة الزرقاء<input dir="ltr" inputMode="numeric" value={item.number}
+                onChange={e=>updateInvoice(item.id,{number:e.target.value,manualNumber:true})}/></label>
+              <label>مبلغ الفاتورة (د.أ)<input dir="ltr" inputMode="decimal" value={item.amount}
+                onChange={e=>updateInvoice(item.id,{amount:e.target.value})} placeholder="0.000"/></label>
+              <label>تاريخ الفاتورة<input type="date" value={item.date}
+                onChange={e=>updateInvoice(item.id,{date:e.target.value,manualDate:!!e.target.value})}/></label>
+            </div>
+            <label className="check-label"><input type="checkbox" checked={item.complete}
+              onChange={e=>updateInvoice(item.id,{complete:e.target.checked})}/>الفاتورة الورقية موجودة عندي</label>
+            {index>0&&<button className="text-button" type="button"
+              onClick={()=>update({...draft,invoices:draft.invoices.filter(row=>row.id!==item.id)})}>حذف الفاتورة</button>}
+          </article>)}
+        </div>
+        <button className="button secondary" type="button" disabled={draft.invoices.length>=30}
+          onClick={()=>update({...draft,invoices:[...draft.invoices,invoice()]})}><Plus size={16}/>إضافة فاتورة زرقاء</button>
+      </section>
+      <section className="panel">
+        <div className="section-title"><h2>ترحيلات SAP</h2></div>
+        <div className="form-grid">
+          <label>أدخل رقم الترحيل لإضافته مباشرة<input dir="ltr" inputMode="numeric" value={transferNumber}
+            onChange={e=>setTransferNumber(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')void addTransfer()}}
+            placeholder="2615834"/></label>
+          <div style={{display:'flex',alignItems:'end'}}><button type="button" className="button secondary"
+            disabled={busy} onClick={()=>void addTransfer()}><Plus size={16}/>إضافة الترحيل بالرقم</button></div>
+        </div>
+        <div className="cards-grid">
+          {draft.transfers.map((item,index)=><article className="transfer-card" key={item.id}>
+            <div className="card-title"><b>الترحيل {index+1} · {item.number}</b>
+              <button type="button" className="icon-button danger" aria-label={'حذف الترحيل '+item.number}
+                onClick={()=>{update({...draft,transfers:draft.transfers.filter(t=>t.id!==item.id)});
+                  setSources(current=>{const next={...current};delete next[item.id];return next})}}>
+                <Trash2 size={15}/></button></div>
+            <label>تاريخ الترحيل<input type="date" value={item.date} onChange={e=>update({...draft,
+              transfers:draft.transfers.map(row=>row.id===item.id?{...row,date:e.target.value}:row)})}/></label>
+            {!item.paste.trim()&&<label>بنود الترحيل من SAP<textarea dir="ltr" rows={5} value={item.paste}
+              onChange={e=>update({...draft,transfers:draft.transfers.map(row=>row.id===item.id?{...row,paste:e.target.value}:row)})}
+              placeholder={'Item No.\tQuantity\tUoM Name\tFrom Warehouse\tTo Warehouse'}/></label>}
+            <small>{item.paste.trim()?'تم جلب بنود الترحيل من SAP':'يلزم لصق بنود SAP قبل المطابقة.'}</small>
+          </article>)}
+        </div>
+        {!draft.transfers.length&&<p className="hint">لا يوجد ترحيل مرتبط بعد. أدخل رقمه في حقل الإضافة.</p>}
+      </section>
+      {result&&<section className="panel results-panel">
+        <div className="section-title"><h2>نتيجة المطابقة الفورية</h2></div>
+        <div className="stats">
+          <div className="stat"><span>مجموع الفواتير الزرقاء</span><strong>{money(result.total)} د.أ</strong></div>
+          <div className="stat"><span>قيمة الترحيلات بأسعار المؤسسة</span><strong>{money(result.expected)} د.أ</strong></div>
+          <div className="stat"><span>الفرق (الفواتير − الترحيلات)</span><strong dir="ltr">{money(result.priceDifference)} د.أ</strong></div>
+          <div className={'stat status-stat '+result.status}><span>الحالة</span>
+            <strong>{result.status==='match'?'مطابق':result.status==='difference'?'غير مطابق':'بحاجة مراجعة'}</strong></div>
+        </div>
+        {draft.invoices.length>1&&<p className="hint">النتيجة هنا لمجموع الفواتير المرتبطة؛ مطابقة مبلغ كل فاتورة منفردة تتطلب توزيع الأصناف على صفحاتها في شاشة المطابقة التفصيلية.</p>}
+        {(result.problems.length>0||result.review>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review})</summary>
+          {result.problems.map((text,index)=><p key={index}>{text}</p>)}
+          {result.rows.filter(row=>row.errors.length).map(row=><p key={row.key}>
+            {row.code||row.sapCode} — {row.errors.join('، ')}</p>)}
+        </details>}
+        {result.status==='difference'&&<p className="hint">في فرق بالقيمة. راجع مبالغ الفواتير، وأصناف الترحيلات، وأسعار المؤسسة قبل الاعتماد.</p>}
+        <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+          <button type="button" className="button primary" disabled={busy||!canSave} onClick={()=>void saveAndNext()}>
+            <Save size={16}/>{busy?'جارٍ الحفظ…':'حفظ المطابقة والانتقال للتالية'} <ArrowLeft size={16}/></button>
+          <button type="button" className="button secondary" onClick={()=>setShowItems(!showItems)}>
+            {showItems?'إخفاء الأصناف':'عرض تفاصيل الأصناف ('+result.rows.length+')'}</button>
+          <button type="button" className="button secondary" onClick={()=>onDetailed(draft,sources)}>
+            فتح المطابقة التفصيلية</button>
+        </div>
+        {showItems&&<div className="table-scroll"><table className="blue-table"><thead><tr>
+          <th>رقم المادة</th><th>الصنف</th><th>الكمية بالحبة</th><th>السعر</th><th>القيمة</th><th>ملاحظات</th>
+        </tr></thead><tbody>{result.rows.map(row=><tr key={row.key}>
+          <td>{row.code||row.sapCode}</td><td>{row.name}</td><td>{row.transfer??'—'}</td>
+          <td>{money(row.unitPrice)}</td><td>{money(row.expected)}</td>
+          <td>{row.errors.join('، ')||'—'}</td></tr>)}</tbody></table></div>}
+      </section>}
+    </div>}
+  </div>;
+}
