@@ -29,6 +29,16 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Reconciliation regression tests
         run: pnpm run test:institution
+      - name: Core reconciliation and transfer regression tests
+        run: |
+          for test in scripts/test-reconcile.mjs scripts/test-add-transfer.mjs scripts/test-exchange.mjs scripts/test-history-export.mjs scripts/test-reverse-lookup.mjs; do
+            node "$test"
+          done
+      - name: Storage, invoice registry and uniqueness checks
+        run: |
+          python3 scripts/test-storage.py
+          python3 scripts/test-invoice-register.py
+          python3 scripts/test-document-uniqueness.py
       - name: TypeScript validation
         run: pnpm exec tsc --noEmit
       - name: Production build
