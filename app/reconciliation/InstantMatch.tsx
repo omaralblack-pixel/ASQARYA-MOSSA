@@ -73,6 +73,7 @@ export default function InstantMatch({
   const [busy, setBusy] = useState(false);
   const [kind, setKind] = useState<SearchKind>('invoice');
   const [number, setNumber] = useState('');
+  const [initialAmount, setInitialAmount] = useState('');
   const [transferNumber, setTransferNumber] = useState('');
   const [draft, setDraft] = useState<Draft|null>(null);
   const [sources, setSources] = useState<Record<string,TransferSource>>({});
@@ -121,10 +122,16 @@ export default function InstantMatch({
     update({...draft, invoices:draft.invoices.map(row=>row.id===id?{...row,...changes}:row)});
   }
 
-  async function loadRecord(record:Summary) {
+  function fillSearchedAmount(candidate:Draft, target:string, searchKind:SearchKind):Draft {
+    if (searchKind!=='invoice'||!initialAmount.trim()) return candidate;
+    return {...candidate,invoices:candidate.invoices.map(item=>invoiceDocumentNo(item.number)===target
+      ? {...item,amount:initialAmount}:item)};
+  }
+
+  async function loadRecord(record:Summary, target = '', searchKind:SearchKind = 'transfer') {
     const data = await getJson('/api/reconcile?id='+encodeURIComponent(record.id));
     const saved = JSON.parse(data.record.payload) as Draft;
-    setDraft(withInvoiceDates({...saved,mode:'manual',id:data.record.id,version:data.record.version,checks:saved.checks||{}}));
+    setDraft(withInvoiceDates(fillSearchedAmount({...saved,mode:'manual',id:data.record.id,version:data.record.version,checks:saved.checks||{}},target,searchKind)));
     setSources({});
     setNotice('تم استرجاع الكشف المحفوظ. تقدر تعدّل الأسعار أو تضيف ترحيل بدون إنشاء سجل مكرر.');
   }
@@ -132,20 +139,24 @@ export default function InstantMatch({
   async function lookup() {
     const searched = digits(number).trim();
     if (!/^\d{4,20}$/.test(searched)) {setError('اكتب رقم فاتورة أو ترحيل صحيحًا.');return}
+    const searchKind:SearchKind=kind==='invoice'&&searched.length<9?'transfer':kind;
+    if (searchKind==='invoice'&&initialAmount.trim()&&fils(initialAmount)===null) {
+      setError('أدخل مبلغ الفاتورة بشكل صحيح، مثل 186.400 دينار.');return;
+    }
     setBusy(true);setError('');setNotice('');setShowItems(false);
     try {
       const rows = await refreshRecords();
-      const found = rows.filter(row=>matchesRecord(row,searched,kind));
+      const found = rows.filter(row=>matchesRecord(row,searched,searchKind));
       if (found.length>1) throw Error('رقم المستند مكرر في السجل؛ يلزم مراجعة المطابقة الأساسية.');
-      if (found.length===1) { await loadRecord(found[0]);return; }
+      if (found.length===1) { await loadRecord(found[0],searched,searchKind);return; }
 
       const candidate = imports.find(group=>group.members.some(member=>
-        kind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
+        searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
       if (candidate) {
         if (candidate.reversal || candidate.members.some(member=>member.reversal || member.issues.length)) {
           throw Error('أحد ترحيلات هذا المستند ملغى أو فيه مشكلة قراءة من SAP. افتح المطابقة الأساسية لمراجعته قبل اعتماد أي مبلغ.');
         }
-        const proposed = fromSap(candidate,searched,kind);
+        const proposed = fillSearchedAmount(fromSap(candidate,searched,searchKind),searched,searchKind);
         const occupied = proposed.transfers.flatMap(item=>rows
           .filter(row=>matchesRecord(row,item.number,'transfer'))
           .map(row=>({row,number:item.number})));
@@ -179,7 +190,7 @@ export default function InstantMatch({
           setDraft(proposed);
           setNotice('تم العثور على الترحيلات المرتبطة في كشف SAP. أدخل مبلغ كل فاتورة زرقاء.');
         }
-      } else if (kind==='transfer') {
+      } else if (searchKind==='transfer') {
         const savedResponse = await fetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
         if (savedResponse.ok) {
           const saved = await savedResponse.json() as SavedTransfer;
@@ -193,7 +204,7 @@ export default function InstantMatch({
         setNotice('الترحيل مش موجود بكشف SAP المحفوظ. ألصق جدوله يدويًا، واكتب رقم فاتورته الزرقاء.');
       } else {
         setSources({});
-        setDraft(fresh(searched));
+        setDraft(fillSearchedAmount(fresh(searched),searched,searchKind));
         setNotice('ما لقيت ترحيلات مرتبطة بهذا الرقم. أضف أرقام الترحيلات من الحقل الموجود تحت.');
       }
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر البحث عن المستند.')}
@@ -269,7 +280,7 @@ export default function InstantMatch({
     try {
       await saveJson(draft,Object.values(sources));
       await refreshRecords();
-      setDraft(null);setSources({});setNumber('');setTransferNumber('');setShowItems(false);
+      setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);
       setNotice('تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر حفظ المطابقة.')}
     finally {setBusy(false);}
@@ -279,7 +290,7 @@ export default function InstantMatch({
     <div className="page-title">
       <div><p className="eyebrow">سير عمل سريع</p><h1>مطابقة فورية</h1>
         <p>اكتب رقم الفاتورة الزرقاء، اسحب ترحيلات SAP، أدخل مبالغ الفواتير، وراجع الفرق مباشرة.</p></div>
-      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setTransferNumber('');setError('');setNotice('')}}>
+      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setError('');setNotice('')}}>
         <RefreshCw size={16}/>مطابقة جديدة</button>
     </div>
     <section className="panel">
@@ -290,11 +301,15 @@ export default function InstantMatch({
         <label>{kind==='invoice'?'رقم الفاتورة الزرقاء':'رقم الترحيل'}
           <input dir="ltr" inputMode="numeric" value={number} onChange={e=>setNumber(e.target.value)}
             onKeyDown={e=>{if(e.key==='Enter')void lookup()}} placeholder={kind==='invoice'?'2624002303':'2615834'}/></label>
+        {kind==='invoice'&&<label>مبلغ الفاتورة الزرقاء (د.أ) — اختياري عند البحث
+          <input dir="ltr" inputMode="decimal" value={initialAmount} onChange={e=>setInitialAmount(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Enter')void lookup()}} placeholder="186.400"/></label>}
         <div style={{display:'flex',alignItems:'end'}}>
           <button type="button" className="button primary" disabled={busy||loading} onClick={()=>void lookup()}>
             <Search size={16}/>{busy?'جارٍ البحث…':'بحث وسحب الترحيلات'}</button>
         </div>
       </div>
+      <p className="hint">رقم الترحيل من 4–8 خانات يُبحث عنه تلقائيًا كترحيل حتى لو كان خيار الفاتورة محددًا.</p>
       {loading&&<p className="hint">جارٍ تحميل سجل المطابقات وكشف SAP المحفوظ…</p>}
       {fileWarning&&<p className="hint" role="status">{fileWarning}</p>}
       {error&&<p role="alert" className="banner danger"><AlertTriangle size={16}/> {error}</p>}
