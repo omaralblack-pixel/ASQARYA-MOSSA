@@ -25,3 +25,10 @@ assert.throws(()=>prepareGroupMerge(p,{...q,transfers:[t('2615809',1,'001','011'
 assert.throws(()=>prepareGroupMerge(p,{...q,invoices:[{...i,number:'2622003541',amount:'99'}]},null,'2622003541'));
 assert.throws(()=>prepareGroupMerge(p,{...q,invoices:[{...i,attachments:[{key:'receipt'}]}]},null,'2622003541'));
 console.log('PASS: ordinary merge preserves invoice and rejects conflicting groups');
+
+const unrelated={...ref[0],code:'other',sapCode:'FOD99999'};
+const pa={...a,referenceSnapshot:[...ref,unrelated]};
+const pb={...b,referenceSnapshot:[...ref,{...unrelated,price:999}]};
+assert.equal(prepareGroupMerge(pa,pb,null,'2631202691').transfers.length,2);
+assert.throws(()=>prepareGroupMerge(pa,{...pb,referenceSnapshot:[{...ref[0],price:999},unrelated]},null,'2631202691'),/تختلف/);
+console.log('PASS: irrelevant catalog changes accepted, conflicting prices rejected');

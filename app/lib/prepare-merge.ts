@@ -1,4 +1,4 @@
-import {documentNo,parseTransfer,transferNumbers,type Draft,type Transfer} from './reconcile';
+import {documentNo,parseTransfer,transferNumbers,reconcile,type Draft,type Transfer,type Item} from './reconcile';
 export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer|null,invoiceNumber:string):Draft{
  if(!primary.id||!other.id||primary.id===other.id||primary.version==null||other.version==null)throw Error('يلزم اختيار سجلين محفوظين مختلفين.');
  if(primary.branch!==other.branch)throw Error('السجلان لفرعين مختلفين.');
@@ -10,7 +10,15 @@ export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer|nul
  if(a.date&&b.date&&a.date!==b.date)throw Error('تاريخ الفاتورة مختلف بين السجلين.');
  if(a.title&&b.title&&a.title!==b.title)throw Error('عنوان الفاتورة مختلف بين السجلين.');
  if((primary.notes+'\n'+other.notes).length>5000)throw Error('الملاحظات أطول من الحد؛ راجعها قبل الدمج.');
- if(JSON.stringify(primary.referenceSnapshot)!==JSON.stringify(other.referenceSnapshot))throw Error('مرجع السجلين مختلف؛ يلزم مراجعة الأسعار والشدات.');
+ let mergedReference=primary.referenceSnapshot;
+ if(JSON.stringify(primary.referenceSnapshot)!==JSON.stringify(other.referenceSnapshot)){
+  if(!primary.referenceSnapshot||!other.referenceSnapshot)throw Error('مرجع أحد السجلين غير محفوظ؛ يلزم مراجعة الأسعار والشدات.');
+  const signature=(draft:Draft,reference:Item[])=>reconcile(draft,reference).rows.map(row=>({key:row.key,code:row.code,sapCode:row.sapCode,transfer:row.transfer,unitPrice:row.unitPrice,expected:row.expected,errors:[...row.errors].sort()})).sort((x,y)=>x.key.localeCompare(y.key));
+  const baselineA=JSON.stringify(signature(primary,primary.referenceSnapshot));
+  const baselineB=JSON.stringify(signature(other,other.referenceSnapshot));
+  mergedReference=[primary.referenceSnapshot,other.referenceSnapshot].find(candidate=>JSON.stringify(signature(primary,candidate))===baselineA&&JSON.stringify(signature(other,candidate))===baselineB);
+  if(!mergedReference)throw Error('أسعار أو شدات أصناف الترحيلات تختلف بين السجلين؛ راجعها قبل الدمج.');
+ }
  if(primary.driver&&other.driver&&primary.driver!==other.driver)throw Error('اسم السائق مختلف بين السجلين.');
  if(Object.keys(a.quantities||{}).length||Object.keys(b.quantities||{}).length)throw Error('توجد كميات فاتورة مدخلة يدويًا؛ يلزم مراجعتها.');
  if((a.attachments||[]).length||(b.attachments||[]).length)throw Error('توجد مرفقات تحتاج مراجعة قبل الدمج.');
@@ -24,5 +32,5 @@ export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer|nul
  const invoice={...a,number,amount:a.amount||b.amount,date:a.date||b.date,title:a.title||b.title,complete:a.complete||b.complete,manualDate:a.manualDate||b.manualDate,manualNumber:true,dateTransferNos:[...new Set([...(a.dateTransferNos||[]),...(b.dateTransferNos||[])])]};
  const firstOrder=(primary as Draft&{pageEntryOrder?:string[]}).pageEntryOrder||[],secondOrder=(other as Draft&{pageEntryOrder?:string[]}).pageEntryOrder||[];
  const pageEntryOrder=[...new Set([...firstOrder,...secondOrder])];
- return {...primary,pageEntryOrder,driver:primary.driver||other.driver,invoices:[invoice],transfers,checks,pages:mergeMap(primary.pages,other.pages),excludedItems:mergeMap(primary.excludedItems,other.excludedItems),notes:[primary.notes,other.notes].filter(Boolean).join('\n'),acceptedDifference:undefined};
+ return {...primary,referenceSnapshot:mergedReference,pageEntryOrder,driver:primary.driver||other.driver,invoices:[invoice],transfers,checks,pages:mergeMap(primary.pages,other.pages),excludedItems:mergeMap(primary.excludedItems,other.excludedItems),notes:[primary.notes,other.notes].filter(Boolean).join('\n'),acceptedDifference:undefined};
 }
