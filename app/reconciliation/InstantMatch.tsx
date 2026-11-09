@@ -230,6 +230,9 @@ export default function InstantMatch({
       }
       if (stored && stored.recordId===draft.id) throw Error('الترحيل موجود مسبقًا في السجل الحالي.');
       const member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
+      if (member && (member.reversal || member.issues.length)) {
+        throw Error('الترحيل '+searched+' ملغى أو فيه ملاحظات قراءة من SAP. راجعه في شاشة المطابقة الأساسية قبل إضافته.');
+      }
       if (draft.transfers.length>0 && member?.invoices.length) {
         throw Error('الترحيل '+searched+' يحمل فاتورة زرقاء في كشف SAP. أضف فقط ترحيلًا بلا فاتورة.');
       }
