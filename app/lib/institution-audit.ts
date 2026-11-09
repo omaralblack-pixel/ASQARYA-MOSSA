@@ -1,4 +1,4 @@
-import {convert, parseTransfer, sapReferences, type Item, type Transfer} from './reconcile';
+import {convert, fils, numeric, parseTransfer, sapReferences, type Item, type Transfer} from './reconcile';
 
 /**
  * Independent, read-only SAP scope audit.
@@ -110,4 +110,76 @@ export function auditInstitutionTransfers(transfers: Transfer[], reference: Item
     }
   }
   return {issues,resolved,approvedLines,reviewedLines,valid:issues.length===0};
+}
+
+
+/** Compare institutional invoice rows in pieces against the net SAP movement. */
+export type QuantityAuditRow={
+  code:string; institutionName:string; sapCodes:string[];
+  sapPieces:number; invoicePieces:number; difference:number; price:number|null;
+};
+export type QuantityAudit={
+  status:'missing-invoice'|'review'|'difference'|'match';
+  rows:QuantityAuditRow[]; issues:string[]; invoiceTotal:number|null;
+  expectedTotal:number|null; amountDifference:number|null;
+};
+/** Requires two tab-separated columns: institution item number and quantity in pieces. */
+export function auditInvoiceQuantities(
+  transfers:Transfer[], reference:Item[], invoiceText:string, invoiceAmount=''
+):QuantityAudit {
+  const issues:string[]=[];
+  const active=reference.filter(item=>item.active);
+  const byCode=new Map(active.map(item=>[item.code,item]));
+  const bySap=new Map(sapReferences(active).map(item=>[item.sapCode.toUpperCase(),item]));
+  const sapPieces=new Map<string,number>();
+  const invoicePieces=new Map<string,number>();
+  const sapCodes=new Map<string,Set<string>>();
+  const paperLines=invoiceText.trim().replace(/\r/g,'').split('\n').filter(Boolean);
+  for(const line of paperLines){
+    const parts=line.split('\t').map(v=>v.trim());
+    const code=parts[0]?.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c))).trim();
+    if(!/^\d{8}$/.test(code)){
+      if(/رقم|item|code/i.test(line))continue;
+      issues.push('سطر الفاتورة غير صالح: '+line.slice(0,100));continue;
+    }
+    const quantity=numeric(parts[1]);
+    if(quantity===null||quantity<0||!Number.isFinite(quantity)){
+      issues.push('كمية فاتورة غير صحيحة للمادة '+code);continue;
+    }
+    if(!byCode.has(code))issues.push('رقم المادة '+code+' في الفاتورة غير معرّف بالمؤسسة.');
+    invoicePieces.set(code,(invoicePieces.get(code)||0)+quantity);
+  }
+  for(const transfer of transfers){
+    const parsed=parseTransfer(transfer.paste,{allowReverse:true});
+    for(const line of parsed.lines){
+      const item=bySap.get(line.sapCode.toUpperCase());
+      if(!item)continue; // separate scope audit always reports unknown SAP items
+      try {
+        const converted=convert(line,item);
+        sapPieces.set(item.code,(sapPieces.get(item.code)||0)+converted);
+        const codes=sapCodes.get(item.code)||new Set<string>();
+        codes.add(line.sapCode);sapCodes.set(item.code,codes);
+      }catch(e){
+        issues.push('تعذّر تحويل '+line.sapCode+' في الترحيل '+transfer.number+': '+(e instanceof Error?e.message:String(e)));
+      }
+    }
+  }
+  const allCodes=[...new Set([...sapPieces.keys(),...invoicePieces.keys()])].sort();
+  const rows=allCodes.map(code=>{
+    const item=byCode.get(code);
+    const sap=Number((sapPieces.get(code)||0).toFixed(6));
+    const paper=Number((invoicePieces.get(code)||0).toFixed(6));
+    return {code,institutionName:item?.name||'مادة غير معرّفة',
+      sapCodes:[...(sapCodes.get(code)||[])],sapPieces:sap,invoicePieces:paper,
+      difference:Number((paper-sap).toFixed(6)),price:item?.price??null};
+  });
+  if(!paperLines.length)return {status:'missing-invoice',rows,issues,invoiceTotal:null,expectedTotal:null,amountDifference:null};
+  const invoiceTotal=invoiceAmount.trim()?fils(invoiceAmount):null;
+  if(invoiceAmount.trim()&&invoiceTotal===null)issues.push('مبلغ الفاتورة غير صالح؛ أدخله حتى ثلاث منازل عشرية.');
+  const expectedTotal=rows.length&&rows.every(row=>row.price!==null)
+    ?rows.reduce((total,row)=>total+Math.round(row.sapPieces*row.price!),0):null;
+  const amountDifference=invoiceTotal===null||expectedTotal===null?null:invoiceTotal-expectedTotal;
+  const status=issues.length?'review':rows.some(row=>Math.abs(row.difference)>0.000001)||
+    (amountDifference!==null&&amountDifference!==0)?'difference':'match';
+  return {status,rows,issues,invoiceTotal,expectedTotal,amountDifference};
 }
