@@ -1,4 +1,4 @@
-import {dateValue,digits,numeric,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
+import {dateValue,digits,invoiceDocumentNo,numeric,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
 
 const headers=['رقم الترحيل','تاريخ الترحيل','كود الفرع','اسم الفرع','Remarks','Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'];
 const normalize=(value:string)=>value.trim().toLowerCase();
@@ -22,7 +22,7 @@ export type SapImportGroup={draft:Draft; members:SapTransfer[]; issues:string[];
 function readInvoices(remarks:string){
   const prefix=digits(remarks).split(/based on inventory transfer request/i)[0].split('||')[0].trim();
   if(!/^\d+(?:[\s,،;؛/+&-]+\d+)*$/.test(prefix))return [];
-  return [...new Set((prefix.match(/\d+/g)||[]).filter(number=>/^\d{10}$/.test(number)))];
+  return [...new Set((prefix.match(/\d+/g)||[]).filter(number=>/^\d{10}$/.test(number)&&invoiceDocumentNo(number)))];
 }
 
 export function parseSapImport(paste:string,branches:string[]):{groups:SapImportGroup[]; issues:string[]}{

@@ -4,5 +4,5 @@
   "CREATE UNIQUE INDEX IF NOT EXISTS reconciliations_transfer_no_unique ON reconciliations (transfer_no)",
   "CREATE TABLE IF NOT EXISTS transfer_keys (key text PRIMARY KEY NOT NULL, group_id text NOT NULL)",
   "CREATE TABLE IF NOT EXISTS invoice_keys (key text PRIMARY KEY NOT NULL, group_id text NOT NULL)",
-  "CREATE TABLE IF NOT EXISTS reconciliation_merge_backup (id text PRIMARY KEY NOT NULL, created text NOT NULL, first_record text NOT NULL, second_record text NOT NULL)"
+  "CREATE TABLE IF NOT EXISTS reconciliation_transfer_archive (id text PRIMARY KEY NOT NULL, created text NOT NULL, destination_id text NOT NULL, source_record text NOT NULL)"
 ]

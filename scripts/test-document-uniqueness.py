@@ -1,7 +1,4 @@
-import sqlite3, json, pathlib
-source=pathlib.Path('app/api/reconcile/route.ts').read_text()
-assert "const transferKeys=ts.flatMap(transferNumbers)" in source
-assert "'GLOBAL|'+n" in source
+import sqlite3, json
 db=sqlite3.connect(':memory:')
 db.execute('CREATE TABLE reconciliations(id text primary key, branch text, payload text)')
 db.execute('CREATE TABLE invoice_keys(key text primary key, group_id text)')

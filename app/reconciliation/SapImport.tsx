@@ -1,10 +1,9 @@
 'use client';
 
-import {useEffect,useMemo,useState,type ChangeEvent} from 'react';
+import {useEffect,useState,type ChangeEvent} from 'react';
 import {Search} from 'lucide-react';
-import {digits,documentNo,parseTransfer,transferNumbers,type Draft} from '../lib/reconcile';
+import {digits,invoiceDocumentNo,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
-import {mergeSelectedTransfers,isLinkableReverse} from '../lib/link-sap-groups';
 import {deleteSavedSapImport,maxSapFileBytes,readSavedSapImport,saveSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 
 type SavedRecord={id:string;branch:string;payload:string};
@@ -21,12 +20,13 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
       for(const number of transferNumbers(transfer.number||'')){byTransfer.set(number,record.id);add(transferOwners,number,record.id)}
     }
     for(const invoice of draft.invoices||[]){
-      if(invoice.number)add(byInvoice,documentNo(invoice.number),record.id);
+      const number = invoiceDocumentNo(invoice.number);
+      if (number) add(byInvoice, number, record.id);
     }
   }
   return groups.map(group=>{
     const transferIds=group.draft.transfers.flatMap(transfer=>transferNumbers(transfer.number).flatMap(number=>[...(transferOwners.get(number)||[])]));
-    const invoiceIds=group.draft.invoices.flatMap(invoice=>[...(byInvoice.get(documentNo(invoice.number||''))||[])]);
+    const invoiceIds=group.draft.invoices.flatMap(invoice=>[...(byInvoice.get(invoiceDocumentNo(invoice.number||''))||[])]);
     const savedIds=[...new Set([...transferIds,...invoiceIds])];
     const allTransfersSaved=group.draft.transfers.every(transfer=>transferNumbers(transfer.number).every(number=>transferOwners.has(number)));
     const original=group.members[0].canceledTransferNo;
@@ -37,22 +37,9 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
 const searchText=(value:string)=>digits(value).trim().toLowerCase().replace(/[أإآٱ]/g,'ا').replace(/[\u064B-\u065F\u0670ـ]/g,'');
 const keyOf=(group:SapImportGroup)=>group.draft.transfers[0].number;
 const isReady=(group:PreviewGroup)=>!group.reversal&&!group.issues.length&&!group.savedIds.length;
-function reverseProblem(group:PreviewGroup):string{
- const problems=group.members.flatMap(member=>{
-  const parsed=parseTransfer(member.transfer.paste,{allowReverse:true});
-  return [...member.issues,...parsed.issues,...parsed.excluded,
-   ...(!parsed.lines.length?['لم تُقرأ بنود الترحيل']:[]),
-   ...(parsed.lines.some(line=>line.from!=='011')?['الترحيل يحتوي حركة ليست عكسية']:[])];
- });
- return [...new Set(problems)].join('، ')||'راجع بيانات الترحيل.';
-}
-
-
-export default function SapImport({branches,readRecords,readSavedDraft,mergeSavedGroups,saveDraft,openDraft,openSaved,onPreview}:{
+export default function SapImport({branches,readRecords,saveDraft,openDraft,openSaved,onPreview}:{
   branches:string[];
   readRecords:()=>Promise<SavedRecord[]>;
-  readSavedDraft:(id:string)=>Promise<Draft>;
-  mergeSavedGroups:(first:Draft,second:Draft,reverse:Draft['transfers'][number],invoice:string)=>Promise<void>;
   saveDraft:(draft:Draft)=>Promise<string>;
   openDraft:(draft:Draft)=>void;
   openSaved:(id:string)=>void;
@@ -65,11 +52,6 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
   const [groups,setGroups]=useState<PreviewGroup[]>([]);
   const [issues,setIssues]=useState<string[]>([]);
   const [selected,setSelected]=useState<string[]>([]);
-  const [selectedReverse,setSelectedReverse]=useState<string[]>([]);
-  const [selectedForward,setSelectedForward]=useState<string[]>([]);
-  const [savedTarget,setSavedTarget]=useState<{key:string;id:string}|null>(null);
-  const [previewRecords,setPreviewRecords]=useState<SavedRecord[]>([]);
-  const recordedTransferNumbers=useMemo(()=>new Set(previewRecords.flatMap(record=>(JSON.parse(record.payload) as Draft).transfers.flatMap(transfer=>transferNumbers(transfer.number||'')))),[previewRecords]);
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState('');
   const [notification,setNotification]=useState<{text:string;error:boolean}|null>(null);
@@ -123,7 +105,7 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
     setMessage('');
     setGroups([]);
     onPreview([],[]);
-    setSelected([]);setSelectedReverse([]);setSelectedForward([]);setSavedTarget(null);
+    setSelected([]);
     setIssues([]);
     setErrors({});
     try{
@@ -131,7 +113,6 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
       setIssues(result.issues);
       const records=await readRecords();
       if(!isActive())return;
-      setPreviewRecords(records);
       setGroups(compareWithSaved(result.groups,records));
       onPreview(result.issues.length?[]:result.groups,records);
       setFilter('all');
@@ -195,7 +176,7 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
       setPaste('');
       setGroups([]);
       setIssues([]);
-      setSelected([]);setSelectedReverse([]);setSelectedForward([]);setSavedTarget(null);
+      setSelected([]);
       setMessage('');
       onPreview([],[]);
     }catch{
@@ -203,74 +184,6 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
     }finally{
       setBusy(false);
     }
-  }
-
-  async function linkSelectedForReview(){
-    setBusy(true);setMessage('');
-    try{
-      if((savedTarget?1:0)+selected.length!==1)throw Error('حدد مجموعة واحدة: جديدة أو محفوظة، ثم حدد الترحيل المطلوب.');
-      const target=groups.find(group=>keyOf(group)===(savedTarget?.key||selected[0]));
-      const reverseGroups=groups.filter(group=>selectedReverse.includes(keyOf(group)));
-      if(!target)throw Error('المجموعة المحددة لم تعد في المعاينة.');
-      if(target.members.some(member=>member.reverseMovement)||target.reversal)throw Error('اختر مجموعة الفواتير الأصلية، ثم حدد العكسي بجانبها.');
-      if(reverseGroups.length!==selectedReverse.length)throw Error('تعذر العثور على أحد الترحيلات المحددة.');
-      if(!reverseGroups.length&&!selectedForward.length)throw Error('حدد ترحيلًا جديدًا واحدًا على الأقل.');
-      if(selectedForward.length&&!savedTarget)throw Error('حدد المجموعة المحفوظة التي تريد إضافة الترحيل إليها.');
-      const records=await readRecords();
-      const current=compareWithSaved([target,...reverseGroups],records);
-      if(savedTarget&&!current[0].savedIds.includes(savedTarget.id))throw Error('السجل المحدد لم يعد مرتبطًا بالمجموعة؛ حدّث المعاينة.');
-      if(!savedTarget&&(!isReady(current[0])||current[0].savedIds.length))throw Error('المجموعة أو الفاتورة سُجلت مسبقًا؛ اختر السجل المحفوظ.');
-      const targetDraft=savedTarget?await readSavedDraft(savedTarget.id):target.draft;
-      const ownerNumbers=new Set(records.flatMap(record=>{
-        const stored=JSON.parse(record.payload) as Draft;
-        return (stored.transfers||[]).flatMap(transfer=>transferNumbers(transfer.number||''));
-      }));
-      if(reverseGroups.some(group=>group.draft.transfers.some(transfer=>transferNumbers(transfer.number).some(number=>ownerNumbers.has(number)))))throw Error('أحد الترحيلات العكسية مسجل في مجموعة أخرى.');
-      let combined=targetDraft;
-      if(selectedForward.length){
-        const candidates=target.members.filter(member=>selectedForward.includes(member.transfer.number));
-        if(candidates.length!==selectedForward.length)throw Error('حدد الترحيلات الجديدة من صف المجموعة المختارة فقط.');
-        const known=new Set(combined.transfers.flatMap(transfer=>transferNumbers(transfer.number)));
-        for(const member of candidates){
-          if(member.issues.length||member.reverseMovement||member.reversal)throw Error('أحد الترحيلات المحددة يحتاج مراجعة أو عكسي.');
-          if(member.branch!==combined.branch)throw Error('الترحيل '+member.transfer.number+' تابع لفرع مختلف.');
-          const parsed=parseTransfer(member.transfer.paste,{allowReverse:true});
-          if(!parsed.lines.length||parsed.issues.length||parsed.excluded.length||parsed.lines.some(line=>line.to!=='011'))throw Error('راجع اتجاه وبنود الترحيل '+member.transfer.number+'.');
-          for(const number of transferNumbers(member.transfer.number)){
-            if(known.has(number)||ownerNumbers.has(number))throw Error('الترحيل '+number+' مسجل مسبقًا في مجموعة.');
-            known.add(number);
-          }
-          combined={...combined,transfers:[...combined.transfers,member.transfer]};
-        }
-      }
-      if(reverseGroups.length)combined=mergeSelectedTransfers({...target,draft:combined,issues:[]},reverseGroups);
-      if(combined.transfers.length>30)throw Error('عدد الترحيلات يتجاوز الحد المسموح للمجموعة.');
-      openDraft(combined);
-    }catch(error){setNotification({text:error instanceof Error?error.message:'تعذر ربط الترحيلات.',error:true})}
-    finally{setBusy(false)}
-  }
-
-  async function mergeSavedForInvoice(){
-    setBusy(true);setMessage('');
-    try{
-      if(!savedTarget||selectedReverse.length!==1)throw Error('اختر سجلًا محفوظًا وحدد ترحيلًا عكسيًا واحدًا.');
-      const group=groups.find(g=>keyOf(g)===savedTarget.key);
-      const reverseGroup=groups.find(g=>keyOf(g)===selectedReverse[0]);
-      if(!group||group.savedIds.length!==2||!reverseGroup||!isLinkableReverse(reverseGroup)||reverseGroup.members.length!==1)throw Error('يلزم سجلان محفوظان وترحيل عكسي صالح.');
-      const invoiceNumbers=group.draft.invoices.map(i=>documentNo(i.number)).filter(Boolean);
-      if(invoiceNumbers.length!==1)throw Error('يلزم رقم فاتورة زرقاء واحد واضح في كشف SAP.');
-      const records=await readRecords();const fresh=compareWithSaved([group,reverseGroup],records);
-      if(fresh[0].savedIds.length!==2||!fresh[0].savedIds.includes(savedTarget.id))throw Error('تغيرت السجلات؛ أعد المعاينة.');
-      const otherId=fresh[0].savedIds.find(id=>id!==savedTarget.id)!;
-      const [first,second]=await Promise.all([readSavedDraft(savedTarget.id),readSavedDraft(otherId)]);
-      const member=reverseGroup.members[0];
-      if(member.branch&&member.branch!==first.branch)throw Error('الترحيل العكسي تابع لفرع آخر.');
-      if(!confirm('دمج السجلين في مجموعة واحدة مع الترحيل العكسي '+member.transfer.number+' للفاتورة '+invoiceNumbers[0]+'؟ ستُحفظ نسخة من السجلين الأصليين.'))return;
-      await mergeSavedGroups(first,second,member.transfer,invoiceNumbers[0]);
-      await preview(paste);
-      setMessage('تم دمج السجلين وإضافة الترحيل العكسي. افتح المجموعة لمراجعة المطابقة.');
-    }catch(error){setNotification({text:error instanceof Error?error.message:'تعذّر دمج السجلين.',error:true})}
-    finally{setBusy(false)}
   }
 
   async function saveSelected(){
@@ -288,7 +201,7 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
         try{
           if(group.savedIds.length){
             setGroups(previous=>previous.map(row=>keyOf(row)===key?group:row));
-            throw Error('صار في ترحيل أو فاتورة مسجّلة. راجع المجموعة الموجودة.');
+            throw Error('الترحيل أو الفاتورة محفوظة مسبقًا. افتحها من السجل.');
           }
           const id=await saveDraft(group.draft);
           saved++;
@@ -300,7 +213,7 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
         }
       }
       onPreview(groups,[...records,...newlySaved]);
-      setMessage('تم حفظ '+saved+' مجموعة'+(failed?'، و'+failed+' بحاجة لمراجعة.':'.'));
+      setMessage('تم حفظ '+saved+' كشف'+(failed?'، و'+failed+' بحاجة لمراجعة.':'.'));
     }catch(error){
       setMessage(error instanceof Error?error.message:'تعذّر التحقق من السجل');
     }finally{
@@ -327,7 +240,7 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
       onPreview([],[]);
       setGroups([]);
       setIssues([]);
-      setSelected([]);setSelectedReverse([]);setSelectedForward([]);setSavedTarget(null);
+      setSelected([]);
       setQuery('');
       setMessage('');
     }}/></label>
@@ -335,7 +248,7 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
     {issues.length>0&&<div className="banner error" role="alert">{issues.join(' · ')}</div>}
     {groups.length>0&&<>
       <div className="table-controls">
-        <div className="search"><Search size={16}/><input type="search" aria-label="بحث في نتائج استيراد SAP" placeholder="ابحث برقم الترحيل أو الفاتورة أو الفرع" value={query} onChange={event=>{setQuery(event.target.value);setSelected([]);setSelectedReverse([]);setSelectedForward([]);setSavedTarget(null)}}/></div>
+        <div className="search"><Search size={16}/><input type="search" aria-label="بحث في نتائج استيراد SAP" placeholder="ابحث برقم الترحيل أو الفاتورة أو الفرع" value={query} onChange={event=>{setQuery(event.target.value);setSelected([])}}/></div>
         <button className="button secondary" type="button" aria-pressed={filter==='reversal'} onClick={()=>setFilter(filter==='reversal'?'all':'reversal')}>
           {filter==='reversal'?'رجوع لمعاينة الاستيراد':'الترحيلات الملغاة ('+reversals.length+')'}
         </button>
@@ -343,12 +256,12 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
       {filter==='reversal'?<>
         <h2>الترحيلات الملغاة</h2>
         <p className="hint">رقم الترحيل الأصلي يُقرأ من Remarks. السطر أدناه يربط الأصل بمستند عكس الإلغاء.</p>
-        <div className="table-controls"><button className="button primary" type="button" disabled={busy||(!selectedReverse.length&&!selectedForward.length)||!!issues.length} onClick={linkSelectedForReview}>ربط المحدد وفتح للمراجعة ({selectedForward.length} جديد، {selectedReverse.length} عكسي)</button></div><div className="table-scroll"><table>
-          <thead><tr><th>تحديد</th><th>مستند عكس الإلغاء</th><th>الترحيل الأصلي المقابل</th><th>تاريخ العكس</th><th>الفرع</th><th>البنود</th><th>Remarks</th><th>السجل</th></tr></thead>
+        <div className="table-scroll"><table>
+          <thead><tr><th>مستند عكس الإلغاء</th><th>الترحيل الأصلي المقابل</th><th>تاريخ العكس</th><th>الفرع</th><th>البنود</th><th>Remarks</th><th>السجل</th></tr></thead>
           <tbody>{visibleReversals.map(group=>{
             const member=group.members[0];
             return <tr key={member.transfer.number}>
-              <td>{isLinkableReverse(group)&&<input className="sap-import-check" type="checkbox" aria-label={'تحديد ترحيل عكسي '+member.transfer.number} checked={selectedReverse.includes(keyOf(group))} disabled={busy||!!issues.length} onChange={event=>setSelectedReverse(previous=>event.target.checked?[...previous,keyOf(group)]:previous.filter(item=>item!==keyOf(group)))}/>}</td><td><code>{member.transfer.number}</code></td>
+              <td><code>{member.transfer.number}</code></td>
               <td>{member.canceledTransferNo?<code>{member.canceledTransferNo}</code>:'رقم الأصل غير مذكور'}</td>
               <td>{member.transfer.date||'—'}</td>
               <td>{member.branch||member.branchLabel||'—'}</td>
@@ -362,45 +275,41 @@ export default function SapImport({branches,readRecords,readSavedDraft,mergeSave
       </>:<>
       <div className="table-controls">
         <select aria-label="حالة الاستيراد" value={filter} onChange={event=>setFilter(event.target.value)}>
-          <option value="all">كل المجموعات ({groups.length-reversals.length})</option>
+          <option value="all">كل الكشوف ({groups.length-reversals.length})</option>
           <option value="ready">جاهزة للحفظ ({ready.length})</option>
           <option value="saved">مسجّلة سابقًا</option>
           <option value="review">بحاجة لمراجعة</option>
         </select>
-        <button className="button secondary" type="button" disabled={busy||!shownReady.length||!!issues.length} onClick={()=>setSelected(shownReady.map(keyOf))}>تحديد المجموعات الجاهزة الظاهرة</button>
-        <button className="button primary" type="button" disabled={busy||!selectedGroups.length||!!issues.length||!!selectedReverse.length||!!selectedForward.length||!!savedTarget} onClick={saveSelected}>حفظ المحدد ({selectedGroups.length})</button>
-        <button className="button secondary" type="button" disabled={busy||(!selectedReverse.length&&!selectedForward.length)||!!issues.length} onClick={linkSelectedForReview}>ربط المحدد وفتح للمراجعة ({selectedForward.length} جديد، {selectedReverse.length} عكسي)</button><button className="button primary" type="button" disabled={busy||!savedTarget||selectedReverse.length!==1||!!issues.length} onClick={mergeSavedForInvoice}>دمج السجلين والعكسي</button>
+        <button className="button secondary" type="button" disabled={busy||!shownReady.length||!!issues.length} onClick={()=>setSelected(shownReady.map(keyOf))}>تحديد الكشوف الجاهزة الظاهرة</button>
+        <button className="button primary" type="button" disabled={busy||!selectedGroups.length||!!issues.length} onClick={saveSelected}>حفظ المحدد ({selectedGroups.length})</button>
       </div>
-      {hiddenSelected>0&&<p className="hint">المحدد يشمل {hiddenSelected} مجموعة خارج النتائج الظاهرة.</p>}
-      <p className="hint">تغيير نص البحث يلغي التحديد السابق حتى لا تربط ترحيلات مخفية بالخطأ. المحدد الآن: {selected.length+(savedTarget?1:0)} مجموعة و{selectedForward.length} ترحيل جديد و{selectedReverse.length} ترحيل عكسي.</p>
-      <p className="hint">للربط: حدد مجموعة فواتير واحدة، ثم حدد الترحيلات العكسية المطلوبة واضغط «ربط المحدد وفتح للمراجعة». بعدها احفظ المجموعة من شاشة المطابقة.</p>
-      <p className="hint">الحفظ يسجّل الترحيلات كغير مستلمة ورقيًا. إذا رقم الفاتورة ناقص، بتقدر تضيفه لما توصلك الورقة. إذا ظهر أكثر من رقم فاتورة، وزّع البنود بينها حسب الورق بعد فتح المجموعة.</p>
+      {hiddenSelected>0&&<p className="hint">المحدد يشمل {hiddenSelected} كشف خارج النتائج الظاهرة.</p>}
+      <p className="hint">الترحيل بلا رقم فاتورة يُحفظ لوحده. بعد ما توصلك الفاتورة الزرقاء، افتح الترحيل وسجّل رقمها. لإضافة ترحيل أو عكسي استخدم «إضافة ترحيل» من الكشف المفتوح.</p>
       {message&&<p role="status">{message}</p>}
       <div className="table-scroll"><table>
         <thead><tr><th>تحديد</th><th>الترحيلات</th><th>الفرع</th><th>الفواتير الزرقاء</th><th>البنود</th><th>الحالة</th><th>فتح</th></tr></thead>
         <tbody>{shown.map(group=>{
           const key=keyOf(group);
           return <tr key={key}>
-            <td>{isReady(group)?<input className="sap-import-check" type="checkbox" aria-label={'تحديد مجموعة '+key} checked={selected.includes(key)} disabled={busy||!!issues.length} onChange={event=>{setSavedTarget(null);setSelected(previous=>event.target.checked?[...previous,key]:previous.filter(item=>item!==key))}}/>:group.members.some(member=>member.reverseMovement)?<input className="sap-import-check" type="checkbox" aria-label={'تحديد ترحيل عكسي '+key} title={isLinkableReverse(group)?'تحديد الترحيل العكسي':reverseProblem(group)} checked={selectedReverse.includes(key)} disabled={busy||!!issues.length||!isLinkableReverse(group)} onChange={event=>setSelectedReverse(previous=>event.target.checked?[...previous,key]:previous.filter(item=>item!==key))}/>:null}</td>
-            <td>{group.members.map(item=>{
-              const already=recordedTransferNumbers.has(documentNo(item.transfer.number));
-              return <div key={item.transfer.number}>{group.savedIds.length&&!item.reverseMovement&&!item.reversal&&!item.issues.length&&!already&&<label><input className="sap-import-check" type="checkbox" aria-label={'تحديد ترحيل جديد '+item.transfer.number} checked={selectedForward.includes(item.transfer.number)} disabled={busy} onChange={event=>setSelectedForward(previous=>event.target.checked?[...previous,item.transfer.number]:previous.filter(number=>number!==item.transfer.number))}/>ترحيل جديد للإضافة</label>}<details><summary><code>{item.transfer.number}</code></summary><p dir="auto">{item.remarks||'بدون Remarks'}</p></details></div>;
-            })}</td>
+            <td>{isReady(group)&&<input className="sap-import-check" type="checkbox" aria-label={'تحديد كشف '+key}
+              checked={selected.includes(key)} disabled={busy||!!issues.length}
+              onChange={event=>setSelected(previous=>event.target.checked?[...previous,key]:previous.filter(item=>item!==key))}/>}</td>
+            <td>{group.members.map(item=><details key={item.transfer.number}>
+              <summary><code>{item.transfer.number}</code></summary><p dir="auto">{item.remarks||'بدون Remarks'}</p>
+            </details>)}</td>
             <td>{group.draft.branch||group.members[0].branchLabel||'—'}</td>
             <td dir="ltr">{group.draft.invoices.map(invoice=>invoice.number).filter(Boolean).join('، ')||'—'}</td>
             <td>{group.members.reduce((count,item)=>count+item.lineCount,0)}</td>
-            <td>{group.allTransfersSaved?'مسجّلة':group.savedIds.length?'مرتبطة بسجل سابق؛ راجع المجموعة قبل إضافة ترحيل جديد':group.issues.join('، ')||(group.draft.invoices.some(invoice=>!invoice.number)?'جاهزة للحفظ · رقم الفاتورة ناقص':'جاهزة للحفظ')}
-              {group.members.some(member=>member.reverseMovement)&&!isLinkableReverse(group)&&<p className="red">تعذّر تحديد العكسي: {reverseProblem(group)}</p>}{errors[key]&&<p className="red">{errors[key]}</p>}</td>
-            <td>{group.savedIds.map((id,index)=>{
-              const record=previewRecords.find(entry=>entry.id===id);
-              const stored=record?JSON.parse(record.payload) as Draft:undefined;
-              return <div key={id}>{!group.reversal&&!group.members.some(member=>member.reverseMovement)&&<label><input type="radio" name="saved-target-group" checked={savedTarget?.id===id&&savedTarget.key===key} disabled={busy} onChange={()=>{setSelected([]);setSavedTarget({key,id})}}/>اختيار المحفوظ {index+1} للربط · ترحيلات {(stored?.transfers||[]).map(t=>t.number).join('، ')||'—'}</label>}<button type="button" className="button secondary small" disabled={busy} onClick={()=>openSaved(id)}>فتح المحفوظ {index+1}</button></div>;
-            })}
+            <td>{group.allTransfersSaved?'محفوظ':group.savedIds.length?'مرتبط بسجل سابق':group.issues.join('، ')||
+              (group.draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'جاهز للحفظ':'ترحيل بلا فاتورة زرقاء')}
+              {errors[key]&&<p className="red">{errors[key]}</p>}</td>
+            <td>{group.savedIds.map((id,index)=><button key={id} type="button" className="button secondary small"
+              disabled={busy} onClick={()=>openSaved(id)}>فتح المحفوظ {index+1}</button>)}
               {!group.savedIds.length&&<button type="button" className="button secondary small" disabled={busy} onClick={()=>openDraft(group.draft)}>فتح للمراجعة</button>}</td>
           </tr>;
         })}</tbody>
       </table></div>
-      {!shown.length&&<p className="hint">{search?'ما في مجموعات بتطابق البحث والفلتر.':'ما في مجموعات بهالحالة.'}</p>}
+      {!shown.length&&<p className="hint">{search?'ما في كشوف بتطابق البحث والفلتر.':'ما في كشوف بهالحالة.'}</p>}
       </>}
     </>}
   </details>{notification&&<div className="modal-backdrop notification-backdrop"><section className="modal panel notification-dialog" role="alertdialog" aria-modal="true" aria-label={notification.error?'تنبيه':'إشعار'}><h2>{notification.error?'تنبيه':'إشعار'}</h2><p>{notification.text}</p><div className="notification-actions"><button type="button" className="button primary" onClick={()=>setNotification(null)}>حسنًا</button></div></section></div>}</>;

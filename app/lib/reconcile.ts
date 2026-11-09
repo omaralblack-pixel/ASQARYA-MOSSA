@@ -3,6 +3,7 @@ export type Item={sapAliases?:SapAlias[];code:string;sapCode:string;name:string;
 export type TransferLine={transferNo?:string;row:number;sapCode:string;name:string;quantity:number;unit:string;from:string;to:string};
 export type Invoice={id:string;title?:string;number:string;date:string;dateTransferNos?:string[];manualDate?:boolean;manualNumber?:boolean;amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];quantities:Record<string,string>};
 export type Transfer={id:string;number:string;date:string;paste:string};
+export type TransferSource = {number: string; recordId: string; version: number};
 export type Draft={pageEntryOrder?:string[];excludedItems?:Record<string,string>;mode?:'manual';acceptedDifference?:{paper:number;calculated:number};checks?:Record<string,{signature:string;state:'match'|'difference';note?:string}>;pages?:Record<string,string>;id?:string;version?:number;branch:string;driver:string;date:string;transfers:Transfer[];invoices:Invoice[];notes:string;referenceSnapshot?:Item[];useCurrentReference?:boolean;linkedSapCodes?:string[]};
 export function digits(v:string){return v.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)))}
 export function numeric(v:unknown):number|null{const s=digits(String(v??'')).trim().replace(/٬/g,',').replace(/٫/g,'.');if(!s)return null;if(!/^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(s))return null;const n=Number(s.replace(/,/g,''));return Number.isFinite(n)?n:null}
@@ -32,7 +33,7 @@ export function moveLinkedPage(pages:Draft['pages'],sapCode:string,code:string){
  return next;
 }
 export function reconcile(d:Draft,reference:Item[]){if(d.mode==='manual')return reconcileManual(d,reference);return reconcileLegacy(d,reference)}
-function reconcileLegacy(d:Draft,reference:Item[]){const parsed={lines:[] as TransferLine[],issues:[] as string[],excluded:[] as string[]};for(const [index,t] of d.transfers.entries()){const p=parseTransfer(t.paste,{allowReverse:true});parsed.lines.push(...p.lines.map(l=>({...l,transferNo:t.number})));parsed.issues.push(...p.issues.map(i=>'الترحيل '+(t.number||index+1)+': '+i));parsed.excluded.push(...p.excluded.map(i=>'الترحيل '+(t.number||index+1)+': '+i))}const active=reference.filter(i=>i.active),bySap=new Map(sapReferences(active).map(i=>[i.sapCode,i])),byCode=new Map(active.map(i=>[i.code,i]));const problems=[...parsed.issues];const transferNos=d.transfers.map(t=>documentNo(t.number));if(transferNos.some(n=>!n))problems.push('أكمل أرقام الترحيلات');if(new Set(transferNos).size!==transferNos.length)problems.push('رقم ترحيل مكرر داخل المجموعة');if(!d.transfers.length)problems.push('أضف ترحيلًا واحدًا على الأقل');if(!parsed.lines.length)problems.push('أضف ترحيل SAP صالحًا للمطابقة');if(!d.invoices.length)problems.push('أضف فاتورة مؤسسة واحدة على الأقل');const numbers=d.invoices.map(i=>digits(i.number.trim()));if(numbers.some(n=>!n))problems.push('أكمل أرقام الفواتير');if(new Set(numbers).size!==numbers.length)problems.push('رقم فاتورة مكرر داخل المجموعة');if(d.invoices.some(i=>!i.complete))problems.push('أكّد اكتمال بنود كل فاتورة بعد إدخالها');if(d.invoices.some(i=>fils(i.amount)===null))problems.push('أكمل مبلغ كل فاتورة بدقة حتى 3 منازل');
+function reconcileLegacy(d:Draft,reference:Item[]){const parsed={lines:[] as TransferLine[],issues:[] as string[],excluded:[] as string[]};for(const [index,t] of d.transfers.entries()){const p=parseTransfer(t.paste,{allowReverse:true});parsed.lines.push(...p.lines.map(l=>({...l,transferNo:t.number})));parsed.issues.push(...p.issues.map(i=>'الترحيل '+(t.number||index+1)+': '+i));parsed.excluded.push(...p.excluded.map(i=>'الترحيل '+(t.number||index+1)+': '+i))}const active=reference.filter(i=>i.active),bySap=new Map(sapReferences(active).map(i=>[i.sapCode,i])),byCode=new Map(active.map(i=>[i.code,i]));const problems=[...parsed.issues];const transferNos=d.transfers.map(t=>documentNo(t.number));if(transferNos.some(n=>!n))problems.push('أكمل أرقام الترحيلات');if(new Set(transferNos).size!==transferNos.length)problems.push('رقم ترحيل مكرر داخل المجموعة');if(!d.transfers.length)problems.push('أضف ترحيلًا واحدًا على الأقل');if(!parsed.lines.length)problems.push('أضف ترحيل SAP صالحًا للمطابقة');if(!d.invoices.length)problems.push('أضف فاتورة مؤسسة واحدة على الأقل');const numbers=d.invoices.map(i=>invoiceDocumentNo(i.number));if(numbers.some(n=>!n))problems.push('أكمل أرقام الفواتير');if(new Set(numbers).size!==numbers.length)problems.push('رقم فاتورة مكرر داخل المجموعة');if(d.invoices.some(i=>!i.complete))problems.push('أكّد اكتمال بنود كل فاتورة بعد إدخالها');if(d.invoices.some(i=>fils(i.amount)===null))problems.push('أكمل مبلغ كل فاتورة بدقة حتى 3 منازل');
 const rows=new Map<string,{key:string;item:Item|null;sapCode:string;code:string;name:string;transfer:number|null;invoice:number;details:TransferLine[];errors:string[];perInvoice:(number|null)[];unitPrice:number|null;expected:number|null;difference:number|null;state:string}>();
 const ensure=(key:string,item:Item|null,sapCode:string,code:string,name:string)=>{if(!rows.has(key))rows.set(key,{key,item,sapCode,code,name,transfer:0,invoice:0,details:[],errors:[],perInvoice:d.invoices.map(()=>0),unitPrice:item?.price??null,expected:null,difference:null,state:''});return rows.get(key)!};
 for(const l of parsed.lines){const item=bySap.get(l.sapCode)||null;const r=ensure(item?'i:'+item.code:'s:'+l.sapCode,item,l.sapCode,item?.code||'',item?.name||l.name);r.details.push(l);if(!item){r.transfer=null;if(!r.errors.includes('كود SAP غير مربوط بصنف مؤسسة معتمد'))r.errors.push('كود SAP غير مربوط بصنف مؤسسة معتمد');continue}try{const q=convert(l,item);if(r.transfer!==null)r.transfer+=q}catch(e:any){r.transfer=null;r.errors.push(e.message)}}
@@ -43,13 +44,20 @@ function filsSum(values:string[]){const n=values.map(fils);return n.some(v=>v===
 export const labels:Record<string,string>={review:'بحاجة مراجعة',difference:'يوجد فرق',match:'مطابق',quantityMatch:'الكميات مطابقة؛ الأسعار ناقصة',invoiceOnly:'في الفواتير فقط',transferOnly:'في الترحيل فقط'};
 
 export function documentNo(s:string){return digits(s).trim().replace(/,/g,'').replace(/\s+/g,' ')}
+export function invoiceDocumentNo(value: unknown) {
+ const number = documentNo(String(value ?? ''));
+ return /^0+$/.test(number) ? '' : number;
+}
 export function dateValue(s:string,format='dmy'):string|null{const n=digits(String(s)).trim().split(' ')[0];let m=n.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);let y,mo,day;if(m){y=+m[1];mo=+m[2];day=+m[3]}else{m=n.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);if(!m)return null;y=+m[3];mo=+(format==='mdy'?m[1]:m[2]);day=+(format==='mdy'?m[2]:m[1])}const d=new Date(Date.UTC(y,mo-1,day));if(d.getUTCFullYear()!==y||d.getUTCMonth()!==mo-1||d.getUTCDate()!==day)return null;return `${y}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}`}
-export function withInvoiceDates<T extends Draft>(draft:T):T {
- const outgoing=draft.transfers.flatMap(transfer=>{
+function outgoingTransferDates(transfers: Transfer[]) {
+ return transfers.flatMap(transfer=>{
   const date=dateValue(transfer.date);
   if(!date||!parseTransfer(transfer.paste).lines.length)return [];
   return [{number:documentNo(transfer.number),date}];
  }).sort((a,b)=>a.date.localeCompare(b.date));
+}
+export function withInvoiceDates<T extends Draft>(draft:T):T {
+ const outgoing = outgoingTransferDates(draft.transfers);
  return {...draft,invoices:draft.invoices.map(invoice=>{
   if(invoice.manualDate===true&&dateValue(invoice.date))return invoice;
   const linked=Array.isArray(invoice.dateTransferNos)&&outgoing.find(transfer=>invoice.dateTransferNos!.includes(transfer.number));
@@ -59,6 +67,18 @@ export function withInvoiceDates<T extends Draft>(draft:T):T {
   date.setUTCDate(date.getUTCDate()-1);
   return {...invoice,date:date.toISOString().slice(0,10)};
  })};
+}
+export function addTransferToDraft<T extends Draft>(draft: T, transfer: Transfer, branch: string, replaceId?: string): T {
+ const originalDates = outgoingTransferDates(draft.transfers.filter(row => row.id !== replaceId));
+ const invoices = draft.invoices.map(invoice => {
+  if (!originalDates.length || !invoiceDocumentNo(invoice.number) || invoice.manualDate ||
+      originalDates.some(row => invoice.dateTransferNos?.includes(row.number))) return invoice;
+  return {...invoice, dateTransferNos: [originalDates[0].number]};
+ });
+ const transfers = replaceId
+  ? draft.transfers.map(row => row.id === replaceId ? {...transfer, id: replaceId} : row)
+  : [...draft.transfers, transfer];
+ return withInvoiceDates({...draft, branch: draft.branch || branch, invoices, transfers});
 }
 export function pageNumber(value?: string) {
   return Number(digits(value ?? '').trim()) || 0;
@@ -88,7 +108,7 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
  const saved=new Map<string,{group:any;date:string|null;complete:boolean}>();
  for(const group of groups){
   const draft=typeof group.payload==='string'?JSON.parse(group.payload):group.payload;
-  const complete=Boolean(draft.invoices?.length)&&draft.invoices.every((invoice:Invoice)=>invoice.number?.trim()&&invoice.complete);
+  const complete=Boolean(draft.invoices?.length)&&draft.invoices.every((invoice:Invoice)=>invoiceDocumentNo(invoice.number)&&invoice.complete);
   for(const transfer of draft.transfers||[]){
    for(const number of transferNumbers(transfer.number||'')){
     if(!saved.has(number))saved.set(number,{group,date:dateValue(transfer.date||''),complete});

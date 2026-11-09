@@ -2,7 +2,7 @@
 
 import {useMemo, useState} from 'react';
 import {Download, RefreshCw, Search} from 'lucide-react';
-import {dateValue, digits, fils, money, transferNumbers, type Draft} from '../lib/reconcile';
+import {dateValue, digits, fils, invoiceDocumentNo, money, transferNumbers, type Draft} from '../lib/reconcile';
 
 type RecordSummary = {id: string; branch: string; doc_date: string; payload: string};
 const institution = 'المؤسسة الاستهلاكية العسكرية';
@@ -14,7 +14,7 @@ function registerRows(records: RecordSummary[], status: 'received' | 'pending' =
     
     const transfers = new Map(group.transfers.flatMap(transfer => transferNumbers(transfer.number || '').map(number => [number, dateValue(transfer.date || '') || ''] as const)));
     return group.invoices.flatMap((invoice, index) => {
-      if (!invoice.number?.trim() || (status === 'received' ? invoice.complete !== true : invoice.complete === true)) return [];
+      if (!invoiceDocumentNo(invoice.number) || (status === 'received' ? invoice.complete !== true : invoice.complete === true)) return [];
       const date = dateValue(invoice.date || '') || '';
       const groupDate = dateValue(record.doc_date || '') || '';
       const amount = fils(invoice.amount || '');
