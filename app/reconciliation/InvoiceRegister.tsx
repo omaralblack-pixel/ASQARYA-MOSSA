@@ -57,7 +57,8 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
 
   async function exportRegister() {
     const {invoiceWorkbook} = await import('../lib/invoice-workbook');
-    const url = URL.createObjectURL(invoiceWorkbook([headers, ...visible.filter(row => received.some(item => item.key === row.key)).map(row => row.values)]));
+    const exportRows = [...visible].sort((a, b) => (a.date || '9999-99-99').localeCompare(b.date || '9999-99-99'));
+    const url = URL.createObjectURL(invoiceWorkbook([headers, ...exportRows.map(row => row.values)]));
     const link = document.createElement('a');
     link.href = url;
     link.download = 'institution-invoices' + (month ? '-' + month : '') + '.xlsx';
@@ -73,11 +74,11 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
     <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 210px",gap:16,alignItems:"start"}}>
     <section className="panel" style={{minWidth:0}}>
       <div className="table-controls">
-        <div className="search"><Search size={16}/><input aria-label="بحث في سجل الفواتير" value={query} onChange={e => setQuery(e.target.value)} placeholder="ابحث بالفرع أو رقم الفاتورة أو الترحيل"/></div>
+        <div className="search"><Search size={16}/><input aria-label="البحث برقم الفاتورة أو الفرع أو الترحيل" value={query} onChange={e => setQuery(e.target.value)} placeholder="اكتب رقم الفاتورة للتأكد من وصولها، أو ابحث بالفرع أو الترحيل"/></div>
         <label>شهر الفاتورة<input type="month" value={month} onChange={e => setMonth(e.target.value)}/></label>
         <button className="button secondary" disabled={status !== "received" || !visible.length} onClick={exportRegister}><Download size={16}/>تصدير Excel</button>
       </div>
-      <p className="hint">{status === "received" ? "فواتير وصلتني وشيّكتها" : "فواتير لم يصل ورقها"} · {visible.length} فاتورة · عند غياب تاريخ الفاتورة يُستخدم تاريخ المجموعة في فلتر الشهر.</p>
+      <p className="hint">{status === "received" ? "فواتير وصلتني وشيّكتها" : "فواتير لم يصل ورقها"} · {visible.length} فاتورة · الإكسل مرتب من أقدم تاريخ لأحدث تاريخ. عند غياب تاريخ الفاتورة يُستخدم تاريخ المجموعة للترتيب وفلتر الشهر.</p>
       <div className="table-scroll">
         <table><thead><tr>{headers.map(header => <th key={header}>{header}</th>)}<th>المجموعة</th></tr></thead>
           <tbody>{visible.map(row => <tr key={row.key}>
