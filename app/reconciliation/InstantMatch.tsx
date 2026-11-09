@@ -24,9 +24,9 @@ const fresh = (number = ''):Draft => ({
   transfers:[], invoices:[invoice(number)], checks:{}
 });
 
-async function getJson(url:string) {
+async function getJson<T extends object>(url:string):Promise<T> {
   const response = await fetch(url, {cache:'no-store'});
-  const data = await response.json();
+  const data = await response.json() as T & {error?:string};
   if (!response.ok) throw Error(data.error || 'تعذّر استرجاع البيانات');
   return data;
 }
@@ -35,7 +35,7 @@ async function saveJson(draft:Draft, sources:TransferSource[]) {
     method:'POST', headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'save', draft, transferSources:sources})
   });
-  const data = await response.json();
+  const data = await response.json() as {error?:string};
   if (!response.ok) throw Error(data.error || 'تعذّر الحفظ');
   return data as {id:string;version:number;referenceSnapshot:Item[]};
 }
@@ -114,7 +114,7 @@ export default function InstantMatch({
   const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind),[records,imports,number,kind]);
 
   async function refreshRecords() {
-    const data = await getJson('/api/reconcile?records=1');
+    const data = await getJson<{records:Summary[]}>('/api/reconcile?records=1');
     const list = data.records as Summary[];
     setRecords(list);
     return list;
@@ -126,7 +126,7 @@ export default function InstantMatch({
     setLoading(true);
     async function initialize() {
       const results = await Promise.allSettled([
-        getJson('/api/reconcile?records=1'),
+        getJson<{records:Summary[]}>('/api/reconcile?records=1'),
         readSavedSapImport()
       ]);
       if (!active) return;
@@ -161,7 +161,7 @@ export default function InstantMatch({
   }
 
   async function loadRecord(record:Summary, target = '', searchKind:SearchKind = 'transfer') {
-    const data = await getJson('/api/reconcile?id='+encodeURIComponent(record.id));
+    const data = await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(record.id));
     const saved = JSON.parse(data.record.payload) as Draft;
     setDraft(withInvoiceDates(fillSearchedAmount({...saved,mode:'manual',id:data.record.id,version:data.record.version,checks:saved.checks||{}},target,searchKind)));
     setSources({});
@@ -205,7 +205,7 @@ export default function InstantMatch({
         const first = occupied[0];
         if (first) {
           // Keep a previously saved, invoice-free transfer as the owner of the new invoice.
-          const original = await getJson('/api/reconcile?id='+encodeURIComponent(first.row.id));
+          const original = await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(first.row.id));
           const base = JSON.parse(original.record.payload) as Draft;
           const other = proposed.transfers.filter(row=>row.number!==first.number);
           const baseTransfer = base.transfers.find(row=>transferNumbers(row.number).includes(first.number));
@@ -236,7 +236,7 @@ export default function InstantMatch({
           const row = rows.find(item=>item.id===saved.recordId);
           if (row) {await loadRecord(row);return}
         } else if (savedResponse.status!==404) {
-          throw Error((await savedResponse.json()).error||'تعذّر البحث عن الترحيل.');
+          throw Error(((await savedResponse.json()) as {error?:string}).error||'تعذّر البحث عن الترحيل.');
         }
         setSources({});
         setDraft({...fresh(),transfers:[{id:uuid(),number:searched,date:localDate(),paste:''}]});
@@ -263,7 +263,7 @@ export default function InstantMatch({
       let stored:SavedTransfer|null = null;
       const response=await fetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
       if (response.ok) stored=await response.json() as SavedTransfer;
-      else if (response.status!==404) throw Error((await response.json()).error||'تعذّر فحص الترحيل.');
+      else if (response.status!==404) throw Error(((await response.json()) as {error?:string}).error||'تعذّر فحص الترحيل.');
       if (stored && stored.recordId!==draft.id && stored.invoiceNumbers.length) {
         throw Error('الترحيل '+searched+' يحمل فاتورة زرقاء رقم '+stored.invoiceNumbers.join('، ')+'، ولا يمكن إضافته كترحيل ثانٍ.');
       }
@@ -285,7 +285,7 @@ export default function InstantMatch({
         throw Error('هذا الترحيل محفوظ مع ترحيلات في بطاقة واحدة؛ يجب فصلها أولًا.');
       }
       if (stored && !draft.id && draft.transfers.length===0) {
-        const data=await getJson('/api/reconcile?id='+encodeURIComponent(stored.recordId));
+        const data=await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(stored.recordId));
         const base=JSON.parse(data.record.payload) as Draft;
         setDraft(withInvoiceDates({...base,id:stored.recordId,version:stored.version,
           invoices:draft.invoices,branch:draft.branch||stored.branch,mode:'manual',checks:{}}));

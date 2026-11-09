@@ -48,8 +48,9 @@ export default function CatalogReplacement({reference,onSaved}:{reference:Item[]
     setBusy(true);setError('');setNotice('');
     try {
       const freshResponse=await fetch('/api/reconcile',{cache:'no-store'});
-      const freshData=await freshResponse.json();
+      const freshData=await freshResponse.json() as {error?:string;reference?:Item[]};
       if(!freshResponse.ok)throw Error(freshData.error||'تعذر تحديث المرجع');
+      if(!Array.isArray(freshData.reference))throw Error('استجابة مرجع الأصناف غير صالحة. أعد تحميل الصفحة.');
       if(JSON.stringify(freshData.reference)!==JSON.stringify(reference)){
         onSaved(freshData.reference);
         setSelected([]);
@@ -59,7 +60,7 @@ export default function CatalogReplacement({reference,onSaved}:{reference:Item[]
       const response=await fetch('/api/reconcile',{method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'reference',items})});
-      const data=await response.json();
+      const data=await response.json() as {error?:string;reference?:Item[]};
       if(!response.ok)throw Error(data.error||'تعذر حفظ تعريفات الأصناف');
       onSaved(data.reference||items);
       setSelected([]);
@@ -75,8 +76,8 @@ export default function CatalogReplacement({reference,onSaved}:{reference:Item[]
       <p>رقم المادة واسمها بالمؤسسة مستقلان عن كود ووصف SAP. التحديث يغيّر ربط SAP أو شدّته فقط، ولا يغيّر هوية الصنف بالمؤسسة أو سعره.</p>
     </div></div>
     <section className="panel">
-      <div className="section-title"><ClipboardPaste size={20}/><h2>لصق أصناف مشروع التفريغ</h2></div>
-      <p className="hint">انسخ الجدول من مشروع التفريغ مع سطر العناوين. يمكن استعمال Item No. وItem Description وUoM Name، ومعها «حبات الكرتونة» إن كانت متوفرة. لا نعتبر Quantity شدّة كرتونة. إذا لم تكن الشدّة موجودة يبقى تعريفها السابق كما هو.</p>
+      <div className="section-title"><ClipboardPaste size={20}/><h2>لصق جدول أصناف المؤسسة وSAP</h2></div>
+      <p className="hint">الصق جدول الأصناف من SAP أو ملف المؤسسة مع سطر العناوين. لا يوجد اتصال بمشروع خارجي. يمكن استعمال Item No. وItem Description وUoM Name، ومعها «حبات الكرتونة» إن كانت متوفرة. لا نعتبر Quantity شدّة كرتونة. إذا لم تكن الشدّة موجودة يبقى تعريفها السابق كما هو.</p>
       <label>الأصناف وبيانات الشدّات من SAP<textarea dir="ltr" rows={7} value={paste} onChange={e=>{setPaste(e.target.value);setSelected([]);setError('')}} placeholder={'رقم المادة بالمؤسسة\tاسم المادة بالمؤسسة\tItem No.\tItem Description\tحبات الكرتونة\tUoM Name\tوزن الحبة كغم\n11371486\tكريمة المؤسسة\tDAR00005\tكريمة SAP\t20\tPiece\t'}/></label>
       {parsed.errors.map((message,index)=><p className="red" key={index} role="alert">{message}</p>)}
     </section>

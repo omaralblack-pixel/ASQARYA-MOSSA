@@ -33,9 +33,10 @@ export default function InstitutionAudit({reference,branches}:{reference:Item[];
       const [sap,registry]=await Promise.allSettled([
         readSavedSapImport(),
         fetch('/api/reconcile?records=1',{cache:'no-store'}).then(async response=>{
-          const result=await response.json();
+          const result=await response.json() as {error?:string;records?:StoredRecord[]};
           if(!response.ok)throw Error(result.error||'تعذرت قراءة السجل');
-          return result.records as StoredRecord[];
+          if(!Array.isArray(result.records))throw Error('رد سجل المطابقات غير صالح.');
+          return result.records;
         })
       ]);
       if(sap.status==='fulfilled'&&sap.value?.text){
@@ -79,8 +80,9 @@ export default function InstitutionAudit({reference,branches}:{reference:Item[];
         setTransfers(choice.group.draft.transfers);
       }else if(choice.record){
         const response=await fetch('/api/reconcile?id='+encodeURIComponent(choice.record.id),{cache:'no-store'});
-        const data=await response.json();
+        const data=await response.json() as {error?:string;record?:StoredRecord};
         if(!response.ok)throw Error(data.error||'تعذّر تحميل الترحيل');
+        if(!data.record)throw Error('بيانات الترحيل غير متاحة');
         const draft=JSON.parse(data.record.payload) as Draft;
         setTransfers(draft.transfers);
       }else throw Error('المستند غير متاح');
