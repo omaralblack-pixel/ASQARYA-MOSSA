@@ -315,7 +315,7 @@ export default function InstantMatch({
   const canSave=!!draft&&!!result&&result.status==='match'&&result.priceDifference===0
     &&transferWarnings.length===0&&!!draft.branch
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
-    &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null);
+    &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null&&dateValue(item.date));
   async function saveAndNext() {
     if (!draft||!canSave) return;
     setBusy(true);setError('');
@@ -443,6 +443,7 @@ export default function InstantMatch({
             <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?'مطابق':result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
         </div>
         {draft.invoices.length>1&&<p className="hint">النتيجة هنا لمجموع الفواتير المرتبطة؛ مطابقة مبلغ كل فاتورة منفردة تتطلب توزيع الأصناف على صفحاتها في شاشة المطابقة التفصيلية.</p>}
+        {draft.invoices.some(item=>!dateValue(item.date))&&<p className="hint" role="alert">حدّد تاريخ الفاتورة الزرقاء أو صحّح التاريخ التلقائي قبل الحفظ، حتى يظل محفوظًا في السجل.</p>}
         {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
           {transferWarnings.map((text,index)=><p key={'transfer-'+index}>{text}</p>)}
           {result.problems.map((text,index)=><p key={index}>{text}</p>)}
