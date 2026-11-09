@@ -67,4 +67,17 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 .notification-dialog p{color:#344f60;font-size:15px;line-height:1.8;margin:16px 0;overflow-wrap:anywhere;white-space:pre-wrap}
 .notification-heading{display:flex;align-items:center;justify-content:center;gap:10px}
 .notification-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:16px}
-@media print{.notification-backdrop{display:none!important}}
+@media print{.notification-backdrop{display:none!important}
+/* Quick invoice/transfer suffix search; stays inside the reconciliation screen. */
+.instant-document-search{position:relative;min-width:0}
+.instant-document-search>label{display:block}
+.instant-document-results{position:absolute;z-index:35;inset-inline:0;top:100%;margin-top:4px;max-height:320px;overflow-y:auto;background:#fff;border:1px solid #cadbe6;border-radius:9px;box-shadow:0 14px 30px #153e5424;padding:5px;min-width:min(360px,90vw)}
+.instant-results-heading{padding:9px 11px;color:#527080;font-size:12px;line-height:1.65}
+.instant-document-results button{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%;min-height:47px;padding:10px 12px;background:transparent;border:0;border-bottom:1px solid #eaf0f4;text-align:right;color:#244a5d;border-radius:5px}
+.instant-document-results button:hover,.instant-document-results button:focus-visible{background:#eaf5fa;outline:2px solid #9ed5e6;outline-offset:-2px}
+.instant-document-results button:last-child{border-bottom:0}
+.instant-document-results button strong{font-size:13px;font-variant-numeric:tabular-nums;direction:ltr}
+.instant-document-results button span{font-size:11px;font-weight:700;color:#267e92}
+.instant-document-results button small{font-size:10px;color:#698395;margin-inline-start:auto}
+
+}
