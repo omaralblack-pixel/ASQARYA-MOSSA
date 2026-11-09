@@ -21,6 +21,8 @@ export type ReplacementPreview = ReplacementInput & {
 };
 
 const normalized = (s:string) => s.toLowerCase().trim().replace(/[أإآٱ]/g,'ا')
+  // Arabic headings may contain shadda, vowels or tatweel (e.g. "شدّة الكرتونة").
+  .replace(/[\u064B-\u065F\u0670\u0640]/g,'')
   .replace(/[\s._:\-\/()\[\]]/g,'');
 const candidate = (headers:string[], names:string[]) =>
   headers.findIndex(h => names.includes(h));
