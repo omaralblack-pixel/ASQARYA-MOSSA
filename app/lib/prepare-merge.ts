@@ -13,7 +13,7 @@ export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer|nul
  let mergedReference=primary.referenceSnapshot;
  if(JSON.stringify(primary.referenceSnapshot)!==JSON.stringify(other.referenceSnapshot)){
   if(!primary.referenceSnapshot||!other.referenceSnapshot)throw Error('مرجع أحد السجلين غير محفوظ؛ يلزم مراجعة الأسعار والشدات.');
-  const signature=(draft:Draft,reference:Item[])=>reconcile(draft,reference).rows.map(row=>({key:row.key,code:row.code,sapCode:row.sapCode,transfer:row.transfer,unitPrice:row.unitPrice,expected:row.expected,errors:[...row.errors].sort()})).sort((x,y)=>x.key.localeCompare(y.key));
+  const signature=(draft:Draft,reference:Item[])=>{const result=reconcile(draft,reference);const excluded='excludedRows' in result?result.excludedRows:[];return [...result.rows,...excluded].map(row=>({key:row.key,code:row.code,sapCode:row.sapCode,transfer:row.transfer,unitPrice:row.unitPrice,expected:row.expected,errors:[...row.errors].sort()})).sort((x,y)=>x.key.localeCompare(y.key));};
   const baselineA=JSON.stringify(signature(primary,primary.referenceSnapshot));
   const baselineB=JSON.stringify(signature(other,other.referenceSnapshot));
   mergedReference=[primary.referenceSnapshot,other.referenceSnapshot].find(candidate=>JSON.stringify(signature(primary,candidate))===baselineA&&JSON.stringify(signature(other,candidate))===baselineB);
