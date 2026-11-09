@@ -1,5 +1,5 @@
 import {documentNo,parseTransfer,transferNumbers,type Draft,type Transfer} from './reconcile';
-export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer,invoiceNumber:string):Draft{
+export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer|null,invoiceNumber:string):Draft{
  if(!primary.id||!other.id||primary.id===other.id||primary.version==null||other.version==null)throw Error('يلزم اختيار سجلين محفوظين مختلفين.');
  if(primary.branch!==other.branch)throw Error('السجلان لفرعين مختلفين.');
  if(primary.invoices.length!==1||other.invoices.length!==1)throw Error('الدمج الآلي يتطلب فاتورة واحدة بكل مجموعة.');
@@ -16,9 +16,9 @@ export function prepareGroupMerge(primary:Draft,other:Draft,reverse:Transfer,inv
  if((a.attachments||[]).length||(b.attachments||[]).length)throw Error('توجد مرفقات تحتاج مراجعة قبل الدمج.');
  const mergeMap=(x:Record<string,string>|undefined,y:Record<string,string>|undefined)=>{const z={...x};for(const [key,value] of Object.entries(y||{})){if(z[key]!==undefined&&z[key]!==value)throw Error('توزيع الصفحات أو الاستبعادات مختلف ويحتاج مراجعة.');z[key]=value}return z};
  const checks={...primary.checks};for(const [key,value] of Object.entries(other.checks||{})){if(checks[key]&&JSON.stringify(checks[key])!==JSON.stringify(value))throw Error('تشييك الصنف مختلف ويحتاج مراجعة.');checks[key]=value}
- const parsed=parseTransfer(reverse.paste,{allowReverse:true});
- if(!parsed.lines.length||parsed.issues.length||parsed.excluded.length||parsed.lines.some(line=>line.from!=='011'))throw Error('الترحيل العكسي غير صالح.');
- const transfers=[...primary.transfers,...other.transfers,reverse],numbers=transfers.flatMap(t=>transferNumbers(t.number));
+ if(reverse){const parsed=parseTransfer(reverse.paste,{allowReverse:true});
+ if(!parsed.lines.length||parsed.issues.length||parsed.excluded.length||parsed.lines.some(line=>line.from!=='011'))throw Error('الترحيل العكسي غير صالح.');}
+ const transfers=[...primary.transfers,...other.transfers,...(reverse?[reverse]:[])],numbers=transfers.flatMap(t=>transferNumbers(t.number));
  if(numbers.length!==new Set(numbers).size)throw Error('رقم ترحيل مكرر.');
  if(transfers.length>30)throw Error('عدد الترحيلات يتجاوز الحد.');
  const invoice={...a,number,amount:a.amount||b.amount,date:a.date||b.date,title:a.title||b.title,complete:a.complete||b.complete,manualDate:a.manualDate||b.manualDate,manualNumber:true,dateTransferNos:[...new Set([...(a.dateTransferNos||[]),...(b.dateTransferNos||[])])]};

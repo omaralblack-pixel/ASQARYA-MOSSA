@@ -14,3 +14,14 @@ assert.equal(c.transfers.length,3);assert.equal(c.invoices[0].number,'2631202691
 assert.throws(()=>prepareGroupMerge(a,{...b,invoices:[{...i,amount:'1'}]},t('2615914',1,'011','001'),'bad'));
 assert.throws(()=>prepareGroupMerge(a,{...b,branch:'other'},t('2615914',1,'011','001'),'2631202691'));
 console.log('PASS: merge preview, reverse subtraction, originals preserved, conflict rejection');
+
+
+const p={...a,invoices:[{...i,number:'2622003541',amount:'250.510',complete:true}],transfers:[t('2615809',1,'001','011')]};
+const q={...b,transfers:[t('2615810',1,'001','011')]};
+const ordinary=prepareGroupMerge(p,q,null,'2622003541');
+assert.deepEqual(ordinary.transfers.map(x=>x.number),['2615809','2615810']);
+assert.equal(ordinary.invoices.length,1);assert.equal(ordinary.invoices[0].amount,'250.510');assert.equal(ordinary.invoices[0].complete,true);
+assert.throws(()=>prepareGroupMerge(p,{...q,transfers:[t('2615809',1,'001','011')]},null,'2622003541'));
+assert.throws(()=>prepareGroupMerge(p,{...q,invoices:[{...i,number:'2622003541',amount:'99'}]},null,'2622003541'));
+assert.throws(()=>prepareGroupMerge(p,{...q,invoices:[{...i,attachments:[{key:'receipt'}]}]},null,'2622003541'));
+console.log('PASS: ordinary merge preserves invoice and rejects conflicting groups');

@@ -53,12 +53,12 @@ if(linking){
 await db().prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind('reconciliationReference',value).run();return json({ok:true})}
 if(b.action==='mergeGroups'){
  const {firstId,secondId,firstVersion,secondVersion,reverse,invoiceNumber}=b;
- if(typeof firstId!=='string'||typeof secondId!=='string'||firstId===secondId||!Number.isInteger(firstVersion)||!Number.isInteger(secondVersion)||typeof invoiceNumber!=='string'||!reverse||typeof reverse.number!=='string'||typeof reverse.date!=='string'||typeof reverse.paste!=='string'||reverse.paste.length>500000)return json({error:'بيانات الدمج غير صالحة.'},400);
+ if(typeof firstId!=='string'||typeof secondId!=='string'||firstId===secondId||!Number.isInteger(firstVersion)||!Number.isInteger(secondVersion)||typeof invoiceNumber!=='string'||(reverse!=null&&(typeof reverse.number!=='string'||typeof reverse.date!=='string'||typeof reverse.paste!=='string'||reverse.paste.length>500000)))return json({error:'بيانات الدمج غير صالحة.'},400);
  const first:any=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(firstId).first();
  const second:any=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(secondId).first();
  if(!first||!second||first.version!==firstVersion||second.version!==secondVersion)return json({error:'تغير أحد السجلين؛ حدّث الصفحة وأعد المحاولة.'},409);
  let combined:Draft;
- try{combined=prepareGroupMerge({...JSON.parse(first.payload),id:first.id,version:first.version},{...JSON.parse(second.payload),id:second.id,version:second.version},reverse,invoiceNumber)}catch(error){return json({error:error instanceof Error?error.message:'تعذّر تجهيز الدمج.'},400)}
+ try{combined=prepareGroupMerge({...JSON.parse(first.payload),id:first.id,version:first.version},{...JSON.parse(second.payload),id:second.id,version:second.version},reverse??null,invoiceNumber)}catch(error){return json({error:error instanceof Error?error.message:'تعذّر تجهيز الدمج.'},400)}
  const numbers=combined.transfers.flatMap(t=>transferNumbers(t.number));const invoice=documentNo(invoiceNumber);
  const others:any=await db().prepare("SELECT r.id,json_extract(t.value,'$.number') AS number FROM reconciliations r,json_each(r.payload,'$.transfers') t WHERE r.id<>? AND r.id<>?").bind(firstId,secondId).all();
  const occupied=new Set((others.results||[]).flatMap((row:any)=>transferNumbers(String(row.number||''))));
