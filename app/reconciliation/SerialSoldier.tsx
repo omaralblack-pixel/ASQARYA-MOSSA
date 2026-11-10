@@ -7,7 +7,7 @@ const label={received:'واصل ومطابق',pending:'ورقه غير مؤكد�
 const color={received:'#d8f3dc',pending:'#fad5e5',missing:'#fad5e5',review:'#fff0bf'};
 async function getSaved():Promise<SerialRecord[]> {
  const response=await fetch('/api/reconcile?export=1',{cache:'no-store'});
- const data=await response.json();
+ const data:any=await response.json();
  if(!response.ok||!Array.isArray(data.records))throw Error(data.error||'تعذر قراءة السجلات المحفوظة.');
  return data.records;
 }
