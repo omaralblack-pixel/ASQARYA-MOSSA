@@ -5,7 +5,7 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {prepareReconciliation, parseTransfer, withInvoiceDates, transferNumbers, invoiceDocumentNo, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation, parseTransfer, withInvoiceDates, editInvoiceDate, transferNumbers, invoiceDocumentNo, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
 type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:string; version:number; branch:string};
@@ -385,7 +385,7 @@ export default function InstantMatch({
           <label>تاريخ الكشف<input type="date" value={draft.date} onChange={e=>update({...draft,date:e.target.value})}/></label>
         </div>
         <h3>الفواتير الزرقاء</h3>
-        <p className="hint">مبلغ وتاريخ كل فاتورة مستقلين عن تاريخ الترحيل. إذا كان التاريخ تلقائيًا، يُحسب قبل الترحيل بيوم ويمكنك تعديله.</p>
+        <p className="hint">التاريخ التلقائي يسبق الترحيل بيوم. تعديل تاريخ أي فاتورة يطبّق التاريخ نفسه على جميع فواتير الكشف.</p>
         <div className="invoice-grid">
           {draft.invoices.map((item,index)=><article className="invoice-card" key={item.id}>
             <div className="card-title"><b>الفاتورة {index+1}</b></div>
@@ -395,7 +395,7 @@ export default function InstantMatch({
               <label>مبلغ الفاتورة (د.أ)<input dir="ltr" inputMode="decimal" value={item.amount}
                 onChange={e=>updateInvoice(item.id,{amount:e.target.value})} placeholder="0.000"/></label>
               <label>تاريخ الفاتورة<input type="date" value={item.date}
-                onChange={e=>updateInvoice(item.id,{date:e.target.value,manualDate:!!e.target.value})}/></label>
+                onChange={e=>update({...draft,invoices:editInvoiceDate(draft.invoices,item.id,e.target.value)})}/></label>
             </div>
             <label className="check-label"><input type="checkbox" checked={item.complete}
               onChange={e=>updateInvoice(item.id,{complete:e.target.checked})}/>الفاتورة الورقية موجودة عندي</label>

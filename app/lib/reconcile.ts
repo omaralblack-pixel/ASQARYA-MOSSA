@@ -177,6 +177,9 @@ export function withInvoiceDates<T extends Draft>(draft:T):T {
   return {...invoice,date:date.toISOString().slice(0,10)};
  })};
 }
+export function editInvoiceDate(invoices:Invoice[],id:string,date:string):Invoice[]{
+ return invoices.map(invoice=>date||invoice.id===id?{...invoice,date,manualDate:!!date}:invoice);
+}
 export function addTransferToDraft<T extends Draft>(draft: T, transfer: Transfer, branch: string, replaceId?: string): T {
  const originalDates = outgoingTransferDates(draft.transfers.filter(row => row.id !== replaceId));
  const invoices = draft.invoices.map(invoice => {
