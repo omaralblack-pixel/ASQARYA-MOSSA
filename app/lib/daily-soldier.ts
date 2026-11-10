@@ -60,7 +60,7 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
     })).filter(transfer=>transfer.paste.length>0);
     const text=invoiceText(invoice);
     const choices=invoice.sapInstitutionChoices||{};
-    const sharedCodes:SoldierSharedChoice=[...new Set(selected.flatMap(transfer=>
+    const sharedCodes:SoldierSharedChoice[]=[...new Set(selected.flatMap(transfer=>
       parseTransfer(transfer.paste,{allowReverse:true}).lines.map(line=>line.sapCode.toUpperCase())))]
       .flatMap(code=>{
         const shared=sharedBySap.get(code);
