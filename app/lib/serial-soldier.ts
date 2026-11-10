@@ -1,20 +1,25 @@
-import {digits, fils, invoiceDocumentNo, pageNumber, parseTransfer, sapReferences, transferNumbers, type Draft} from './reconcile';
+import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, sapReferences, transferNumbers, type Draft} from './reconcile';
 
 export type SerialInput = {row:number; number:string; amount:string; date:string};
 export type SerialState = 'received'|'pending'|'missing'|'review';
 export type SerialTransfer = {number:string; kind:'main'|'dry'|'adjustment'};
-export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; branch:string};
+export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; unassignedTransfers:SerialTransfer[]; branch:string};
 export type SerialRecord = {id:string; branch:string; status?:string; payload:string};
-export type SerialReport = {rows:SerialRow[]; blockers:string[]; count:{received:number;pending:number;missing:number;review:number}};
+export type SerialReport = {rows:SerialRow[]; blockers:string[]; legacyWarnings:string[]; count:{received:number;pending:number;missing:number;review:number}};
 
+export const LEGACY_PAGE_CUTOFF='2026-11-10';
+export type SerialOptions={allowLegacyPageGaps?:boolean};
 type Saved = {record:SerialRecord; draft:Draft; invoice:Draft['invoices'][number]; index:number};
 function normalNumber(value:unknown) {
   return invoiceDocumentNo(value).replace(/[,٬]/g,'');
 }
-function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, blockers:string[]):SerialTransfer[] {
-  const found:SerialTransfer[]=[];
+function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, blockers:string[], warnings:string[], options:SerialOptions) {
+  const assigned:SerialTransfer[]=[];
+  const unassigned:SerialTransfer[]=[];
   const references=new Map(sapReferences(draft.referenceSnapshot||[]).map(item=>[item.sapCode,item.code]));
   const multi=draft.invoices.length>1;
+  const savedDate=dateValue(saved.invoice.date||'');
+  const canLegacy=options.allowLegacyPageGaps===true&&!!savedDate&&savedDate<LEGACY_PAGE_CUTOFF;
   for(const transfer of draft.transfers||[]){
     const numbers=transferNumbers(transfer.number||'');
     if(numbers.length!==1||!/^\d{4,20}$/.test(numbers[0])){
@@ -31,11 +36,9 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
       continue;
     }
     const routes=new Set(p.lines.map(line=>line.from+'>'+line.to));
-    if(routes.size!==1) {
-      blockers.push('الترحيل '+number+': يحتوي أكثر من اتجاه مستودعات؛ يجب فصل أو تصحيح المصدر.');
-      continue;
-    }
-    const route=[...routes][0];
+    // A single SAP document can contain more than one warehouse route.
+    // Its number is listed under adjustments, never arbitrarily assigned to main or dry.
+    const route=routes.size===1?[...routes][0]:null;
     const kind=route==='001>011'?'main':route==='002>011'?'dry':'adjustment';
     if(multi){
       const linked=new Set<number>();
@@ -48,21 +51,27 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
         linked.add(pg-1);
       }
       if(ambiguous||!linked.size){
-        blockers.push('الترحيل '+number+': مجموعة متعددة الفواتير، ولا يمكن ربط جميع بنوده بصفحات فواتير محددة.');
+        if(canLegacy){
+          // Group-level evidence only. Do not falsely attach this transfer to any invoice.
+          unassigned.push({number,kind});
+          warnings.push('ترحيل '+number+' في مجموعة الفاتورة '+saved.invoice.number+': رقم محفوظ لكن توزيعه على الفواتير القديمة غير معروف.');
+        }else{
+          blockers.push('الترحيل '+number+': مجموعة متعددة الفواتير، ولا يمكن ربط جميع بنوده بصفحات فواتير محددة.');
+        }
         continue;
       }
       if(!linked.has(saved.index))continue;
     }
-    if(found.some(row=>row.number===number)){
+    if(assigned.some(row=>row.number===number)){
       blockers.push('الترحيل '+number+' مكرر داخل الفاتورة '+saved.invoice.number+'.');
       continue;
     }
-    found.push({number,kind});
+    assigned.push({number,kind});
   }
-  return found;
+  return {assigned,unassigned};
 }
-export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):SerialReport {
-  const blockers:string[]=[];
+export function evaluateSerial(rows:SerialInput[], records:SerialRecord[], options:SerialOptions={}):SerialReport {
+  const blockers:string[]=[], legacyWarnings:string[]=[];
   const index=new Map<string,Saved[]>();
   const transferOwner=new Map<string,string>();
   for(const record of records){
@@ -83,7 +92,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
   const result:SerialRow[]=rows.map(row=>{
     const number=normalNumber(row.number);
     const key=number;
-    const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في السجل',transfers:[] as SerialTransfer[],branch:''};
+    const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في السجل',transfers:[] as SerialTransfer[],unassignedTransfers:[] as SerialTransfer[],branch:''};
     if(!/^\d{8,20}$/.test(number)){
       blockers.push('صف '+row.row+': رقم فاتورة مفقود أو غير صالح.');
       return {...base,state:'review',reason:'رقم فاتورة غير صالح'};
@@ -101,10 +110,11 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     if(!candidates.length)return base;
     const saved=candidates[0], amount=fils(row.amount);
     const confirmed=fils(saved.invoice.amount||'');
-    const transfers=serialTransfer(saved.draft,saved,transferOwner,blockers);
-    if(!transfers.length)blockers.push('فاتورة '+number+': لم يتم التحقق من أي ترحيل مرتبط بها.');
+    const linked=serialTransfer(saved.draft,saved,transferOwner,blockers,legacyWarnings,options);
+    const transfers=linked.assigned, unassignedTransfers=linked.unassigned;
+    if(!transfers.length&&!unassignedTransfers.length)blockers.push('فاتورة '+number+': لم يتم التحقق من أي ترحيل مرتبط بها.');
     const payloadSummary=(saved.draft as Draft & {summary?:{status?:string}}).summary;
-    const rowBase={...base,transfers,branch:saved.record.branch||''};
+    const rowBase={...base,transfers,unassignedTransfers,branch:saved.record.branch||''};
     if(amount===null||confirmed===null){
       blockers.push('فاتورة '+number+': مبلغ غير صالح أو مفقود في ملف سجى أو سجل المشروع.');
       return {...rowBase,state:'review',reason:'المبلغ غير صالح أو مفقود'};
@@ -116,7 +126,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
   });
   const count={received:0,pending:0,missing:0,review:0};
   for(const row of result)count[row.state]++;
-  return {rows:result,blockers:[...new Set(blockers)],count};
+  return {rows:result,blockers:[...new Set(blockers)],legacyWarnings:[...new Set(legacyWarnings)],count};
 }
 export function serialColumns(transfers:SerialTransfer[]):string[] {
   const seen=new Set<string>();
