@@ -1,5 +1,5 @@
-import {initialAuditCatalog,includeOfficialInstitution2026,includeConfirmedSapLinks,includeSharedInstitutionNumbers,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
-import {auditDraftWithSoldier,dailySoldierRows,soldierDateRangeRows} from '../../lib/daily-soldier';
+import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
+import {collectInvoicesByDate} from '../../lib/invoice-collector';
 import {sortSoldierInvoicePages} from '../../lib/soldier-page-sort';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
@@ -14,48 +14,25 @@ async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value F
 // Initialize only missing tables on standalone Cloudflare deployments.
 let schemaReady:Promise<unknown>|undefined;
 function ensureSchema(){return schemaReady??=db().batch(schemaStatements.map(sql=>db().prepare(sql))).catch(error=>{schemaReady=undefined;throw error})}
-async function currentSoldierCatalogEnvelope():Promise<{version:string|null;catalog:AuditCatalog}>{
+// The previously stored catalog remains read-only input for invoice page sorting.
+async function currentPageSortingCatalog():Promise<AuditCatalog>{
  const row=await db().prepare('SELECT value FROM settings WHERE key=?')
    .bind('institutionAuditCatalog').first<{value:string}>();
- if(!row)return {version:null,catalog:initialAuditCatalog(await refs())};
- const previous=JSON.parse(row.value) as {version:string;catalog:AuditCatalog};
- if(!validateAuditCatalog(previous.catalog))throw Error('مرجع الجندي المحفوظ غير صالح؛ أصلحه قبل اعتماد أي مطابقة.');
- const upgraded=includeSharedInstitutionNumbers(includeConfirmedSapLinks(includeOfficialInstitution2026(previous.catalog)));
- if(upgraded===previous.catalog)return previous;
- // Optimistic one-time migration. Preserve custom links, prices, and deletions.
- const next={version:crypto.randomUUID(),catalog:upgraded};
- const saved=await db().prepare("UPDATE settings SET value=? WHERE key=? AND json_extract(value,'$.version')=?")
-   .bind(JSON.stringify(next),'institutionAuditCatalog',previous.version).run();
- if(saved.meta.changes)return next;
- const latest=await db().prepare('SELECT value FROM settings WHERE key=?')
-   .bind('institutionAuditCatalog').first<{value:string}>();
- if(!latest)return {version:null,catalog:initialAuditCatalog(await refs())};
- const current=JSON.parse(latest.value) as {version:string;catalog:AuditCatalog};
- if(!validateAuditCatalog(current.catalog))throw Error('مرجع الجندي تغير إلى بيانات غير صالحة.');
- return current;
+ if(!row)return initialAuditCatalog(await refs());
+ const saved=JSON.parse(row.value) as {catalog:AuditCatalog};
+ if(!validateAuditCatalog(saved.catalog))throw Error('مرجع فرز الصفحات المحفوظ غير صالح.');
+ return saved.catalog;
 }
-async function currentSoldierCatalog():Promise<AuditCatalog>{
- return (await currentSoldierCatalogEnvelope()).catalog;
-}
-export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('auditCatalog')){
-  return json(await currentSoldierCatalogEnvelope());
-}if(u.searchParams.has('soldierDateFrom')||u.searchParams.has('soldierDateTo')){
- const from=u.searchParams.get('soldierDateFrom')||'';
- const to=u.searchParams.get('soldierDateTo')||'';
- const start=dateValue(from),end=dateValue(to);
- if(!start||!end)return json({error:'أدخل تاريخ بداية ونهاية صحيحين لفحص الفواتير.'},400);
- if(start>end)return json({error:'تاريخ البداية يجب أن يكون قبل تاريخ النهاية.'},400);
- if((Date.parse(end+'T00:00:00Z')-Date.parse(start+'T00:00:00Z'))/86400000>365)
-   return json({error:'أقصى فترة للفحص سنة كاملة.'},400);
+{try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('pageSortingCatalog')){
+ return json({catalog:await currentPageSortingCatalog()});
+}if(u.searchParams.has('invoiceListFrom')||u.searchParams.has('invoiceListTo')){
+ const from=u.searchParams.get('invoiceListFrom')||'';
+ const to=u.searchParams.get('invoiceListTo')||'';
  const records=await db().prepare('SELECT id,branch,payload FROM reconciliations ORDER BY updated DESC')
    .all<{id:string;branch:string;payload:string}>();
- return json(soldierDateRangeRows(records.results,await currentSoldierCatalog(),start,end));
-}if(u.searchParams.has('soldierDate')){
- const value=u.searchParams.get('soldierDate')||'';
- if(!dateValue(value))return json({error:'تاريخ الفاتورة الزرقاء غير صالح.'},400);
- const records=await db().prepare('SELECT id,branch,payload FROM reconciliations ORDER BY updated DESC').all<{id:string;branch:string;payload:string}>();
- return json(dailySoldierRows(records.results,await currentSoldierCatalog(),value));
- }if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
+ try{return json(collectInvoicesByDate(records.results,from,to))}
+ catch(error){return json({error:error instanceof Error?error.message:'الفترة غير صالحة.'},400)}
+}{const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
 type StoredReconciliation = {
   id: string;
   branch: string;
@@ -240,7 +217,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   const version = (old?.version ?? 0) + 1;
   const nonce = crypto.randomUUID();
   const now = new Date().toISOString();
-  const currentCatalog=await currentSoldierCatalog();
+  const currentCatalog=await currentPageSortingCatalog();
   const sorted=sortSoldierInvoicePages(withInvoiceDates({
     ...d, id, version, referenceSnapshot: previous?.referenceSnapshot,
     transfers: d.transfers.map((transfer, index) => ({...transfer, number: ts[index]})),
@@ -249,14 +226,8 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   const prepared = prepareReconciliation(sorted.draft, await refs());
   const reference = prepared.reference;
   const clean = {...prepared.draft, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
-  const soldier = auditDraftWithSoldier(prepared.draft,currentCatalog);
-  const originalSummary = summarize(prepared.result);
-  const summary = {...originalSummary,
-    status:originalSummary.status==='match'&&!soldier.allMatched?'review':originalSummary.status,
-    soldier:{allMatched:soldier.allMatched,
-      invoices:soldier.invoices.map(row=>({id:row.id,number:row.number,date:row.date,
-        status:row.status,reasons:row.reasons.slice(0,12)}))}};
-  const payload = JSON.stringify({...clean, summary, acceptedDifference: summary.acceptedDifference ? d.acceptedDifference : undefined});
+  const summary = summarize(prepared.result);
+   const payload = JSON.stringify({...clean, summary, acceptedDifference: summary.acceptedDifference ? d.acceptedDifference : undefined});
   const revisions = JSON.stringify(sourceRecords.map(({id, version}) => ({id, version})));
   const sourcesUnchanged = `NOT EXISTS (
     SELECT 1 FROM json_each(?) expected
@@ -317,17 +288,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
     soldierLineTotals:prepared.draft.soldierLineTotals,soldierManualLineKeys:prepared.draft.soldierManualLineKeys});
 }
 
-export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='auditCatalog'){
-  if(!validateAuditCatalog(b.catalog)||(b.version!==null&&typeof b.version!=='string'))return json({error:'راجع بيانات مرجع الجندي.'},400);
-  const saved={version:crypto.randomUUID(),catalog:b.catalog};
-  const value=JSON.stringify(saved);
-  const write=b.version===null
-    ? db().prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').bind('institutionAuditCatalog',value)
-    : db().prepare("UPDATE settings SET value=? WHERE key=? AND json_extract(value,'$.version')=?").bind(value,'institutionAuditCatalog',b.version);
-  const result=await write.run();
-  if(!result.meta.changes)return json({error:'تم تعديل المرجع من نافذة أخرى. انسخ تعديلاتك ثم أعد تحميل الصفحة.'},409);
-  return json(saved);
-}if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
+export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
 const before=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();
 const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
 let items=b.items;
