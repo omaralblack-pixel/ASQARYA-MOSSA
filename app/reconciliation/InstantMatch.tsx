@@ -6,8 +6,7 @@ import GroupLookup from './GroupLookup';
 import SoldierPageSorter from './SoldierPageSorter';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {auditDraftWithSoldier} from '../lib/daily-soldier';
-import type {AuditCatalog} from '../lib/audit-catalog';
+import {sharedInstitutionOptions,type AuditCatalog} from '../lib/audit-catalog';
 import {prepareReconciliation, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
@@ -40,7 +39,7 @@ async function saveJson(draft:Draft, sources:TransferSource[]) {
   });
   const data = await response.json() as {error?:string};
   if (!response.ok) throw Error(data.error || 'تعذّر الحفظ');
-  return data as {id:string;version:number;referenceSnapshot:Item[];summary:{status:string;soldier?:{allMatched:boolean}}};
+  return data as {id:string;version:number;referenceSnapshot:Item[];summary:{status:string}};
 }
 function recordDraft(row:Summary):Partial<Draft> {
   try { return JSON.parse(row.payload) as Draft; } catch { return {}; }
@@ -116,7 +115,7 @@ export default function InstantMatch({
   const [showItems, setShowItems] = useState(false);
   const [auditCatalog,setAuditCatalog] = useState<AuditCatalog|null>(null);
   useEffect(()=>{let active=true;
-    getJson<{catalog:AuditCatalog}>('/api/reconcile?auditCatalog=1')
+    getJson<{catalog:AuditCatalog}>('/api/reconcile?pageSortingCatalog=1')
       .then(data=>{if(active)setAuditCatalog(data.catalog)})
       .catch(()=>{if(active)setAuditCatalog(null)});
     return ()=>{active=false};
@@ -315,15 +314,14 @@ export default function InstantMatch({
   }
 
   const prepared=useMemo(()=>draft?prepareReconciliation(draft,reference):null,[draft,reference]);
-  const soldier=useMemo(()=>draft&&auditCatalog?auditDraftWithSoldier(draft,auditCatalog):null,[draft,auditCatalog]);
+  const sharedCodes=useMemo(()=>auditCatalog?sharedInstitutionOptions(auditCatalog):[],[auditCatalog]);
   const originalResult=prepared?.result??null;
-  const result=originalResult?{...originalResult,
-    status:originalResult.status==='match'&&!soldier?.allMatched?'review':originalResult.status}:null;
+  const result=originalResult;
   const transferWarnings=useMemo(()=>draft ? draft.transfers.flatMap(transfer=>{
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     return [...parsed.issues,...parsed.excluded].map(issue=>'الترحيل '+transfer.number+': '+issue);
   }):[],[draft]);
-  const canSave=!!draft&&!!result&&soldier?.allMatched===true&&result.status==='match'&&result.priceDifference===0
+  const canSave=!!draft&&!!result&&result.status==='match'&&result.priceDifference===0
     &&transferWarnings.length===0&&!!draft.branch
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
     &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null&&dateValue(item.date));
@@ -333,9 +331,9 @@ export default function InstantMatch({
     try {
       const saved=await saveJson(prepared.draft,Object.values(sources));
       await refreshRecords();
-      if(saved.summary?.status!=='match'||!saved.summary?.soldier?.allMatched){
+      if(saved.summary?.status!=='match'){
         setDraft(current=>current?{...current,id:saved.id,version:saved.version}:current);
-        setError('حُفظت الفاتورة لكن لم تحصل على اعتماد نهائي من الجندي؛ افتح المطابقة التفصيلية وأكمل الملاحظات.');
+        setError('حُفظت الفاتورة، لكن المطابقة الأساسية لم تعتمدها. افتح المطابقة التفصيلية لإكمال الملاحظات.');
         return;
       }
       setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setSuggestionsOpen(false);
@@ -416,33 +414,28 @@ export default function InstantMatch({
             </div>
             <label className="check-label"><input type="checkbox" checked={item.complete}
               onChange={e=>updateInvoice(item.id,{complete:e.target.checked})}/>الفاتورة الورقية موجودة عندي</label>
-            <details><summary>أصناف الفاتورة الزرقاء للجندي</summary>
-              <p className="hint">الصق رقم مادة المؤسسة والكمية بالحبة في عمودين. لن يُعتمد «مطابق» قبل التدقيق.</p>
+            <details><summary>بنود الفاتورة للمساعدة في فرز الصفحات</summary>
+              <p className="hint">الصق رقم المادة وكمية الحبات في عمودين لاستخدامها في فرز الصفحات فقط، دون تدقيق أو اعتماد إضافي.</p>
               <textarea dir="ltr" rows={4} maxLength={30000}
-                aria-label={'أصناف فاتورة الجندي '+(index+1)} value={item.auditLines||''}
+                aria-label={'بنود فاتورة الفرز '+(index+1)} value={item.auditLines||''}
                 onChange={e=>updateInvoice(item.id,{auditLines:e.target.value})}
                 placeholder={'رقم المادة\tالكمية\n11371486\t24'}/>
             </details>
-            {(soldier?.invoices[index]?.sharedCodes||[]).map(choice=><div key={choice.sapCode}
+            {sharedCodes.filter(choice=>(item.auditLines||'').split(/\r?\n/).some(line=>
+              choice.codes.some(option=>digits(line.split('\t')[0]||'').trim()===option.code))).map(choice=><div key={choice.sapCode}
               className="review-list" role="alert">
-              <p><AlertTriangle size={16}/> <b>يوجد صنف برقمين للمؤسسة</b> · SAP {choice.sapCode} — {choice.sapName}</p>
-              <label>اختر رقم المؤسسة الموجود على الفاتورة الزرقاء
-                <select aria-label={'اعتماد رقم المؤسسة للصنف '+choice.sapCode+' في الفاتورة '+(index+1)}
+              <p><AlertTriangle size={16}/> <b>صنف له رقمان لدى المؤسسة</b> · SAP {choice.sapCode} — {choice.sapName}</p>
+              <label>اختر رقم المادة الموجود على الفاتورة لإتمام فرز الصفحات
+                <select aria-label={'رقم المؤسسة للصنف '+choice.sapCode+' في الفاتورة '+(index+1)}
                   value={item.sapInstitutionChoices?.[choice.sapCode]||''}
-                  onChange={e=>updateInvoice(item.id,{sapInstitutionChoices:{
-                    ...(item.sapInstitutionChoices||{}),[choice.sapCode]:e.target.value,
+                  onChange={event=>updateInvoice(item.id,{sapInstitutionChoices:{
+                    ...(item.sapInstitutionChoices||{}),[choice.sapCode]:event.target.value,
                   }})}>
-                  <option value="">اعتماد أحد الرقمين مطلوب</option>
-                  {choice.codes.map(option=><option key={option.code} value={option.code}>
-                    {option.code} — {option.name}
-                  </option>)}
+                  <option value="">اختر الرقم من الورق</option>
+                  {choice.codes.map(option=><option key={option.code} value={option.code}>{option.code} — {option.name}</option>)}
                 </select>
               </label>
-              {choice.chosen&&<p className="hint">رقم هذه الفاتورة المعتمد: {choice.chosen}</p>}
             </div>)}
-            <p className="hint">الجندي: <b>{soldier?.invoices[index]?.status==='match'?'مطابق':
-              soldier?.invoices[index]?.status==='difference'?'يوجد فرق':'بانتظار مراجعة'}</b>
-              {soldier?.invoices[index]?.reasons?.[0]?' — '+soldier.invoices[index].reasons[0]:''}</p>
             {index>0&&<button className="text-button" type="button"
               onClick={()=>update({...draft,invoices:draft.invoices.filter(row=>row.id!==item.id)})}>حذف الفاتورة</button>}
           </article>)}
@@ -486,10 +479,9 @@ export default function InstantMatch({
           <div className={'stat status-stat '+result.status}><span>الحالة</span>
             <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?'مطابق':result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
         </div>
-        {draft.invoices.length>1&&<p className="hint">عند وجود أكثر من فاتورة، وزّع الأصناف على أرقام الفواتير من شاشة المطابقة التفصيلية حتى يستطيع الجندي اعتماد كل فاتورة مستقلة.</p>}
+        {draft.invoices.length>1&&<p className="hint">عند وجود أكثر من فاتورة، وزّع الأصناف على الصفحات من جندي الفرز قبل حفظ أو تصدير روابط الترحيلات.</p>}
         {draft.invoices.some(item=>!dateValue(item.date))&&<p className="hint" role="alert">حدّد تاريخ الفاتورة الزرقاء أو صحّح التاريخ التلقائي قبل الحفظ، حتى يظل محفوظًا في السجل.</p>}
-        {originalResult?.status==='match'&&!soldier?.allMatched&&<p className="amber" role="alert">القيمة متطابقة، لكن الجندي لم يعتمد أصناف الفاتورة وكمياتها بعد. افتح بيانات كل فاتورة وأكملها.</p>}
-        {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
+                {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
           {transferWarnings.map((text,index)=><p key={'transfer-'+index}>{text}</p>)}
           {result.problems.map((text,index)=><p key={index}>{text}</p>)}
           {result.rows.filter(row=>row.errors.length).map(row=><p key={row.key}>
