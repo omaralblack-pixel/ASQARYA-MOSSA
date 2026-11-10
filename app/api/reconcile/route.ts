@@ -1,3 +1,4 @@
+import {initialAuditCatalog,validateAuditCatalog} from '../../lib/audit-catalog';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
@@ -11,7 +12,10 @@ async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value F
 // Initialize only missing tables on standalone Cloudflare deployments.
 let schemaReady:Promise<unknown>|undefined;
 function ensureSchema(){return schemaReady??=db().batch(schemaStatements.map(sql=>db().prepare(sql))).catch(error=>{schemaReady=undefined;throw error})}
-export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
+export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('auditCatalog')){
+  const stored=await db().prepare('SELECT value FROM settings WHERE key=?').bind('institutionAuditCatalog').first<{value:string}>();
+  return json(stored?JSON.parse(stored.value):{version:null,catalog:initialAuditCatalog(await refs())});
+}if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
 type StoredReconciliation = {
   id: string;
   branch: string;
@@ -243,7 +247,17 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   return json({id, version, referenceSnapshot: reference});
 }
 
-export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
+export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='auditCatalog'){
+  if(!validateAuditCatalog(b.catalog)||(b.version!==null&&typeof b.version!=='string'))return json({error:'راجع بيانات مرجع الجندي.'},400);
+  const saved={version:crypto.randomUUID(),catalog:b.catalog};
+  const value=JSON.stringify(saved);
+  const write=b.version===null
+    ? db().prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').bind('institutionAuditCatalog',value)
+    : db().prepare("UPDATE settings SET value=? WHERE key=? AND json_extract(value,'$.version')=?").bind(value,'institutionAuditCatalog',b.version);
+  const result=await write.run();
+  if(!result.meta.changes)return json({error:'تم تعديل المرجع من نافذة أخرى. انسخ تعديلاتك ثم أعد تحميل الصفحة.'},409);
+  return json(saved);
+}if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
 const before=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();
 const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
 let items=b.items;

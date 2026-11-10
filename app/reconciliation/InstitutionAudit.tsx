@@ -1,11 +1,13 @@
 'use client';
 
 import {useEffect,useMemo,useState} from 'react';
+import AuditCatalogEditor from './AuditCatalogEditor';
+import {catalogAuditReference,type AuditCatalog} from '../lib/audit-catalog';
 import {AlertTriangle,CheckCircle2,Search,Plus,RefreshCw} from 'lucide-react';
 import {auditInstitutionTransfers,auditInvoiceQuantities} from '../lib/institution-audit';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
-import {digits,money,type Item,type Draft,type Transfer} from '../lib/reconcile';
+import {digits,money,type Draft,type Transfer} from '../lib/reconcile';
 
 type StoredRecord={id:string;branch:string;payload:string};
 type Choice={id:string;source:'sap'|'saved';title:string;group?:SapImportGroup;record?:StoredRecord};
@@ -14,7 +16,10 @@ function choiceLabel(choice:Choice){return choice.title}
 const parseRow=(record:StoredRecord):Partial<Draft>=>{
   try{return JSON.parse(record.payload) as Draft}catch{return {}}
 };
-export default function InstitutionAudit({reference,branches}:{reference:Item[];branches:string[]}){
+export default function InstitutionAudit({branches}:{branches:string[]}){
+  const [catalog,setCatalog]=useState<AuditCatalog|null>(null);
+  const reference=useMemo(()=>catalog?catalogAuditReference(catalog):[],[catalog]);
+  const sapNames=useMemo(()=>new Map(catalog?.sap.map(row=>[row.code,row.name])),[catalog]);
   const [imports,setImports]=useState<SapImportGroup[]>([]);
   const [records,setRecords]=useState<StoredRecord[]>([]);
   const [loading,setLoading]=useState(true);
@@ -119,7 +124,8 @@ export default function InstitutionAudit({reference,branches}:{reference:Item[];
       <p>راجع الأصناف ووحدات SAP والشدّات، وقارن كميات الحبات مع الفاتورة الزرقاء. الترحيل الخاطئ يظل ظاهرًا حتى تثبت حركته العكسية.</p></div>
       <button className="button secondary" disabled={loading} type="button" onClick={()=>void refresh()}><RefreshCw size={16}/>تحديث مصادر SAP</button>
     </div>
-    <section className="panel">
+    <AuditCatalogEditor onCatalog={setCatalog}/>
+    {catalog&&<section className="panel">
       <div className="section-title"><Search size={19}/><h2>اختيار فاتورة أو ترحيل</h2></div>
       <label>رقم الفاتورة الزرقاء أو الترحيل (آخر 4 أرقام أو الرقم الكامل)
         <input dir="ltr" inputMode="numeric" value={search} onChange={e=>setSearch(e.target.value)} placeholder="مثال: 5834"/></label>
@@ -131,8 +137,8 @@ export default function InstitutionAudit({reference,branches}:{reference:Item[];
           <td><button type="button" className="button secondary small" onClick={()=>void choose(choice)}>تدقيق</button></td></tr>)}</tbody></table></div>}
       {search.trim().length>=4&&!loading&&!choices.length&&<p className="hint">لا يوجد مستند مطابق في TXT أو السجل.</p>}
       {title&&<p className="hint">المستند المختار: <b>{title}</b></p>}
-    </section>
-    {transfers.length>0&&<>
+    </section>}
+    {catalog&&transfers.length>0&&<>
       <section className="panel">
         <div className="section-title"><h2>الترحيلات والفحص الآلي</h2></div>
         <div className="table-scroll"><table><thead><tr><th>رقم الترحيل</th><th>تاريخ الترحيل</th><th>حذف من التدقيق فقط</th></tr></thead>
@@ -168,9 +174,9 @@ export default function InstitutionAudit({reference,branches}:{reference:Item[];
             <strong>{allValid?'مطابقة كاملة':!hasLines?'بانتظار بنود الفاتورة':!hasAmount?'بانتظار مبلغ الفاتورة':'بحاجة مراجعة'}</strong></div>
         </div>
         {quantity.rows.length>0&&<div className="table-scroll"><table><thead><tr>
-          <th>رقم مادة المؤسسة</th><th>اسم المادة بالمؤسسة</th><th>كود SAP</th><th>كمية SAP بالحبة</th><th>كمية الفاتورة بالحبة</th><th>الفرق</th>
+          <th>رقم مادة المؤسسة</th><th>اسم المادة بالمؤسسة</th><th>الصنف في SAP</th><th>كمية SAP بالحبة</th><th>كمية الفاتورة بالحبة</th><th>الفرق</th>
         </tr></thead><tbody>{quantity.rows.map(row=><tr key={row.code} className={Math.abs(row.difference)>0.000001?'difference':'match'}>
-          <td>{row.code}</td><td>{row.institutionName}</td><td>{row.sapCodes.join('، ')||'—'}</td>
+          <td>{row.code}</td><td>{row.institutionName}</td><td>{row.sapCodes.map(code=>code+' · '+(sapNames.get(code)||'')).join('، ')||'—'}</td>
           <td>{row.sapPieces}</td><td>{row.invoicePieces}</td><td>{row.difference}</td>
         </tr>)}</tbody></table></div>}
         {problems.length>0&&<div className="review-list" role="alert"><b>تنبيهات التدقيق ({problems.length})</b>
