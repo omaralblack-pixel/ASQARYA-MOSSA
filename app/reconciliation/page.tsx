@@ -1,7 +1,8 @@
 'use client';
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import SapImport from './SapImport';
 import InstantMatch from './InstantMatch';
+import InstitutionAudit from './InstitutionAudit';
 import SoldierPageSorter from './SoldierPageSorter';
 import {sharedInstitutionOptions,type AuditCatalog} from '../lib/audit-catalog';
 import CatalogReplacement from './CatalogReplacement';
@@ -40,6 +41,7 @@ function TransferCard({transfer,index,onChange,onRemove,onLookup}:{transfer:any,
 export default function Home(){const [reference,REF]=useState<Item[]>([]),[branches,BR]=useState<string[]>([]),[drivers,DR]=useState<string[]>([]),[draft,D]=useState<OrderedDraft|null>(null),[tab,T]=useState('work'),[loading,L]=useState(true),[busy,B]=useState(false),[error,E]=useState(''),[notice,N]=useState(''),[records,REC]=useState<any[]>([]),[query,Q]=useState(''),[onlyDiff,DIFF]=useState(false),[sort,SORT]=useState('entry'),[pageFilter,PAGE]=useState('all'),[pick,PICK]=useState(''),[edit,EDIT]=useState<Item|null>(null),[linkSap,LINK]=useState(''),[importTexts,IT]=useState<Record<string,string>>({}),[month,M]=useState(today().slice(0,7)),[serial,SERIAL]=useState(''),[columns,COLS]=useState({number:-1,date:-1,branch:-1}),[filtered,FILTERED]=useState(false),[dateFormat,DF]=useState('dmy'),[monthTab,MT]=useState('missing'),[monthReady,MR]=useState(false);
 const [editOriginal,setEditOriginal]=useState<Item|null>(null);
 const [auditCatalog,SETAUDITCAT]=useState<AuditCatalog|null>(null);
+const focusOpenedTransfers=useRef(false);
 const [editAlias,setEditAlias]=useState('');
 const [sapPreview,setSapPreview]=useState<{groups:SapImportGroup[];records:{id:string;payload:string}[]}>({groups:[],records:[]});
 const [transferConflict,setTransferConflict]=useState<{id:string;number:string}|null>(null);
@@ -54,7 +56,7 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
   const stored=JSON.parse(record.payload) as Draft;
   return stored.transfers.flatMap(transfer=>transferNumbers(transfer.number).map(number=>[number,record.id] as const));
 })),[sapPreview.records]);
-useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
+useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','audit','replace','stock','serial-soldier'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
 useEffect(()=>{let active=true;fetch('/api/reconcile?pageSortingCatalog=1',{cache:'no-store'})
  .then(async response=>{if(!response.ok)throw Error('مرجع الجندي غير متاح.');return await response.json() as {catalog:AuditCatalog}})
  .then(data=>{if(active)SETAUDITCAT(data.catalog as AuditCatalog)})
@@ -68,6 +70,13 @@ const sharedCodes=useMemo(()=>auditCatalog?sharedInstitutionOptions(auditCatalog
 useEffect(()=>{
  if(prepared&&prepared.draft!==draft)D(current=>current===draft?prepared.draft:current);
 },[draft,prepared]);
+useEffect(()=>{
+ if(tab!=='work'||!focusOpenedTransfers.current)return;
+ focusOpenedTransfers.current=false;
+ const heading=document.getElementById('reconciliation-transfers-heading');
+ heading?.focus({preventScroll:true});
+ heading?.scrollIntoView({block:'start'});
+},[tab]);
 const heads=serialHeaders(serial);
 const numbersOnly=serial.trim()!==''&&serial.trim().split(/\r?\n/).filter(line=>line.trim()).every(isTransferNumber);
 const selectedPage=pageFilter==='all'?null:Number(pageFilter);
@@ -307,16 +316,29 @@ async function exportFullHistory(){
  });
 }
 async function getRecords(){const x=await api(undefined,'?records=1');REC(x.records)}
-async function openRecord(id:string){
-const [data,settings]=await Promise.all([api(undefined,'?id='+encodeURIComponent(id)),api()]);
-const saved=JSON.parse(data.record.payload) as Draft;
-const next=withInvoiceDates({...saved,mode:'manual',checks:saved.checks||{},id:data.record.id,version:data.record.version,useCurrentReference:false});
-REF(settings.reference);
-setTransferSources({});
-D(next);PAGE('all');Q('');T('work');
+async function openRecord(id:string,invoiceId?:string){
+  const [data,settings]=await Promise.all([api(undefined,'?id='+encodeURIComponent(id)),api()]);
+  const saved=JSON.parse(data.record.payload) as Draft;
+  let page='all';
+  if(invoiceId!==undefined){
+    const index=saved.invoices?.findIndex(invoice=>invoice.id===invoiceId)??-1;
+    if(index<0)throw Error('الفاتورة لم تعد موجودة في هذا الكشف. أعد جمع الفواتير.');
+    if(!Array.isArray(saved.transfers)||!saved.transfers.length)
+      throw Error('لا توجد ترحيلات محفوظة في كشف هذه الفاتورة.');
+    page=String(index+1);
+  }
+  const next=withInvoiceDates({...saved,mode:'manual',checks:saved.checks||{},id:data.record.id,version:data.record.version,useCurrentReference:false});
+  REF(settings.reference);
+  setTransferSources({});
+  focusOpenedTransfers.current=invoiceId!==undefined;
+  D(next);PAGE(page);Q('');T('work');
 }
-
-  await run(()=>openRecord(r.id));
+async function loadRecord(r:{id:string}){await run(()=>openRecord(r.id))}
+async function openCollectedInvoice(recordId:string,invoiceId:string){
+  if(draft&&(draft.id||draft.branch||draft.driver||draft.transfers.some(t=>t.number||t.paste.trim())||
+    draft.invoices.some(inv=>inv.number||inv.amount||inv.auditLines||inv.complete))&&
+    !confirm('فتح ترحيلات الفاتورة سيستبدل الكشف المفتوح. احفظ تعديلاتك أولًا. هل تريد المتابعة؟'))return;
+  await openRecord(recordId,invoiceId);
 }
 function showDefinition(item:Item,sapCode?:string){
   LINK('');
@@ -503,6 +525,7 @@ async function save() {
 function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);const h=serialHeaders(text).map(h=>h.toLowerCase().replace(/[\s._:-]/g,''));COLS({number:h.findIndex(v=>['docnum','docno','documentnumber','documentno','transfernumber','transferno','#','رقمالترحيل','رقمالمستند','رقمالحركة'].includes(v)),date:h.findIndex(v=>['docdate','documentdate','postingdate','date','التاريخ','تاريخالمستند','تاريخالترحيل'].includes(v)),branch:h.findIndex(v=>['branch','branchname','الفرع','اسمالفرع'].includes(v))})}
 if(!draft)return <div className="initial">جاري تجهيز مساحة المطابقة…</div>;
 return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="private-dot"/>مساحة عمل خاصة<form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');if(key==='history'||key==='invoices'||key==='monthly')run(async()=>{await getRecords();T(key)});else T(key)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
+{tab==='audit'&&<InstitutionAudit onOpenInvoice={openCollectedInvoice}/>}
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
