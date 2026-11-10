@@ -5,7 +5,7 @@ import {importAuditInstitution,importAuditSap,validateAuditCatalog,type AuditCat
 import {digits,fils,money,numeric} from '../lib/reconcile';
 
 type SavedCatalog={catalog:AuditCatalog;version:string|null};
-type Side=keyof AuditCatalog;
+type Side='sap'|'institution';
 type Edit={existing?:boolean;side:Side;code:string;name:string;unit:string;pack:string;kg:string;link:string;price:string};
 const blank=(side:Side):Edit=>({side,code:'',name:'',unit:'Piece',pack:'',kg:'',link:'',price:''});
 
