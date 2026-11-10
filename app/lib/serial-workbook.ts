@@ -79,16 +79,10 @@ function rowsFrom(p:Package):{rows:SerialInput[]; errors:string[]}{
   const invoice=text(getCell(row,'D'+index),p.shared);
   const amount=text(getCell(row,'F'+index),p.shared);
   const serial=text(getCell(row,'B'+index),p.shared);
-  if(!invoice){
-   if(amount&&/^\d+$/.test(serial))errors.push('صف '+index+': يوجد مبلغ ورقم تسلسل بدون رقم فاتورة.');
-   continue;
-  }
+  if(!invoice && !(amount&&/^\d+$/.test(serial)))continue;
   const number=digits(invoice).replace(/\s/g,'');
-  if(!/^\d{8,20}$/.test(number)){
-   errors.push('صف '+index+': رقم فاتورة غير صالح ('+invoice+').');
-   continue;
-  }
-  if(!amount)errors.push('صف '+index+': مبلغ الفاتورة '+number+' مفقود.');
+  if(!/^\d{8,20}$/.test(number))errors.push('صف '+index+': رقم فاتورة مفقود أو غير صالح ('+(invoice||'فارغ')+').');
+  if(!amount)errors.push('صف '+index+': مبلغ الفاتورة '+(number||'غير معروف')+' مفقود.');
   result.push({row:index,number,amount,date:dateValue(text(getCell(row,'C'+index),p.shared))});
  }
  if(!result.length)errors.push('لم أعثر على أي فواتير صالحة في الشيت.');
