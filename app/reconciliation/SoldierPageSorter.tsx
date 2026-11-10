@@ -21,6 +21,7 @@ export default function SoldierPageSorter({draft,catalog,onChange}:{
 
   const confirmed=draft.soldierLineAllocations!==undefined;
   function approve(issue:PageSortIssue){
+    if(!proposed)return;
     const parsed=Object.entries(inputs[issue.key]||{})
       .filter(([,value])=>value.trim()).map(([page,value])=>[page,Number(value)] as const);
     const total=parsed.reduce((sum,[,quantity])=>sum+quantity,0);
