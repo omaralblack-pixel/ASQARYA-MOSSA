@@ -20,6 +20,7 @@ export default function SerialSoldier(){
  const [error,setError]=useState('');
  const [day,setDay]=useState('');
  const [updated,setUpdated]=useState('');
+ const [legacyOnce,setLegacyOnce]=useState(false);
  const daily=useMemo(()=>{
    const map=new Map<string,{total:number;received:number;pending:number;missing:number;review:number}>();
    for(const row of report?.rows||[]){
@@ -30,8 +31,8 @@ export default function SerialSoldier(){
    return [...map].sort(([a],[b])=>a.localeCompare(b));
  },[report]);
  const filtered=(report?.rows||[]).filter(row=>!day||row.date===day);
- async function checkExcel(nextFile:File){
-   setFile(nextFile);setReport(null);setBuffer(null);setIssues([]);setError('');setDay('');setBusy(true);
+ async function checkExcel(nextFile:File, allowLegacy=false){
+   setLegacyOnce(false);setFile(nextFile);setReport(null);setBuffer(null);setIssues([]);setError('');setDay('');setBusy(true);
    try{
      if(!/\.xlsx$/i.test(nextFile.name))throw Error('ارفع ملف Excel بصيغة XLSX فقط.');
      const content=await nextFile.arrayBuffer();
@@ -39,9 +40,9 @@ export default function SerialSoldier(){
      const parsed=readSerialWorkbook(content);
      setIssues(parsed.errors);
      const saved=await getSaved();
-     const result=evaluateSerial(parsed.rows,saved);
+     const result=evaluateSerial(parsed.rows,saved,{allowLegacyPageGaps:allowLegacy});
      result.blockers=[...new Set([...parsed.errors,...result.blockers])];
-     setReport(result);setBuffer(content);setUpdated(new Date().toLocaleString('ar-JO'));
+     setLegacyOnce(allowLegacy);setReport(result);setBuffer(content);setUpdated(new Date().toLocaleString('ar-JO'));
    }catch(e){setError(e instanceof Error?e.message:'تعذر تحليل الملف.');}
    finally{setBusy(false);}
  }
@@ -56,7 +57,9 @@ export default function SerialSoldier(){
      const {readSerialWorkbook,createSerialWorkbook}=await import('../lib/serial-workbook');
      const parsed=readSerialWorkbook(buffer);
      if(parsed.errors.length)throw Error('فشل تحقق الملف الأصلي؛ لن يتم التصدير.');
-     const fresh=evaluateSerial(parsed.rows,await getSaved());
+     const saved=await getSaved();
+     const fresh=evaluateSerial(parsed.rows,saved,{allowLegacyPageGaps:legacyOnce});
+     fresh.blockers=[...new Set([...parsed.errors,...fresh.blockers])];
      setReport(fresh);
      if(fresh.blockers.length)throw Error('تم إيقاف التصدير: '+fresh.blockers.length+' أخطاء حرجة. أصلح السجل أو الملف ثم أعد الفحص.');
      const blob=createSerialWorkbook(buffer,fresh);
@@ -66,6 +69,7 @@ export default function SerialSoldier(){
      a.click();
      setTimeout(()=>URL.revokeObjectURL(url),1200);
      setUpdated(new Date().toLocaleString('ar-JO'));
+     if(legacyOnce){setLegacyOnce(false);setReport(evaluateSerial(parsed.rows,saved));}
    }catch(e){setError(e instanceof Error?e.message:'تعذر إنشاء Excel.');}
    finally{setBusy(false);}
  }
@@ -82,7 +86,9 @@ export default function SerialSoldier(){
      <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
        <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy||report.blockers.length>0}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
+       {!legacyOnce&&file&&report?.blockers.some(issue=>issue.includes('مجموعة متعددة الفواتير'))&&<button type="button" className="button secondary" disabled={busy} onClick={()=>void checkExcel(file,true)}>تجاوز توزيع صفحات الفواتير القديمة لهذا التصدير فقط</button>}
      </div>
+     {legacyOnce&&<p className="amber">الاستثناء مفعّل مؤقتًا لفواتير قبل 10-11-2026 فقط. ترحيلات المجموعة التي لا يمكن نسبتها لفاتورة ستظهر بعمود مستقل «ترحيلات المجموعة غير الموزعة»، وليس في رئيسي أو نواشف أو تعديل. يعود الفحص الصارم تلقائيًا بعد التنزيل.</p>}
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
      {error&&<p role="alert" className="red"><AlertTriangle size={16} style={{verticalAlign:'middle'}}/> {error}</p>}
      {issues.length>0&&<div role="alert" className="review-list"><strong>سطور Excel غير سليمة:</strong>{issues.map((issue,i)=><p key={i}>{issue}</p>)}</div>}
@@ -101,6 +107,7 @@ export default function SerialSoldier(){
          <p>لا يمكن تجاوز هذه الشروط أو إسقاط أي ترحيل أو افتراض ارتباطه بفاتورة. صلح البيانات المحفوظة ثم أعد الفحص.</p>
          <div style={{maxHeight:260,overflowY:'auto'}}>{report.blockers.map((b,i)=><p key={i}>{b}</p>)}</div>
        </div>}
+       {report.legacyWarnings.length>0&&<details className="review-list" style={{marginTop:14}}><summary>ترحيلات محفوظة ولكن توزيعها على الفواتير القديمة غير معروف ({report.legacyWarnings.length})</summary><div style={{maxHeight:240,overflowY:'auto'}}>{report.legacyWarnings.map((item,i)=><p key={i}>{item}</p>)}</div></details>}
        {report.count.review>0&&<p className="amber">الفواتير ذات فروقات المبالغ أو حالة المطابقة غير المعتمدة تُظلل بالأصفر ولا تُحتسب واصلة مطابقة. إذا لم توجد أخطاء حرجة، يمكن استخراج كشف للمراجعة دون اعتباره كشفًا مكتملًا.</p>}
      </section>
      <section className="panel">
