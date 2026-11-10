@@ -1,6 +1,9 @@
 export type SapAlias={sapCode:string;sapUnit:string;cartonPieces:number|null;kgPerPiece:number|null};
 export type Item={sapAliases?:SapAlias[];code:string;sapCode:string;name:string;sourceName?:string;price:number|null;invoicePack:number|null;cartonPieces:number|null;sapUnit:string;warehouseUnit?:string|null;warehouseName?:string|null;kgPerPiece:number|null;active:boolean};
 export type TransferLine={transferNo?:string;row:number;sapCode:string;name:string;quantity:number;unit:string;from:string;to:string};
+/** Stable identity for an SAP source row. Persist allocations against this key. */
+export const soldierLineKey=(transferId:string,line:Pick<TransferLine,'row'|'sapCode'>)=>
+ 'l:'+transferId+':'+line.row+':'+line.sapCode.toUpperCase();
 export type Invoice={id:string;title?:string;number:string;date:string;dateTransferNos?:string[];manualDate?:boolean;manualNumber?:boolean;amount:string;complete:boolean;attachments?:{key:string;name:string;type:string}[];auditLines?:string;sapInstitutionChoices?:Record<string,string>;quantities:Record<string,string>};
 export type Transfer={id:string;number:string;date:string;paste:string};
 export type TransferSource = {number: string; recordId: string; version: number};

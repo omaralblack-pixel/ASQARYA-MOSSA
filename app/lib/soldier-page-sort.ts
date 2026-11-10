@@ -1,5 +1,5 @@
 import {catalogAuditReference,sharedInstitutionOptions,type AuditCatalog} from './audit-catalog';
-import {convert,digits,numeric,parseTransfer,sapReferences,type Draft,type TransferLine} from './reconcile';
+import {convert,digits,numeric,parseTransfer,sapReferences,soldierLineKey,type Draft,type TransferLine} from './reconcile';
 
 export type PageSortIssue={
  key:string;sapCode:string;transfer:string;totalPieces:number;
@@ -13,8 +13,7 @@ export type PageSortSummary={
  draft:Draft;assigned:number;split:number;unresolved:PageSortIssue[];
  pageCounts:number[];lines:SortedPageLine[];
 };
-export const soldierLineKey=(transferId:string,line:TransferLine)=>
- 'l:'+transferId+':'+line.row+':'+line.sapCode.toUpperCase();
+export {soldierLineKey} from './reconcile';
 
 const epsilon=0.000001;
 const same=(a:number,b:number)=>Math.abs(a-b)<epsilon;
