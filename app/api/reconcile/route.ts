@@ -1,4 +1,4 @@
-import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
+import {initialAuditCatalog,includeOfficialInstitution2026,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {auditDraftWithSoldier,dailySoldierRows} from '../../lib/daily-soldier';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
@@ -13,16 +13,31 @@ async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value F
 // Initialize only missing tables on standalone Cloudflare deployments.
 let schemaReady:Promise<unknown>|undefined;
 function ensureSchema(){return schemaReady??=db().batch(schemaStatements.map(sql=>db().prepare(sql))).catch(error=>{schemaReady=undefined;throw error})}
+async function currentSoldierCatalogEnvelope():Promise<{version:string|null;catalog:AuditCatalog}>{
+ const row=await db().prepare('SELECT value FROM settings WHERE key=?')
+   .bind('institutionAuditCatalog').first<{value:string}>();
+ if(!row)return {version:null,catalog:initialAuditCatalog(await refs())};
+ const previous=JSON.parse(row.value) as {version:string;catalog:AuditCatalog};
+ if(!validateAuditCatalog(previous.catalog))throw Error('مرجع الجندي المحفوظ غير صالح؛ أصلحه قبل اعتماد أي مطابقة.');
+ const upgraded=includeOfficialInstitution2026(previous.catalog);
+ if(upgraded===previous.catalog)return previous;
+ // Optimistic one-time migration. Preserve custom links, prices, and deletions.
+ const next={version:crypto.randomUUID(),catalog:upgraded};
+ const saved=await db().prepare("UPDATE settings SET value=? WHERE key=? AND json_extract(value,'$.version')=?")
+   .bind(JSON.stringify(next),'institutionAuditCatalog',previous.version).run();
+ if(saved.meta.changes)return next;
+ const latest=await db().prepare('SELECT value FROM settings WHERE key=?')
+   .bind('institutionAuditCatalog').first<{value:string}>();
+ if(!latest)return {version:null,catalog:initialAuditCatalog(await refs())};
+ const current=JSON.parse(latest.value) as {version:string;catalog:AuditCatalog};
+ if(!validateAuditCatalog(current.catalog))throw Error('مرجع الجندي تغير إلى بيانات غير صالحة.');
+ return current;
+}
 async function currentSoldierCatalog():Promise<AuditCatalog>{
- const saved=await db().prepare('SELECT value FROM settings WHERE key=?').bind('institutionAuditCatalog').first<{value:string}>();
- if(!saved)return initialAuditCatalog(await refs());
- const catalog=(JSON.parse(saved.value) as {catalog:AuditCatalog}).catalog;
- if(!validateAuditCatalog(catalog))throw Error('مرجع الجندي المحفوظ غير صالح؛ أصلحه قبل اعتماد أي مطابقة.');
- return catalog;
+ return (await currentSoldierCatalogEnvelope()).catalog;
 }
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('auditCatalog')){
-  const stored=await db().prepare('SELECT value FROM settings WHERE key=?').bind('institutionAuditCatalog').first<{value:string}>();
-  return json(stored?JSON.parse(stored.value):{version:null,catalog:initialAuditCatalog(await refs())});
+  return json(await currentSoldierCatalogEnvelope());
 }if(u.searchParams.has('soldierDate')){
  const value=u.searchParams.get('soldierDate')||'';
  if(!dateValue(value))return json({error:'تاريخ الفاتورة الزرقاء غير صالح.'},400);

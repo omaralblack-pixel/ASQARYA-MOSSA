@@ -182,3 +182,19 @@ assert.equal(twoDayRows.counts.total,1);
 assert.equal(twoDayRows.rows[0].invoice.number,'2622000002');
 assert.equal(twoDayRows.rows[0].invoice.transferNumbers[0],'2618002');
 console.log('PASS: daily soldier uses blue-invoice date and blocks missing evidence, quantity/amount mismatches, missing pack and unassigned lines.');
+
+const {includeOfficialInstitution2026}=loadTs('app/lib/audit-catalog.ts');
+const official2026=requireFromHere('../app/lib/official-institution-2026.json');
+assert.equal(Object.keys(official2026).length,90,'Official PDF must retain all 90 institution items.');
+const migrated=includeOfficialInstitution2026({...initialCatalog,officialSeedVersion:undefined});
+assert.equal(migrated.officialSeedVersion,1);
+assert.equal(migrated.institution.some(item=>item.code==='11356453'),true,'Missing official institution items must be added.');
+assert.equal(migrated.sap.length,initialCatalog.sap.length,'Importing institution names must not rewrite SAP mappings or carton packs.');
+assert.equal(migrated.institution.find(item=>item.code==='11356453')?.price,990);
+const custom={...initialCatalog,officialSeedVersion:undefined,
+  institution:initialCatalog.institution.map(item=>item.code==='11062673'?{...item,name:'Custom approved name'}:item)};
+assert.equal(includeOfficialInstitution2026(custom).institution.find(item=>item.code==='11062673')?.name,'Custom approved name');
+const removed={...migrated,institution:migrated.institution.filter(item=>item.code!=='11356453')};
+assert.equal(includeOfficialInstitution2026(removed).institution.some(item=>item.code==='11356453'),false,
+  'Once imported, a user deletion must not be undone by reopening the catalog.');
+console.log('PASS: official 2026 PDF seed adds missing institution codes once without changing saved edits or SAP carton sizes.');

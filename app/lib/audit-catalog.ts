@@ -1,17 +1,31 @@
 import seed from './audit-catalog-seed.json';
+import official2026 from './official-institution-2026.json';
 import {digits, numeric, sapReferences, type Item} from './reconcile';
 
 export type SapCatalogRow = {
   code:string; name:string; unit:string; pack:number|null; kg:number|null; institutionCode:string;
 };
 export type InstitutionCatalogRow = {code:string; name:string; price:number|null};
-export type AuditCatalog = {sap:SapCatalogRow[]; institution:InstitutionCatalogRow[]};
+export type AuditCatalog = {sap:SapCatalogRow[]; institution:InstitutionCatalogRow[]; officialSeedVersion?:number};
 const sapCode = /^[A-Z]{2,6}\d{3,10}$/;
 const institutionCode = /^\d{8}$/;
 const validName = (name:unknown) => typeof name==='string' && !!name.trim() && name.length<=400;
 const validNumber = (n:unknown, limit:number, integer=false) =>
   n===null || typeof n==='number' && Number.isFinite(n) && n>0 && n<=limit && (!integer || Number.isInteger(n));
 const seedRows = seed as unknown as Record<string,[string,string,number|null,string,string|null]>;
+const officialRows = official2026 as unknown as Record<string,[string,number|null,number]>;
+/**
+ * One-time additive import of official blue-invoice item numbers/names.
+ * Existing edits, SAP codes, warehouse pack sizes and all approved prices win.
+ * The marker prevents deleted definitions being re-created on future loads.
+ */
+export function includeOfficialInstitution2026(catalog:AuditCatalog):AuditCatalog {
+  if(catalog.officialSeedVersion===1)return catalog;
+  const known=new Set(catalog.institution.map(row=>row.code));
+  const additional=Object.entries(officialRows).filter(([code])=>!known.has(code))
+    .map(([code,[name,price]])=>({code,name,price}));
+  return {...catalog,officialSeedVersion:1,institution:[...catalog.institution,...additional]};
+}
 // Each linked institution SKU for these SAP KG rows is sold as one 1 kg bag.
 const bagKg:Record<string,number>={PFS00003:1,PFS00179:1,PFS00172:1,PFS00181:1};
 const unitOf = (value:string) => ({piece:'Piece',carton:'Carton',kg:'KG'}[value.trim().toLowerCase()]);
@@ -35,7 +49,7 @@ export function initialAuditCatalog(reference:Item[]):AuditCatalog {
       institutionCode:row?.institutionCode || (institution.has(linked)?linked:''),
     });
   }
-  return {sap:[...sap.values()],institution:[...institution.values()]};
+  return includeOfficialInstitution2026({sap:[...sap.values()],institution:[...institution.values()]});
 }
 
 export function catalogAuditReference(catalog:AuditCatalog):Item[] {
