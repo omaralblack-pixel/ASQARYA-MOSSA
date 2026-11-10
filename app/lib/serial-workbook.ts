@@ -159,8 +159,10 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
  const d=pkg.doc,data=find(d,'sheetData')!;
  const rowElements=new Map(children(data,'row').map(row=>[Number(row.getAttribute('r')),row]));
  const count=Math.max(7,...report.rows.map(row=>serialColumns(row.transfers).length));
- const last=10+count;
- if(count>7){
+ const lastTransfer=10+count;
+ const legacyColumn=report.rows.some(row=>row.unassignedTransfers?.length)?lastTransfer+1:0;
+ const last=legacyColumn||lastTransfer;
+ if(count>7||legacyColumn){
   const headers=[{row:3,base:'Q3'}, {row:4,base:'Q4'}];
   for(const h of headers){
    const row=rowElements.get(h.row)!;
@@ -168,7 +170,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
    for(let c=18;c<=last;c++){
     const cell=ensureCell(d,row,c,h.row);
     if(origin?.getAttribute('s'))cell.setAttribute('s',origin.getAttribute('s')!);
-    editCell(d,cell,h.row===3?'تعديل '+(c-12):'تحويل رقم',pkg.shared);
+    editCell(d,cell,c===legacyColumn?(h.row===3?'ترحيلات المجموعة غير الموزعة':'ليست منسوبة لفاتورة'):(h.row===3?'تعديل '+(c-12):'تحويل رقم'),pkg.shared);
    }
   }
   const cols=find(d,'cols');
@@ -194,13 +196,22 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
   const row=rowElements.get(item.row);
   if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في Excel.');
   const transfers=serialColumns(item.transfers);
-  for(let c=11;c<=last;c++){
+  for(let c=11;c<=lastTransfer;c++){
    const cell=ensureCell(d,row,c,item.row);
    if(!cell.getAttribute('s')){
     const template=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row)||getCell(row,'D'+item.row);
     if(template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
    }
    editCell(d,cell,transfers[c-11]||'',pkg.shared);
+  }
+  if(legacyColumn){
+    const unassigned=[...new Set((item.unassignedTransfers||[]).map(transfer=>transfer.number))];
+    if(unassigned.length){
+      const cell=ensureCell(d,row,legacyColumn,item.row);
+      const sample=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row);
+      if(!cell.getAttribute('s')&&sample?.getAttribute('s'))cell.setAttribute('s',sample.getAttribute('s')!);
+      editCell(d,cell,unassigned.join('، '),pkg.shared);
+    }
   }
   for(let c=2;c<=last;c++){
    const cell=ensureCell(d,row,c,item.row);
