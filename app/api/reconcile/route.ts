@@ -108,10 +108,10 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
       typeof d.soldierLineAllocations!=='object'||Array.isArray(d.soldierLineAllocations)||
       Object.keys(d.soldierLineAllocations).length>3000||
       Object.entries(d.soldierLineAllocations).some(([key,values])=>
-        !/^l:[^:]{1,120}:\\d+:[A-Z]{2,6}\\d{3,10}$/.test(key)||
+        !/^l:[^:]{1,120}:\d+:[A-Z]{2,6}\d{3,10}$/.test(key)||
         !values||typeof values!=='object'||Array.isArray(values)||
         Object.keys(values).length>30||
-        Object.entries(values).some(([page,qty])=>!/^\\d{1,2}$/.test(page)||
+        Object.entries(values).some(([page,qty])=>!/^\d{1,2}$/.test(page)||
           !Number.isFinite(qty)||typeof qty!=='number'||qty<=0||qty>100000000))))return json({error:'توزيع بنود الجندي على الفواتير غير صالح.'},400);
   if(d.soldierManualLineKeys!==undefined&&(!Array.isArray(d.soldierManualLineKeys)||
     d.soldierManualLineKeys.length>3000||d.soldierManualLineKeys.some(key=>typeof key!=='string'||key.length>180)))

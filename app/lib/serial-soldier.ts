@@ -51,7 +51,7 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
           const expected=draft.soldierLineTotals?.[key];
           if(!pieces||!expected||!Number.isFinite(expected)||expected<=0||
             !Object.keys(pieces).length||
-            Object.entries(pieces).some(([pg,qty])=>!/^\\d+$/.test(pg)||+pg<1||+pg>draft.invoices.length||
+            Object.entries(pieces).some(([pg,qty])=>!/^\d+$/.test(pg)||+pg<1||+pg>draft.invoices.length||
               !Number.isFinite(qty)||qty<=0)||
             Math.abs(Object.values(pieces).reduce((s,v)=>s+v,0)-expected)>0.000001){
             ambiguous=true;break;
