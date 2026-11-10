@@ -1,5 +1,5 @@
 import {initialAuditCatalog,includeOfficialInstitution2026,includeConfirmedSapLinks,includeSharedInstitutionNumbers,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
-import {auditDraftWithSoldier,dailySoldierRows} from '../../lib/daily-soldier';
+import {auditDraftWithSoldier,dailySoldierRows,soldierDateRangeRows} from '../../lib/daily-soldier';
 import {sortSoldierInvoicePages} from '../../lib/soldier-page-sort';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
@@ -39,6 +39,17 @@ async function currentSoldierCatalog():Promise<AuditCatalog>{
 }
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('auditCatalog')){
   return json(await currentSoldierCatalogEnvelope());
+}if(u.searchParams.has('soldierDateFrom')||u.searchParams.has('soldierDateTo')){
+ const from=u.searchParams.get('soldierDateFrom')||'';
+ const to=u.searchParams.get('soldierDateTo')||'';
+ const start=dateValue(from),end=dateValue(to);
+ if(!start||!end)return json({error:'أدخل تاريخ بداية ونهاية صحيحين لفحص الفواتير.'},400);
+ if(start>end)return json({error:'تاريخ البداية يجب أن يكون قبل تاريخ النهاية.'},400);
+ if((Date.parse(end+'T00:00:00Z')-Date.parse(start+'T00:00:00Z'))/86400000>365)
+   return json({error:'أقصى فترة للفحص سنة كاملة.'},400);
+ const records=await db().prepare('SELECT id,branch,payload FROM reconciliations ORDER BY updated DESC')
+   .all<{id:string;branch:string;payload:string}>();
+ return json(soldierDateRangeRows(records.results,await currentSoldierCatalog(),start,end));
 }if(u.searchParams.has('soldierDate')){
  const value=u.searchParams.get('soldierDate')||'';
  if(!dateValue(value))return json({error:'تاريخ الفاتورة الزرقاء غير صالح.'},400);

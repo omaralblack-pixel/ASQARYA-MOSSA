@@ -31,7 +31,9 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
   const [inverseNo,setInverseNo]=useState('');
   const [invoiceLines,setInvoiceLines]=useState('');
   const [invoiceAmount,setInvoiceAmount]=useState('');
-  const [dailyDate,setDailyDate]=useState(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'}));
+  const today=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
+  const [dateFrom,setDateFrom]=useState(today.slice(0,8)+'01');
+  const [dateTo,setDateTo]=useState(today);
   const [dailyBusy,setDailyBusy]=useState(false);
   const [dailyError,setDailyError]=useState('');
   type DailyRow={recordId:string;branch:string;invoice:{
@@ -39,21 +41,27 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
     status:'match'|'review'|'difference';reasons:string[];transferNumbers:string[];
     quantityDifferences:number;missingPaperLines:boolean;
   }};
-  const [daily,setDaily]=useState<{date:string;rows:DailyRow[];counts:{
+  const [daily,setDaily]=useState<{from:string;to:string;days:number;unreadableRecords:number;rows:DailyRow[];counts:{
     total:number;matched:number;differences:number;review:number;
   }}|null>(null);
 
-  async function scanDate(){
-    const date=dateValue(dailyDate);
-    if(!date){setDailyError('اكتب التاريخ مثل 01.11.2026 (يوم.شهر.سنة).');setDaily(null);return}
+  async function scanRange(){
+    const from=dateValue(dateFrom),to=dateValue(dateTo);
+    if(!from||!to){setDailyError('اختر تاريخ البداية والنهاية بشكل صحيح.');setDaily(null);return}
+    if(from>to){setDailyError('تاريخ البداية يجب أن يكون قبل تاريخ النهاية.');setDaily(null);return}
+    if((Date.parse(to+'T00:00:00Z')-Date.parse(from+'T00:00:00Z'))/86400000>365){
+      setDailyError('أقصى مدة للتدقيق سنة واحدة.');setDaily(null);return;
+    }
     setDailyBusy(true);setDailyError('');setDaily(null);
     try{
-      const response=await fetch('/api/reconcile?soldierDate='+encodeURIComponent(date),{cache:'no-store'});
-      const result=await response.json() as {error?:string;date:string;rows:DailyRow[];
+      const params=new URLSearchParams({soldierDateFrom:from,soldierDateTo:to});
+      const response=await fetch('/api/reconcile?'+params.toString(),{cache:'no-store'});
+      const result=await response.json() as {error?:string;from:string;to:string;days:number;
+        unreadableRecords:number;rows:DailyRow[];
         counts:{total:number;matched:number;differences:number;review:number}};
-      if(!response.ok)throw Error(result.error||'تعذّر تدقيق فواتير التاريخ المطلوب.');
+      if(!response.ok)throw Error(result.error||'تعذّر فحص فواتير الفترة المطلوبة.');
       setDaily(result);
-    }catch(e){setDailyError(e instanceof Error?e.message:'تعذّر تدقيق فواتير هذا اليوم.')}
+    }catch(e){setDailyError(e instanceof Error?e.message:'تعذّر فحص الفواتير ضمن الفترة.')}
     finally{setDailyBusy(false)}
   }
 
@@ -149,23 +157,34 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
       <p>راجع الأصناف ووحدات SAP والشدّات، وقارن كميات الحبات مع الفاتورة الزرقاء. الترحيل الخاطئ يظل ظاهرًا حتى تثبت حركته العكسية.</p></div>
       <button className="button secondary" disabled={loading} type="button" onClick={()=>void refresh()}><RefreshCw size={16}/>تحديث مصادر SAP</button>
     </div>
-    <AuditCatalogEditor onCatalog={setCatalog}/>
     <section className="panel no-print">
-      <div className="section-title"><h2>جدول الجندي حسب تاريخ الفاتورة الزرقاء</h2></div>
-      <p className="hint">أدخل تاريخ الفاتورة الزرقاء (وليس تاريخ الترحيل). يعرض كل فواتير هذا اليوم من السجل ويفحص كميات الحبات والشدّات والأكواد وقيمة كل فاتورة مع ترحيلاتها. الفواتير التي لا تتضمن أصناف الفاتورة الأصلية تظهر «بحاجة مراجعة».</p>
+      <div className="section-title"><h2>فحص فواتير المؤسسة حسب الفترة الزمنية</h2></div>
+      <p className="hint">حدد من تاريخ إلى تاريخ حسب تاريخ الفاتورة الزرقاء، وليس تاريخ الترحيل. الجندي يراجع جميع الفواتير المحفوظة في هذه الفترة، ويطابق رقم المادة والكمية بالحبة والشدّة والقيمة لكل فاتورة مع ترحيلاتها. الفواتير الناقصة تظهر «بحاجة مراجعة»، ولا تُعتمد لمجرد تطابق المبلغ.</p>
       <div className="form-grid">
-        <label>تاريخ الفاتورة الزرقاء<input dir="ltr" value={dailyDate} onChange={e=>setDailyDate(e.target.value)} placeholder="01.11.2026"/></label>
+        <label>من تاريخ الفاتورة الزرقاء
+          <input type="date" dir="ltr" value={dateFrom} max={dateTo}
+            onChange={e=>{setDateFrom(e.target.value);setDaily(null);setDailyError('')}}/>
+        </label>
+        <label>إلى تاريخ الفاتورة الزرقاء
+          <input type="date" dir="ltr" value={dateTo} min={dateFrom}
+            onChange={e=>{setDateTo(e.target.value);setDaily(null);setDailyError('')}}/>
+        </label>
         <div style={{alignSelf:'end'}}><button type="button" className="button primary"
-          disabled={dailyBusy||!catalog} onClick={()=>void scanDate()}><Search size={16}/>{dailyBusy?'جاري التدقيق…':'تدقيق جميع فواتير اليوم'}</button></div>
+          disabled={dailyBusy||!catalog} onClick={()=>void scanRange()}>
+          <Search size={16}/>{dailyBusy?'جاري فحص الفترة…':'فحص جميع فواتير الفترة'}
+        </button></div>
       </div>
       {dailyError&&<p role="alert" className="banner danger">{dailyError}</p>}
-      {daily&&<><p className="hint">النتائج حسب تاريخ الفاتورة الزرقاء: <b>{daily.date}</b></p>
+      {daily&&<><p className="hint">نتائج الفحص من <b>{daily.from}</b> إلى <b>{daily.to}</b> (شامل يوم البداية والنهاية) · {daily.days} يوم</p>
         <div className="stats">
           <div className="stat"><span>عدد الفواتير</span><strong>{daily.counts.total}</strong></div>
           <div className="stat"><span>اجتازت الجندي</span><strong>{daily.counts.matched}</strong></div>
           <div className="stat"><span>فيها فروقات</span><strong>{daily.counts.differences}</strong></div>
           <div className="stat"><span>تحتاج مراجعة</span><strong>{daily.counts.review}</strong></div>
         </div>
+        {daily.unreadableRecords>0&&<p role="alert" className="banner danger">
+          <AlertTriangle size={16}/> يوجد {daily.unreadableRecords} سجل غير قابل للفحص؛ لم يتم تجاهله باعتباره مطابقًا.
+        </p>}
         {daily.rows.length>0?<div className="table-scroll"><table>
           <thead><tr><th>رقم الفاتورة</th><th>الفرع</th><th>التاريخ</th><th>الترحيلات المرتبطة</th><th>المبلغ</th><th>قيمة SAP</th><th>حالة الجندي</th><th>التفاصيل</th></tr></thead>
           <tbody>{daily.rows.map(row=><tr key={row.recordId+'-'+row.invoice.id}>
@@ -180,9 +199,10 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
                 record:{id:row.recordId,branch:row.branch,payload:''}
               })}>فتح الترحيلات</button></td>
           </tr>)}</tbody></table></div>
-          :<p className="hint">لا توجد فواتير زرقاء مسجلة بتاريخ {daily.date} في السجل.</p>}
+          :<p className="hint">لا توجد فواتير زرقاء مسجلة من {daily.from} إلى {daily.to} في السجل. الفحص يشمل الفواتير المحفوظة فقط.</p>}
       </>}
     </section>
+    <AuditCatalogEditor onCatalog={setCatalog}/>
     {catalog&&<section className="panel">
       <div className="section-title"><Search size={19}/><h2>اختيار فاتورة أو ترحيل</h2></div>
       <label>رقم الفاتورة الزرقاء أو الترحيل (آخر 4 أرقام أو الرقم الكامل)

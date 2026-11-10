@@ -421,3 +421,30 @@ assert.equal(sortSoldierInvoicePages({...splitDraft,invoices:splitDraft.invoices
  ...row,auditLines:'',quantities:{}}))},threeCatalog).assigned,0,
  'No blue invoice item evidence = no automatic classification.');
 console.log('PASS: three-page sorting, per-page prices, split transfer rows, user-approved ambiguity, serial mapping and reverse entries.');
+
+
+// Inclusive two-date soldier audit, independent from transfer posting dates.
+// End date must be scanned too, including individual invoices inside one saved group.
+const {soldierDateRangeRows}=loadTs('app/lib/daily-soldier.ts');
+const rangeRecords=[
+ {id:'range-multi',branch:'الجيزة',payload:JSON.stringify(twoInvoices)},
+ {id:'range-one',branch:'الجيزة',payload:JSON.stringify(draftForSoldier)},
+ {id:'later',branch:'الجيزة',payload:JSON.stringify(threeInvoices)},
+];
+const novTwoDays=soldierDateRangeRows(rangeRecords,soldierCatalog,'1.11.2026','2.11.2026');
+assert.equal(novTwoDays.from,'2026-11-01');
+assert.equal(novTwoDays.to,'2026-11-02');
+assert.equal(novTwoDays.days,2);
+assert.equal(novTwoDays.counts.total,3,'Both days inclusive, and both invoices from a multi-invoice record.');
+assert.deepEqual(novTwoDays.rows.map(row=>row.invoice.date),['2026-11-01','2026-11-01','2026-11-02']);
+assert.equal(novTwoDays.counts.matched,3);
+assert.equal(novTwoDays.rows.some(row=>row.recordId==='later'),false);
+assert.equal(soldierDateRangeRows(rangeRecords,soldierCatalog,'2.11.2026','2.11.2026').rows.length,1);
+assert.throws(()=>soldierDateRangeRows(rangeRecords,soldierCatalog,'2.11.2026','1.11.2026'),/البداية/);
+assert.throws(()=>soldierDateRangeRows(rangeRecords,soldierCatalog,'bad','2.11.2026'),/تاريخ/);
+assert.throws(()=>soldierDateRangeRows(rangeRecords,soldierCatalog,'1.1.2025','2.1.2026'),/366/);
+const damaged=soldierDateRangeRows([...rangeRecords,{id:'broken',branch:'غير معروف',payload:'{bad json'}],
+ soldierCatalog,'1.11.2026','2.11.2026');
+assert.equal(damaged.counts.total,3);
+assert.equal(damaged.unreadableRecords,1,'Unreadable records must be counted, not treated as matching.');
+console.log('PASS: soldier scans an inclusive From/To blue-invoice date range, validates dates and reports unreadable records.');

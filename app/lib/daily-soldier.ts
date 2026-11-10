@@ -138,24 +138,51 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
     invoices,scopeIssues,unassigned};
 }
 
-export function dailySoldierRows(records:{id:string;branch:string;payload:string}[],
-  catalog:AuditCatalog,dateInput:string) {
-  const date=dateValue(dateInput);
-  if(!date)throw Error('أدخل تاريخ الفاتورة الزرقاء بصيغة يوم.شهر.سنة أو اختره من التقويم.');
+/** Audit every saved blue invoice within an inclusive invoice-date interval.
+ * Each saved record is evaluated only once, even if it contains multiple invoice days.
+ */
+export function soldierDateRangeRows(
+  records:{id:string;branch:string;payload:string}[],
+  catalog:AuditCatalog,fromInput:string,toInput:string) {
+  const from=dateValue(fromInput),to=dateValue(toInput);
+  if(!from||!to)throw Error('أدخل تاريخ بداية ونهاية صحيحين.');
+  if(from>to)throw Error('تاريخ البداية يجب أن يكون قبل تاريخ النهاية أو مساويًا له.');
+  const days=Math.round((Date.parse(to+'T00:00:00Z')-Date.parse(from+'T00:00:00Z'))/86400000)+1;
+  if(days>366)throw Error('أقصى مدة لفحص واحد سنة كاملة (366 يومًا).');
   const rows:{recordId:string;branch:string;invoice:SoldierInvoice}[]=[];
+  let unreadableRecords=0;
   for(const record of records){
     let draft:Draft;
-    try{draft=JSON.parse(record.payload) as Draft}catch{continue}
-    if(!Array.isArray(draft.invoices)||!draft.invoices.some(row=>dateValue(row.date||'')===date))continue;
-    const check=auditDraftWithSoldier(draft,catalog);
-    for(const invoice of check.invoices)if(invoice.date===date)rows.push({
-      recordId:record.id,branch:record.branch,invoice,
-    });
+    try{draft=JSON.parse(record.payload) as Draft}catch{unreadableRecords++;continue}
+    if(!Array.isArray(draft.invoices)){unreadableRecords++;continue}
+    if(!draft.invoices.some(row=>{
+      const date=dateValue(row.date||'');
+      return date!==null&&date>=from&&date<=to;
+    }))continue;
+    try{
+      const check=auditDraftWithSoldier(draft,catalog);
+      for(const invoice of check.invoices){
+        if(invoice.date>=from&&invoice.date<=to)rows.push({
+          recordId:record.id,branch:record.branch,invoice,
+        });
+      }
+    }catch{
+      // A malformed saved record must be reported, not interpreted as a valid match.
+      unreadableRecords++;
+    }
   }
-  rows.sort((a,b)=>a.invoice.number.localeCompare(b.invoice.number,'en'));
-  return {date,rows,counts:{
+  rows.sort((a,b)=>a.invoice.date.localeCompare(b.invoice.date)||
+    a.invoice.number.localeCompare(b.invoice.number,'en'));
+  return {from,to,days,rows,unreadableRecords,counts:{
     total:rows.length,matched:rows.filter(row=>row.invoice.status==='match').length,
     differences:rows.filter(row=>row.invoice.status==='difference').length,
     review:rows.filter(row=>row.invoice.status==='review').length,
   }};
+}
+
+/** Backward-compatible single-day scan. */
+export function dailySoldierRows(records:{id:string;branch:string;payload:string}[],
+  catalog:AuditCatalog,dateInput:string) {
+  const result=soldierDateRangeRows(records,catalog,dateInput,dateInput);
+  return {date:result.from,rows:result.rows,counts:result.counts};
 }
