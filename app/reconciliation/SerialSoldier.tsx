@@ -37,9 +37,10 @@ export default function SerialSoldier(){
      const content=await nextFile.arrayBuffer();
      const {readSerialWorkbook}=await import('../lib/serial-workbook');
      const parsed=readSerialWorkbook(content);
-     if(parsed.errors.length){setIssues(parsed.errors);throw Error('يوجد صفوف لم تُقرأ أو بيانات ناقصة؛ لن نعتمد كشفًا يسقط أي فاتورة.');}
+     setIssues(parsed.errors);
      const saved=await getSaved();
      const result=evaluateSerial(parsed.rows,saved);
+     result.blockers=[...new Set([...parsed.errors,...result.blockers])];
      setReport(result);setBuffer(content);setUpdated(new Date().toLocaleString('ar-JO'));
    }catch(e){setError(e instanceof Error?e.message:'تعذر تحليل الملف.');}
    finally{setBusy(false);}
