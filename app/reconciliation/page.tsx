@@ -221,7 +221,11 @@ async function findTransferForAddition(number: string, saved: StoredTransfer | n
   const member = parsed ? parsed.groups.flatMap(group => group.members).find(row => row.transfer.number === number) : undefined;
   const addingSecond = addingTo.transfers.some(row => transferNumbers(row.number).some(existing => existing !== number));
   if (addingSecond && member?.invoices.length && (!saved || fromAnotherRecord)) {
-    throw Error(invoiceLinkMessage(number, member.invoices));
+    const openInvoices = new Set(addingTo.invoices.map(invoice => invoiceDocumentNo(invoice.number)).filter(Boolean));
+    const sameInvoices = member.invoices.length === openInvoices.size && member.invoices.every(invoice => openInvoices.has(invoice));
+    if (!sameInvoices) {
+      throw Error(invoiceLinkMessage(number, member.invoices) + ' أرقام الفواتير لا تطابق الكشف المفتوح.');
+    }
   }
   if (!savedPaste && parsed?.issues.length) throw Error('تعذرت قراءة كشف SAP: ' + parsed.issues[0]);
   if (!savedPaste && member && (member.issues.length || (member.reversal && !member.reverseMovement))) {
