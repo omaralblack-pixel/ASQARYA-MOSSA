@@ -37,7 +37,8 @@ assert.ok(result.blockers.some(e=>e.includes('مكرر')));
 result=evaluateSerial([row(5,'2624002303','186.400')],[correct,record('g2',[invoice('2624002303','186.400')],base)]);
 assert.ok(result.blockers.some(e=>e.includes('مكرر')));
 result=evaluateSerial([row(5,'2624002303','186.400')],[record('g1',[invoice('2624002303','186.400')],[{number:'2611001',paste:header+'\nDAR00001\tA\t1\tPiece\t001\t011\nDAR00002\tB\t1\tPiece\t002\t011'}])]);
-assert.ok(result.blockers.some(e=>e.includes('أكثر من اتجاه')));
+assert.deepEqual(result.blockers,[],'Multiple valid directions in a single SAP transfer are not an error');
+assert.equal(result.rows[0].transfers[0].kind,'adjustment','Mixed transfer is listed as adjustment, not falsely main or dry');
 const refs=[{code:'11001',sapCode:'DAR00001',active:true},{code:'11002',sapCode:'DAR00002',active:true}];
 const group=record('g-multi',[invoice('2624002303','186.400'),invoice('2624002304','591.160')],[transfer('2612001','DAR00001','001','011'),transfer('2612002','DAR00002','002','011')],{
   referenceSnapshot:refs,pages:{'i:11001':'1','i:11002':'2'}
@@ -48,4 +49,26 @@ assert.deepEqual(result.rows.map(x=>x.transfers.map(t=>t.number)),[['2612001'],[
 const ambiguous=record('g-multi',[invoice('2624002303','186.400'),invoice('2624002304','591.160')],[transfer('2612001','DAR00001','001','011')]);
 result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[ambiguous]);
 assert.ok(result.blockers.some(e=>e.includes('لا يمكن ربط')));
-console.log('PASS: invoice serial soldier checks exact fils, verified paper, transfer routes, duplicates and invoice-specific transfer attribution');
+const legacyRecord=record('g-legacy',[
+ {...invoice('2624002303','186.400'),date:'2026-11-09'},
+ {...invoice('2624002304','591.160'),date:'2026-11-09'}
+],[transfer('2612001','DAR00001','001','011'),transfer('2612002','DAR00002','002','011')]);
+result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[legacyRecord]);
+assert.ok(result.blockers.some(e=>e.includes('لا يمكن ربط')),'Old missing pages still blocked by default');
+result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[legacyRecord],{allowLegacyPageGaps:true});
+assert.deepEqual(result.blockers,[],'Explicit historical page exception permits audit export only');
+assert.equal(result.legacyWarnings.length,4);
+assert.deepEqual(result.rows.map(r=>r.transfers),[[],[]],'Uncertain transfers must not be attributed to invoices');
+assert.deepEqual(result.rows.map(r=>r.unassignedTransfers.map(t=>t.number)),
+ [['2612001','2612002'],['2612001','2612002']],'No old group transfer can be silently omitted');
+const newRecord=record('g-future',[
+ {...invoice('2624002303','186.400'),date:'2026-11-10'},
+ {...invoice('2624002304','591.160'),date:'2026-11-10'}
+],[transfer('2612001','DAR00001','001','011')]);
+result=evaluateSerial([row(5,'2624002303','186.400')],[newRecord],{allowLegacyPageGaps:true});
+assert.ok(result.blockers.some(e=>e.includes('لا يمكن ربط')),'Future groups cannot use historical exception');
+result=evaluateSerial([row(5,'2624002303','186.401')],[legacyRecord],{allowLegacyPageGaps:true});
+assert.equal(result.rows[0].state,'review','Historical override cannot approve amount discrepancy');
+result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002303','186.400')],[legacyRecord],{allowLegacyPageGaps:true});
+assert.ok(result.blockers.some(e=>e.includes('مكرر')),'Historical override cannot bypass duplicate invoice protections');
+console.log('PASS: invoice serial soldier verifies money, receipt, grouping and one-export exception for historical page gaps only');
