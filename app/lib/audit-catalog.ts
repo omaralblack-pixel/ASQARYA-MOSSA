@@ -1,12 +1,13 @@
 import seed from './audit-catalog-seed.json';
 import official2026 from './official-institution-2026.json';
+import confirmedLinks from './confirmed-audit-links.json';
 import {digits, numeric, sapReferences, type Item} from './reconcile';
 
 export type SapCatalogRow = {
   code:string; name:string; unit:string; pack:number|null; kg:number|null; institutionCode:string;
 };
 export type InstitutionCatalogRow = {code:string; name:string; price:number|null};
-export type AuditCatalog = {sap:SapCatalogRow[]; institution:InstitutionCatalogRow[]; officialSeedVersion?:number};
+export type AuditCatalog = {sap:SapCatalogRow[]; institution:InstitutionCatalogRow[]; officialSeedVersion?:number; confirmedLinksVersion?:number};
 const sapCode = /^[A-Z]{2,6}\d{3,10}$/;
 const institutionCode = /^\d{8}$/;
 const validName = (name:unknown) => typeof name==='string' && !!name.trim() && name.length<=400;
@@ -14,6 +15,37 @@ const validNumber = (n:unknown, limit:number, integer=false) =>
   n===null || typeof n==='number' && Number.isFinite(n) && n>0 && n<=limit && (!integer || Number.isInteger(n));
 const seedRows = seed as unknown as Record<string,[string,string,number|null,string,string|null]>;
 const officialRows = official2026 as unknown as Record<string,[string,number|null,number]>;
+const userConfirmedLinks=confirmedLinks as Record<string,string>;
+/**
+ * One-time, non-destructive user-approved links.
+ * A SAP code already assigned to a different institution item is NOT moved:
+ * the conflict must be explicitly reviewed, preserving historic mappings.
+ * A missing SAP code is created WITHOUT inventing its description or UoM;
+ * audit matching stays blocked until the real SAP UoM is imported.
+ */
+export function includeConfirmedSapLinks(catalog:AuditCatalog):AuditCatalog{
+  if(catalog.confirmedLinksVersion===1)return catalog;
+  const sap=new Map(catalog.sap.map(row=>[row.code,row]));
+  const institutions=new Set(catalog.institution.map(row=>row.code));
+  for(const [code,institutionCode] of Object.entries(userConfirmedLinks)){
+    if(!institutions.has(institutionCode))continue;
+    const old=sap.get(code);
+    if(old){
+      if(!old.institutionCode)sap.set(code,{...old,institutionCode});
+      continue; // Existing different institution codes are conflicts, never silently reassigned.
+    }
+    sap.set(code,{code,name:'اسم SAP غير مستورد — '+code,unit:'',pack:null,kg:null,institutionCode});
+  }
+  return {...catalog,confirmedLinksVersion:1,sap:[...sap.values()]};
+}
+/** Conflicts remain visible even after the one-time additive migration. */
+export function confirmedSapLinkConflicts(catalog:AuditCatalog){
+  const bySap=new Map(catalog.sap.map(row=>[row.code,row]));
+  return Object.entries(userConfirmedLinks).flatMap(([code,requested])=>{
+    const current=bySap.get(code)?.institutionCode;
+    return current&&current!==requested?[{code,requested,current}]:[];
+  });
+}
 /**
  * One-time additive import of official blue-invoice item numbers/names.
  * Existing edits, SAP codes, warehouse pack sizes and all approved prices win.
@@ -49,7 +81,7 @@ export function initialAuditCatalog(reference:Item[]):AuditCatalog {
       institutionCode:row?.institutionCode || (institution.has(linked)?linked:''),
     });
   }
-  return includeOfficialInstitution2026({sap:[...sap.values()],institution:[...institution.values()]});
+  return includeConfirmedSapLinks(includeOfficialInstitution2026({sap:[...sap.values()],institution:[...institution.values()]}));
 }
 
 export function catalogAuditReference(catalog:AuditCatalog):Item[] {
@@ -65,7 +97,7 @@ export function catalogAuditReference(catalog:AuditCatalog):Item[] {
     const [first,...aliases]=linked.get(row.code) || [];
     return {
       code:row.code,name:row.name,price:row.price,invoicePack:1,active:true,
-      sapCode:first?.code || '',sapUnit:first?.unit || 'Piece',warehouseName:first?.name,
+      sapCode:first?.code || '',sapUnit:first?.unit ?? '',warehouseName:first?.name,
       cartonPieces:first?.pack ?? null,kgPerPiece:first?.kg ?? null,
       sapAliases:aliases.map(alias=>({
         sapCode:alias.code,sapUnit:alias.unit,cartonPieces:alias.pack,kgPerPiece:alias.kg,
@@ -80,7 +112,7 @@ export function validateAuditCatalog(value:unknown):value is AuditCatalog {
   if(!Array.isArray(sap)||sap.length>1000||!Array.isArray(institution)||institution.length>1000)return false;
   const unique=(rows:{code:string}[])=>new Set(rows.map(row=>row.code)).size===rows.length;
   return sap.every(row=>row && typeof row.code==='string' && sapCode.test(row.code) &&
-    validName(row.name) && ['Piece','Carton','KG'].includes(row.unit) &&
+    validName(row.name) && ['','Piece','Carton','KG'].includes(row.unit) &&
     validNumber(row.pack,10000,true) && validNumber(row.kg,10000) &&
     typeof row.institutionCode==='string' && (!row.institutionCode || institutionCode.test(row.institutionCode))) &&
     institution.every(row=>row && typeof row.code==='string' && institutionCode.test(row.code) &&

@@ -1,13 +1,13 @@
 'use client';
 
 import {useEffect,useRef,useState,type FormEvent} from 'react';
-import {importAuditInstitution,importAuditSap,validateAuditCatalog,type AuditCatalog} from '../lib/audit-catalog';
+import {confirmedSapLinkConflicts,importAuditInstitution,importAuditSap,validateAuditCatalog,type AuditCatalog} from '../lib/audit-catalog';
 import {digits,fils,money,numeric} from '../lib/reconcile';
 
 type SavedCatalog={catalog:AuditCatalog;version:string|null};
 type Side='sap'|'institution';
 type Edit={existing?:boolean;side:Side;code:string;name:string;unit:string;pack:string;kg:string;link:string;price:string};
-const blank=(side:Side):Edit=>({side,code:'',name:'',unit:'Piece',pack:'',kg:'',link:'',price:''});
+const blank=(side:Side):Edit=>({side,code:'',name:'',unit:'',pack:'',kg:'',link:'',price:''});
 
 export default function AuditCatalogEditor({onCatalog}:{onCatalog:(catalog:AuditCatalog)=>void}){
   const [saved,setSaved]=useState<SavedCatalog|null>(null);
@@ -79,6 +79,8 @@ export default function AuditCatalogEditor({onCatalog}:{onCatalog:(catalog:Audit
   }
 
   const catalog=saved?.catalog;
+  const conflicts=catalog?confirmedSapLinkConflicts(catalog):[];
+  const unitsPending=catalog?.sap.filter(row=>row.institutionCode&&!row.unit)||[];
   const institutionByCode=new Map(catalog?.institution.map(row=>[row.code,row]));
   const linkedCodes=new Set(catalog?.sap.map(row=>row.institutionCode));
   const matches=(...values:string[])=>values.join(' ').toLowerCase().includes(query.trim().toLowerCase());
@@ -123,7 +125,7 @@ export default function AuditCatalogEditor({onCatalog}:{onCatalog:(catalog:Audit
           {field('name','الاسم')}
           {edit.side==='sap'?<>
             <label>وحدة SAP<select value={edit.unit} onChange={e=>setEdit({...edit,unit:e.target.value})}>
-              <option>Piece</option><option>Carton</option><option>KG</option>
+              <option value="">بانتظار وحدة SAP الفعلية</option><option>Piece</option><option>Carton</option><option>KG</option>
             </select></label>
             {field('pack','حبات الكرتونة')}{field('kg','وزن الحبة بالكغم')}{field('link','رقم مادة المؤسسة المرتبطة')}
           </>:field('price','سعر الحبة بالدينار')}
@@ -131,12 +133,22 @@ export default function AuditCatalogEditor({onCatalog}:{onCatalog:(catalog:Audit
         <button className="button primary" disabled={busy}>حفظ الصنف</button>{' '}
         <button className="button secondary" type="button" disabled={busy} onClick={()=>setEdit(null)}>إغلاق</button>
       </form>}
+      {(conflicts.length>0||unitsPending.length>0)&&<section className="panel">
+        <h3>روابط مؤكدة تحتاج إكمال بيانات SAP</h3>
+        <p className="hint">أرقام المؤسسة وكود SAP مؤكدة منك، لكن وحدة SAP وشدّتها لا تُستنتج من تعبئة كرتونة المؤسسة. لا يُعتمد الصنف حتى تكتمل بيانات التحويل.</p>
+        {unitsPending.length>0&&<details><summary>أكواد مؤكدة، بانتظار وحدة SAP ({unitsPending.length})</summary>
+          {unitsPending.map(row=><p key={row.code}>{row.code} ↔ {row.institutionCode} · راجع الوحدة والشدّة من SAP</p>)}
+        </details>}
+        {conflicts.length>0&&<details><summary>تعارضات تحتاج قرارك ({conflicts.length})</summary>
+          {conflicts.map(row=><p key={row.code}>{row.code} · طلبت ربطه بـ {row.requested}، لكنه محفوظ حاليًا لـ {row.current}. لم نغيّر الربط القديم.</p>)}
+        </details>}
+      </section>}
       <details><summary>أصناف SAP ({catalog.sap.length})</summary>
         <div className="table-scroll"><table><thead><tr>
           <th>كود SAP</th><th>اسم SAP</th><th>الوحدة</th><th>حبات الكرتونة</th><th>وزن الحبة</th><th>المؤسسة</th><th>إجراء</th>
         </tr></thead><tbody>
           {catalog.sap.filter(row=>matches(row.code,row.name,row.institutionCode,institutionByCode.get(row.institutionCode)?.name||'')).map(row=><tr key={row.code}>
-            <td>{row.code}</td><td>{row.name}</td><td>{row.unit}</td><td>{row.pack??(row.unit==='Carton'?'مطلوبة':'—')}</td>
+            <td>{row.code}</td><td>{row.name}</td><td>{row.unit||'بانتظار وحدة SAP'}</td><td>{row.pack??(row.unit==='Carton'?'مطلوبة':'—')}</td>
             <td>{row.kg??(row.unit==='KG'?'مطلوب':'—')}</td>
             <td>{institutionByCode.has(row.institutionCode)?row.institutionCode+' · '+institutionByCode.get(row.institutionCode)?.name:'بحاجة إلى ربط'}</td>
             <td><button type="button" className="button small secondary" disabled={busy} onClick={()=>setEdit({

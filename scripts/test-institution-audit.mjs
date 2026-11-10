@@ -198,3 +198,53 @@ const removed={...migrated,institution:migrated.institution.filter(item=>item.co
 assert.equal(includeOfficialInstitution2026(removed).institution.some(item=>item.code==='11356453'),false,
   'Once imported, a user deletion must not be undone by reopening the catalog.');
 console.log('PASS: official 2026 PDF seed adds missing institution codes once without changing saved edits or SAP carton sizes.');
+
+
+// Explicit user-confirmed SAP links: additive, collision-safe and not silently "Piece".
+const {includeConfirmedSapLinks,confirmedSapLinkConflicts}=loadTs('app/lib/audit-catalog.ts');
+const confirmedCatalog=initialAuditCatalog(defaults);
+const safePairs=[
+ ['CHS00051','11375811'],['CFC00003','11356453'],['CFC00005','11356457'],
+ ['CFC00012','11356459'],['CFC00016','11356458'],['CFC00084','11356460'],
+ ['FVL00368','11286286'],['FVL00389','94233343'],['FVL00246','11316287'],
+];
+for(const [code,institutionCode] of safePairs){
+ const row=confirmedCatalog.sap.find(row=>row.code===code);
+ assert.ok(row,'confirmed SAP item must appear: '+code);
+ assert.equal(row.institutionCode,institutionCode);
+ assert.equal(row.unit,'','Unit unknown until official SAP paste');
+ assert.equal(row.pack,null,'Institution carton pack must not be assumed to be SAP pack');
+}
+const collisionPairs=[
+ ['FVL00016','11367181','94234612'],
+ ['CFC00006','11356477','11356455'],
+ ['DAR00032','11770182','11770183'],
+ ['CHS00005','11377161','94233341'],
+];
+const collisions=confirmedSapLinkConflicts(confirmedCatalog);
+for(const [code,current,requested] of collisionPairs){
+ assert.equal(confirmedCatalog.sap.find(row=>row.code===code)?.institutionCode,current,
+  'Prior SAP mapping must not be reassigned without conflict approval: '+code);
+ assert.ok(collisions.some(row=>row.code===code&&row.current===current&&row.requested===requested));
+}
+assert.equal(confirmedCatalog.confirmedLinksVersion,1);
+const withoutMarker={...confirmedCatalog,confirmedLinksVersion:undefined};
+assert.equal(includeConfirmedSapLinks(withoutMarker).sap.length,confirmedCatalog.sap.length,
+  'Migrating the same confirmation batch must not duplicate SAP codes.');
+assert.equal(includeConfirmedSapLinks(confirmedCatalog),confirmedCatalog,
+  'Applied migration must not re-create a user-deleted mapping.');
+const unknownUnitAudit=auditInstitutionTransfers([
+ transfer('2618111',[['CFC00003','farfalle','1','Piece','001','011']])
+],catalogAuditReference(confirmedCatalog));
+assert.equal(unknownUnitAudit.valid,false,
+  'Link is confirmed but unknown SAP unit must block final approval');
+assert.match(unknownUnitAudit.issues[0]?.message||'',/وحدة SAP/);
+const importedUnitCatalog=importAuditSap(
+ 'Item No.\tItem Description\tUoM Code\tCarton Pieces\nCFC00003\tFARFALLE 24x500G\tCarton\t24',
+ confirmedCatalog
+);
+assert.equal(importedUnitCatalog.sap.find(row=>row.code==='CFC00003')?.institutionCode,'11356453');
+assert.equal(auditInstitutionTransfers([
+ transfer('2618112',[['CFC00003','farfalle','1','Carton','001','011']])
+],catalogAuditReference(importedUnitCatalog)).valid,true);
+console.log('PASS: user-confirmed mapping imports without SAP unit assumptions; collisions preserve historical codes; missing UoM blocks approval.');

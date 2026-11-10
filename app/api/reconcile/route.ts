@@ -1,4 +1,4 @@
-import {initialAuditCatalog,includeOfficialInstitution2026,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
+import {initialAuditCatalog,includeOfficialInstitution2026,includeConfirmedSapLinks,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {auditDraftWithSoldier,dailySoldierRows} from '../../lib/daily-soldier';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
@@ -19,7 +19,7 @@ async function currentSoldierCatalogEnvelope():Promise<{version:string|null;cata
  if(!row)return {version:null,catalog:initialAuditCatalog(await refs())};
  const previous=JSON.parse(row.value) as {version:string;catalog:AuditCatalog};
  if(!validateAuditCatalog(previous.catalog))throw Error('مرجع الجندي المحفوظ غير صالح؛ أصلحه قبل اعتماد أي مطابقة.');
- const upgraded=includeOfficialInstitution2026(previous.catalog);
+ const upgraded=includeConfirmedSapLinks(includeOfficialInstitution2026(previous.catalog));
  if(upgraded===previous.catalog)return previous;
  // Optimistic one-time migration. Preserve custom links, prices, and deletions.
  const next={version:crypto.randomUUID(),catalog:upgraded};

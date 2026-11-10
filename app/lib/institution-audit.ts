@@ -67,6 +67,7 @@ export function auditInstitutionTransfers(transfers: Transfer[], reference: Item
       const found = bySap.get(line.sapCode.toUpperCase());
       if (found) {
         try {
+          if (!found.sapUnit) throw Error('وحدة SAP لم تُستورد أو تُعتمد بعد');
           const converted = convert(line, found);
           if (!Number.isFinite(converted)) throw Error('التحويل إلى الحبة غير صالح');
           approvedLines++;
