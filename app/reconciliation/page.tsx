@@ -57,7 +57,7 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
 })),[sapPreview.records]);
 useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','audit','replace','stock','serial-soldier'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
 useEffect(()=>{let active=true;fetch('/api/reconcile?auditCatalog=1',{cache:'no-store'})
- .then(async response=>{if(!response.ok)throw Error('مرجع الجندي غير متاح.');return response.json()})
+ .then(async response=>{if(!response.ok)throw Error('مرجع الجندي غير متاح.');return await response.json() as {catalog:AuditCatalog}})
  .then(data=>{if(active)SETAUDITCAT(data.catalog as AuditCatalog)})
  .catch(()=>{if(active)SETAUDITCAT(null)});
  return ()=>{active=false};
@@ -100,9 +100,9 @@ const pageAmount=selectedInvoice?fils(selectedInvoice.amount):null;
 const expected=selectedPage===null?result?.expected??null:pageExpected;
 const paperAmount=selectedPage===null?result?.total??null:pageAmount;
 const difference=paperAmount===null||expected===null?null:paperAmount-expected;
+const acceptedDifference=!!result&&'acceptedDifference' in result&&result.acceptedDifference===true;
 const selectedSoldierMatch=selectedPage===null?soldier?.allMatched:soldier?.invoices[selectedPage-1]?.status==='match';
 const comparisonStatus=difference===null?'review':difference!==0&&!(selectedPage===null&&acceptedDifference)?'difference':selectedSoldierMatch?'match':'review';
-const acceptedDifference=!!result&&'acceptedDifference' in result&&result.acceptedDifference===true;
 const comparisonLabel=selectedPage===null?'مطابقة إجمالي الكشف':'مطابقة الفاتورة '+selectedPage;
 const pageOptions=[...new Set([0,...(draft?.invoices.map((_,i)=>i+1)||[]),...sortedRows.map(row=>getPage(row.key))])].sort((a,b)=>a-b);const monthResult=useMemo(()=>monthly(serial,month,columns,filtered,dateFormat,records),[serial,month,columns,filtered,dateFormat,records]);
 async function run(fn:()=>Promise<void>){B(true);E('');N('');try{await fn()}catch(e:any){E(e.message)}finally{B(false)}}

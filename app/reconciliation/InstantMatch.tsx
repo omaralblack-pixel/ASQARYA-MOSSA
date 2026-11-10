@@ -5,6 +5,8 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
+import {auditDraftWithSoldier} from '../lib/daily-soldier';
+import type {AuditCatalog} from '../lib/audit-catalog';
 import {prepareReconciliation, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
@@ -37,7 +39,7 @@ async function saveJson(draft:Draft, sources:TransferSource[]) {
   });
   const data = await response.json() as {error?:string};
   if (!response.ok) throw Error(data.error || 'تعذّر الحفظ');
-  return data as {id:string;version:number;referenceSnapshot:Item[]};
+  return data as {id:string;version:number;referenceSnapshot:Item[];summary:{status:string;soldier?:{allMatched:boolean}}};
 }
 function recordDraft(row:Summary):Partial<Draft> {
   try { return JSON.parse(row.payload) as Draft; } catch { return {}; }
@@ -111,6 +113,13 @@ export default function InstantMatch({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [showItems, setShowItems] = useState(false);
+  const [auditCatalog,setAuditCatalog] = useState<AuditCatalog|null>(null);
+  useEffect(()=>{let active=true;
+    getJson<{catalog:AuditCatalog}>('/api/reconcile?auditCatalog=1')
+      .then(data=>{if(active)setAuditCatalog(data.catalog)})
+      .catch(()=>{if(active)setAuditCatalog(null)});
+    return ()=>{active=false};
+  },[]);
   const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind),[records,imports,number,kind]);
 
   async function refreshRecords() {
@@ -305,12 +314,15 @@ export default function InstantMatch({
   }
 
   const prepared=useMemo(()=>draft?prepareReconciliation(draft,reference):null,[draft,reference]);
-  const result=prepared?.result??null;
+  const soldier=useMemo(()=>draft&&auditCatalog?auditDraftWithSoldier(draft,auditCatalog):null,[draft,auditCatalog]);
+  const originalResult=prepared?.result??null;
+  const result=originalResult?{...originalResult,
+    status:originalResult.status==='match'&&!soldier?.allMatched?'review':originalResult.status}:null;
   const transferWarnings=useMemo(()=>draft ? draft.transfers.flatMap(transfer=>{
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     return [...parsed.issues,...parsed.excluded].map(issue=>'الترحيل '+transfer.number+': '+issue);
   }):[],[draft]);
-  const canSave=!!draft&&!!result&&result.status==='match'&&result.priceDifference===0
+  const canSave=!!draft&&!!result&&soldier?.allMatched===true&&result.status==='match'&&result.priceDifference===0
     &&transferWarnings.length===0&&!!draft.branch
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
     &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null&&dateValue(item.date));
@@ -318,8 +330,13 @@ export default function InstantMatch({
     if (!prepared||!canSave) return;
     setBusy(true);setError('');
     try {
-      await saveJson(prepared.draft,Object.values(sources));
+      const saved=await saveJson(prepared.draft,Object.values(sources));
       await refreshRecords();
+      if(saved.summary?.status!=='match'||!saved.summary?.soldier?.allMatched){
+        setDraft(current=>current?{...current,id:saved.id,version:saved.version}:current);
+        setError('حُفظت الفاتورة لكن لم تحصل على اعتماد نهائي من الجندي؛ افتح المطابقة التفصيلية وأكمل الملاحظات.');
+        return;
+      }
       setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setSuggestionsOpen(false);
       setNotice('تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر حفظ المطابقة.')}
@@ -398,6 +415,16 @@ export default function InstantMatch({
             </div>
             <label className="check-label"><input type="checkbox" checked={item.complete}
               onChange={e=>updateInvoice(item.id,{complete:e.target.checked})}/>الفاتورة الورقية موجودة عندي</label>
+            <details><summary>أصناف الفاتورة الزرقاء للجندي</summary>
+              <p className="hint">الصق رقم مادة المؤسسة والكمية بالحبة في عمودين. لن يُعتمد «مطابق» قبل التدقيق.</p>
+              <textarea dir="ltr" rows={4} maxLength={30000}
+                aria-label={'أصناف فاتورة الجندي '+(index+1)} value={item.auditLines||''}
+                onChange={e=>updateInvoice(item.id,{auditLines:e.target.value})}
+                placeholder={'رقم المادة\tالكمية\n11371486\t24'}/>
+            </details>
+            <p className="hint">الجندي: <b>{soldier?.invoices[index]?.status==='match'?'مطابق':
+              soldier?.invoices[index]?.status==='difference'?'يوجد فرق':'بانتظار مراجعة'}</b>
+              {soldier?.invoices[index]?.reasons?.[0]?' — '+soldier.invoices[index].reasons[0]:''}</p>
             {index>0&&<button className="text-button" type="button"
               onClick={()=>update({...draft,invoices:draft.invoices.filter(row=>row.id!==item.id)})}>حذف الفاتورة</button>}
           </article>)}
@@ -440,8 +467,9 @@ export default function InstantMatch({
           <div className={'stat status-stat '+result.status}><span>الحالة</span>
             <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?'مطابق':result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
         </div>
-        {draft.invoices.length>1&&<p className="hint">النتيجة هنا لمجموع الفواتير المرتبطة؛ مطابقة مبلغ كل فاتورة منفردة تتطلب توزيع الأصناف على صفحاتها في شاشة المطابقة التفصيلية.</p>}
+        {draft.invoices.length>1&&<p className="hint">عند وجود أكثر من فاتورة، وزّع الأصناف على أرقام الفواتير من شاشة المطابقة التفصيلية حتى يستطيع الجندي اعتماد كل فاتورة مستقلة.</p>}
         {draft.invoices.some(item=>!dateValue(item.date))&&<p className="hint" role="alert">حدّد تاريخ الفاتورة الزرقاء أو صحّح التاريخ التلقائي قبل الحفظ، حتى يظل محفوظًا في السجل.</p>}
+        {originalResult?.status==='match'&&!soldier?.allMatched&&<p className="amber" role="alert">القيمة متطابقة، لكن الجندي لم يعتمد أصناف الفاتورة وكمياتها بعد. افتح بيانات كل فاتورة وأكملها.</p>}
         {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
           {transferWarnings.map((text,index)=><p key={'transfer-'+index}>{text}</p>)}
           {result.problems.map((text,index)=><p key={index}>{text}</p>)}
