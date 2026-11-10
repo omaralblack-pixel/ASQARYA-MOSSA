@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,checkSignature,withInvoiceDates,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -125,6 +125,59 @@ assert.deepEqual(mixedParsed.lines.map(line=>line.from),['001','009','011']);
 assert.equal(mixedParsed.excluded.length,0);
 assert.equal(reconcile({...manual,transfers:[{...d.transfers[0],paste:mixedWarehouses}]},ref).rows[0].transfer,10);
 console.log('PASS: mixed 001 and 009 lines into 011 are both included.');
+
+// A saved transfer picks up an approved link even when its snapshot predates the approval.
+{
+ const butter={...link,code:'94226889',sapCode:'FOD00064',name:'زبدة بلجيكي',price:500,cartonPieces:40,sapUnit:'Carton'};
+ const frozen=ref.find(item=>item.sapCode==='FVL00302');
+ const current=[...ref.map(item=>item===frozen?{...item,price:999,cartonPieces:21}:item),butter];
+ const saved={
+  ...manual,referenceSnapshot:ref,
+  transfers:[{...manual.transfers[0],paste:warehousePaste([['FOD00064','2','009','011','Carton'],['FVL00302','1','001','011','Carton'],['FOD99999','1','001','011','Piece']])}],
+  pages:{'s:FOD00064':'2','i:11366443':'1'},pageEntryOrder:['s:FOD00064','i:11366443'],
+ };
+ const initial=reconcile(saved,ref);
+ const unknown=initial.rows.find(row=>row.sapCode==='FOD00064');
+ assert.equal(unknown.item,null);
+ const prepared=prepareReconciliation(saved,current);
+ const resolved=prepared.result.rows.find(row=>row.sapCode==='FOD00064');
+ assert.equal(resolved.code,'94226889');
+ assert.equal(resolved.transfer,80);
+ assert.equal(resolved.expected,40000);
+ assert.equal(prepared.result.rows.find(row=>row.sapCode==='FVL00302').expected,7000);
+ assert.equal(prepared.result.rows.find(row=>row.sapCode==='FOD99999').item,null);
+ assert.deepEqual(prepared.draft.pages,{'i:94226889':'2','i:11366443':'1'});
+ assert.deepEqual(prepared.draft.pageEntryOrder,['i:94226889','i:11366443']);
+ assert.equal(saved.pages['s:FOD00064'],'2');
+
+ const excluded={...saved,excludedItems:{[unknown.key]:checkSignature(unknown)}};
+ const hidden=prepareReconciliation(excluded,current);
+ assert.equal(hidden.result.excludedRows[0].sapCode,'FOD00064');
+ assert.equal(hidden.draft.pages['s:FOD00064'],'2');
+ const reopened=prepareReconciliation({...hidden.draft,referenceSnapshot:hidden.reference},current);
+ assert.equal(reopened.result.excludedRows.length,1);
+ const changed={...reopened.draft,transfers:[{...saved.transfers[0],paste:saved.transfers[0].paste.replace('2\t009','3\t009')}]};
+ assert.equal(prepareReconciliation(changed,current).result.rows.find(row=>row.code==='94226889').transfer,120);
+ assert.equal(prepareReconciliation({...reopened.draft,excludedItems:{}},current).result.rows.find(row=>row.code==='94226889').transfer,80);
+
+ const partial={...saved,referenceSnapshot:[...ref,{...butter,price:null,cartonPieces:null}]};
+ assert.equal(prepareReconciliation(partial,current).result.rows.find(row=>row.code==='94226889').expected,40000);
+ const alias={sapCode:'FOD00064',sapUnit:'Carton',cartonPieces:40,kgPerPiece:null};
+ const aliasReference=current.filter(item=>item!==butter).map(item=>item.code===frozen.code?{...item,sapAliases:[alias]}:item);
+ const linkedAlias=prepareReconciliation(saved,aliasReference);
+ const combined=linkedAlias.result.rows.find(row=>row.code===frozen.code);
+ assert.equal(combined.transfer,100);
+ assert.equal(combined.unitPrice,frozen.price);
+ assert.deepEqual(linkedAlias.draft.pages,{'i:11366443':'1'});
+ assert.deepEqual(linkedAlias.draft.pageEntryOrder,['i:11366443']);
+
+ const inactive=prepareReconciliation(saved,[...ref,{...butter,active:false}]);
+ assert.equal(inactive.result.rows.find(row=>row.sapCode==='FOD00064').item,null);
+ const differentOwner={...butter,code:'99999998',price:600};
+ const conflict=prepareReconciliation({...saved,referenceSnapshot:[...ref,differentOwner]},current);
+ assert.equal(conflict.result.rows.find(row=>row.sapCode==='FOD00064').code,differentOwner.code);
+}
+console.log('PASS: approved links, aliases and missing definitions apply to saved transfers, preserving recorded amounts, pages, and manual exclusions.');
 
 // Exclusion affects only the current group and never deletes its SAP lines.
 {

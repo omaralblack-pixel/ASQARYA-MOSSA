@@ -32,8 +32,117 @@ export function moveLinkedPage(pages:Draft['pages'],sapCode:string,code:string){
  delete next[source];
  return next;
 }
-export function reconcile(d:Draft,reference:Item[]){if(d.mode==='manual')return reconcileManual(d,reference);return reconcileLegacy(d,reference)}
-function reconcileLegacy(d:Draft,reference:Item[]){const parsed={lines:[] as TransferLine[],issues:[] as string[],excluded:[] as string[]};for(const [index,t] of d.transfers.entries()){const p=parseTransfer(t.paste,{allowReverse:true});parsed.lines.push(...p.lines.map(l=>({...l,transferNo:t.number})));parsed.issues.push(...p.issues.map(i=>'الترحيل '+(t.number||index+1)+': '+i));parsed.excluded.push(...p.excluded.map(i=>'الترحيل '+(t.number||index+1)+': '+i))}const active=reference.filter(i=>i.active),bySap=new Map(sapReferences(active).map(i=>[i.sapCode,i])),byCode=new Map(active.map(i=>[i.code,i]));const problems=[...parsed.issues];const transferNos=d.transfers.map(t=>documentNo(t.number));if(transferNos.some(n=>!n))problems.push('أكمل أرقام الترحيلات');if(new Set(transferNos).size!==transferNos.length)problems.push('رقم ترحيل مكرر داخل المجموعة');if(!d.transfers.length)problems.push('أضف ترحيلًا واحدًا على الأقل');if(!parsed.lines.length)problems.push('أضف ترحيل SAP صالحًا للمطابقة');if(!d.invoices.length)problems.push('أضف فاتورة مؤسسة واحدة على الأقل');const numbers=d.invoices.map(i=>invoiceDocumentNo(i.number));if(numbers.some(n=>!n))problems.push('أكمل أرقام الفواتير');if(new Set(numbers).size!==numbers.length)problems.push('رقم فاتورة مكرر داخل المجموعة');if(d.invoices.some(i=>!i.complete))problems.push('أكّد اكتمال بنود كل فاتورة بعد إدخالها');if(d.invoices.some(i=>fils(i.amount)===null))problems.push('أكمل مبلغ كل فاتورة بدقة حتى 3 منازل');
+function parseTransfers(transfers:Transfer[]){
+ const parsed={lines:[] as TransferLine[],issues:[] as string[],excluded:[] as string[]};
+ for(const [index,transfer] of transfers.entries()){
+  const source=parseTransfer(transfer.paste,{allowReverse:true});
+  const label='الترحيل '+(transfer.number||index+1)+': ';
+  parsed.lines.push(...source.lines.map(line=>({...line,transferNo:transfer.number})));
+  parsed.issues.push(...source.issues.map(issue=>label+issue));
+  parsed.excluded.push(...source.excluded.map(issue=>label+issue));
+ }
+ return parsed;
+}
+
+function completeReference(snapshot:Item[],current:Item[],lines:TransferLine[],excludedItems:Set<string>){
+ const used=new Set(lines.map(line=>line.sapCode));
+ const historicalOwners=new Map(sapReferences(snapshot).map(item=>[item.sapCode,item.code]));
+ const items=new Map(snapshot.map(item=>[item.code,item]));
+ let updated=false;
+ for(const item of current){
+  if(!item.active||excludedItems.has(item.code))continue;
+  const compatible=[item,...(item.sapAliases||[])].filter(({sapCode})=>
+   !historicalOwners.has(sapCode)||historicalOwners.get(sapCode)===item.code);
+  if(!compatible.some(link=>used.has(link.sapCode)))continue;
+  const stored=items.get(item.code);
+  if(!stored?.active){
+   const [primary,...sapAliases]=compatible.map(({sapCode,sapUnit,cartonPieces,kgPerPiece})=>({sapCode,sapUnit,cartonPieces,kgPerPiece}));
+   items.set(item.code,{...item,...primary,sapAliases});
+   updated=true;
+   continue;
+  }
+  const links=new Map([stored,...(stored.sapAliases||[])].map(link=>[link.sapCode,link]));
+  const price=stored.price??item.price;
+  let changed=price!==stored.price;
+  for(const link of compatible){
+   if(!used.has(link.sapCode))continue;
+   const {sapCode,sapUnit,cartonPieces,kgPerPiece}=link;
+   const previous=links.get(sapCode);
+   const carton=previous?.cartonPieces??cartonPieces,weight=previous?.kgPerPiece??kgPerPiece;
+   if(previous&&previous.cartonPieces===carton&&previous.kgPerPiece===weight)continue;
+   links.set(sapCode,{sapCode,sapUnit:previous?.sapUnit??sapUnit,cartonPieces:carton,kgPerPiece:weight});
+   changed=true;
+  }
+  if(changed){
+   const [primary,...sapAliases]=links.values();
+   items.set(item.code,{...stored,...primary,price,sapAliases});
+   updated=true;
+  }
+ }
+ return updated?[...items.values()]:snapshot;
+}
+
+function retainedUnlinkedExclusions(draft:Draft,lines:TransferLine[]){
+ const bySap=new Map<string,TransferLine[]>();
+ if(draft.mode==='manual'&&draft.excludedItems){
+  for(const line of lines){
+   if(!draft.excludedItems['s:'+line.sapCode])continue;
+   const details=bySap.get(line.sapCode)||[];
+   details.push(line);
+   bySap.set(line.sapCode,details);
+  }
+ }
+ return new Set([...bySap].filter(([sapCode,details])=>
+  draft.excludedItems?.['s:'+sapCode]===checkSignature({name:details[0].name,unitPrice:null,transfer:null,details}))
+  .map(([sapCode])=>sapCode));
+}
+
+function moveApprovedPages<T extends Draft>(draft:T,reference:Item[],excludedSapCodes:Set<string>):T{
+ let {pages,pageEntryOrder}=draft;
+ const keys=new Set([...(pageEntryOrder||[]),...Object.keys(pages||{})]);
+ const unlinked=[...keys].filter(key=>key.startsWith('s:'));
+ if(!unlinked.length)return draft;
+ const bySap=new Map(sapReferences(reference.filter(item=>item.active)).map(item=>[item.sapCode,item.code]));
+ for(const source of unlinked){
+  const sapCode=source.slice(2);
+  const code=bySap.get(sapCode);
+  if(!code||excludedSapCodes.has(sapCode))continue;
+  const target='i:'+code;
+  const moveOrder=pageNumber(pages?.[target])===0;
+  pages=moveLinkedPage(pages,sapCode,code);
+  pageEntryOrder=pageEntryOrder?.flatMap(key=>key===source?(moveOrder?[target]:[]):[key]);
+ }
+ return pages===draft.pages?draft:{...draft,pages,pageEntryOrder};
+}
+
+export function prepareReconciliation<T extends Draft>(draft:T,current:Item[]){
+ const parsed=parseTransfers(draft.transfers);
+ const excludedSapCodes=retainedUnlinkedExclusions(draft,parsed.lines);
+ const snapshot=draft.useCurrentReference?undefined:draft.referenceSnapshot;
+ let reference=current;
+ if(snapshot){
+  const historical=draft.linkedSapCodes?.length?groupReference(snapshot,current,draft.linkedSapCodes):snapshot;
+  // Keep recorded prices and conversions, and preserve valid manual exclusions on saved rows.
+  const excludedItems=new Set<string>();
+  if(draft.mode==='manual'&&Object.keys(draft.excludedItems||{}).some(key=>key.startsWith('i:'))){
+   for(const row of reconcileManual(draft,historical,parsed,excludedSapCodes).excludedRows){
+    if(row.item)excludedItems.add(row.code);
+   }
+  }
+  reference=completeReference(historical,current,parsed.lines,excludedItems);
+ }
+ const prepared=moveApprovedPages(draft,reference,excludedSapCodes);
+ const result=prepared.mode==='manual'
+  ?reconcileManual(prepared,reference,parsed,excludedSapCodes)
+  :reconcileLegacy(prepared,reference,parsed);
+ return {draft:prepared,reference,result};
+}
+
+export function reconcile(d:Draft,reference:Item[]){
+ const parsed=parseTransfers(d.transfers);
+ return d.mode==='manual'?reconcileManual(d,reference,parsed,retainedUnlinkedExclusions(d,parsed.lines)):reconcileLegacy(d,reference,parsed);
+}
+function reconcileLegacy(d:Draft,reference:Item[],parsed:ReturnType<typeof parseTransfers>,excludedSapCodes=new Set<string>()){const active=reference.filter(i=>i.active),bySap=new Map(sapReferences(active).filter(i=>!excludedSapCodes.has(i.sapCode)).map(i=>[i.sapCode,i])),byCode=new Map(active.map(i=>[i.code,i]));const problems=[...parsed.issues];const transferNos=d.transfers.map(t=>documentNo(t.number));if(transferNos.some(n=>!n))problems.push('أكمل أرقام الترحيلات');if(new Set(transferNos).size!==transferNos.length)problems.push('رقم ترحيل مكرر داخل المجموعة');if(!d.transfers.length)problems.push('أضف ترحيلًا واحدًا على الأقل');if(!parsed.lines.length)problems.push('أضف ترحيل SAP صالحًا للمطابقة');if(!d.invoices.length)problems.push('أضف فاتورة مؤسسة واحدة على الأقل');const numbers=d.invoices.map(i=>invoiceDocumentNo(i.number));if(numbers.some(n=>!n))problems.push('أكمل أرقام الفواتير');if(new Set(numbers).size!==numbers.length)problems.push('رقم فاتورة مكرر داخل المجموعة');if(d.invoices.some(i=>!i.complete))problems.push('أكّد اكتمال بنود كل فاتورة بعد إدخالها');if(d.invoices.some(i=>fils(i.amount)===null))problems.push('أكمل مبلغ كل فاتورة بدقة حتى 3 منازل');
 const rows=new Map<string,{key:string;item:Item|null;sapCode:string;code:string;name:string;transfer:number|null;invoice:number;details:TransferLine[];errors:string[];perInvoice:(number|null)[];unitPrice:number|null;expected:number|null;difference:number|null;state:string}>();
 const ensure=(key:string,item:Item|null,sapCode:string,code:string,name:string)=>{if(!rows.has(key))rows.set(key,{key,item,sapCode,code,name,transfer:0,invoice:0,details:[],errors:[],perInvoice:d.invoices.map(()=>0),unitPrice:item?.price??null,expected:null,difference:null,state:''});return rows.get(key)!};
 for(const l of parsed.lines){const item=bySap.get(l.sapCode)||null;const r=ensure(item?'i:'+item.code:'s:'+l.sapCode,item,l.sapCode,item?.code||'',item?.name||l.name);r.details.push(l);if(!item){r.transfer=null;if(!r.errors.includes('كود SAP غير مربوط بصنف مؤسسة معتمد'))r.errors.push('كود SAP غير مربوط بصنف مؤسسة معتمد');continue}try{const q=convert(l,item);if(r.transfer!==null)r.transfer+=q}catch(e:any){r.transfer=null;r.errors.push(e.message)}}
@@ -189,8 +298,8 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
 }
 
 export function checkSignature(r:{name:string;unitPrice:number|null;transfer:number|null;details:TransferLine[]}){return JSON.stringify([r.name,r.unitPrice,r.transfer,r.details.map(l=>[l.transferNo,l.sapCode,l.quantity,l.unit,l.from,l.to]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))])}
-function reconcileManual(d:Draft,reference:Item[]){
- const base=reconcileLegacy({...d,mode:undefined,invoices:d.invoices.map(i=>({...i,complete:true,quantities:{}}))},reference);
+function reconcileManual(d:Draft,reference:Item[],parsed:ReturnType<typeof parseTransfers>,excludedSapCodes:Set<string>){
+ const base=reconcileLegacy({...d,mode:undefined,invoices:d.invoices.map(i=>({...i,complete:true,quantities:{}}))},reference,parsed,excludedSapCodes);
  const problems=base.problems.filter(p=>!p.includes('اكتمال بنود'));
  if(d.invoices.some(i=>!i.complete))problems.push('أكد وجود كل فاتورة ورقية للمجموعة');
  const excludedRows=base.rows.filter(r=>d.excludedItems?.[r.key]===checkSignature(r));

@@ -59,7 +59,7 @@ export default function CatalogReplacement({reference,onSaved}:{reference:Item[]
       const items=applyReplacements(reference,rows,selected);
       const response=await fetch('/api/reconcile',{method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action:'reference',items})});
+        body:JSON.stringify({action:'reference',items,previous:reference})});
       const data=await response.json() as {error?:string;reference?:Item[]};
       if(!response.ok)throw Error(data.error||'تعذر حفظ تعريفات الأصناف');
       onSaved(data.reference||items);

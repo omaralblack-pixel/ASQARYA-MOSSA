@@ -3,7 +3,7 @@ import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
 import branches from '../../branches.json';
 import drivers from '../../drivers.json';
-import {reconcile,withInvoiceDates,groupReference,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
+import {reconcile,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
 export const dynamic='force-dynamic';
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة');return env.DB};
@@ -45,8 +45,7 @@ async function findSavedTransfer(number: string) {
   });
 }
 
-function summarize(draft: Draft, reference: Item[]) {
-  const result = reconcile(draft, reference);
+function summarize(result: ReturnType<typeof reconcile>) {
   const acceptedDifference = 'acceptedDifference' in result && result.acceptedDifference === true;
   return {
     status: result.status, acceptedDifference, total: result.total, expected: result.expected,
@@ -171,22 +170,22 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
     if (key) return json({error: 'رقم الفاتورة الزرقاء ' + number + ' محفوظ مسبقًا.'}, 409);
   }
 
-  const {linkedSapCodes, ...savedDraft} = d;
+  const {linkedSapCodes} = d;
   if (linkedSapCodes !== undefined && (!Array.isArray(linkedSapCodes) || linkedSapCodes.length > 500 ||
       linkedSapCodes.some(code => typeof code !== 'string' || !/^[A-Z]{2,6}\d{3,10}$/.test(code)))) {
     return json({error: 'بيانات ربط الأصناف غير صالحة.'}, 400);
   }
-  const snapshot = d.useCurrentReference ? undefined : previous?.referenceSnapshot;
-  const reference = snapshot && !linkedSapCodes?.length ? snapshot : groupReference(snapshot, await refs(), linkedSapCodes);
   const version = (old?.version ?? 0) + 1;
   const nonce = crypto.randomUUID();
   const now = new Date().toISOString();
-  const clean = withInvoiceDates({
-    ...savedDraft, id, version, referenceSnapshot: reference, useCurrentReference: false,
+  const prepared = prepareReconciliation(withInvoiceDates({
+    ...d, id, version, referenceSnapshot: previous?.referenceSnapshot,
     transfers: d.transfers.map((transfer, index) => ({...transfer, number: ts[index]})),
     invoices: d.invoices.map((invoice, index) => ({...invoice, number: ns[index]})),
-  });
-  const summary = summarize(clean, reference);
+  }), await refs());
+  const reference = prepared.reference;
+  const clean = {...prepared.draft, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
+  const summary = summarize(prepared.result);
   const payload = JSON.stringify({...clean, summary, acceptedDifference: summary.acceptedDifference ? d.acceptedDifference : undefined});
   const revisions = JSON.stringify(sourceRecords.map(({id, version}) => ({id, version})));
   const sourcesUnchanged = `NOT EXISTS (
@@ -212,7 +211,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
       SELECT ?,?,?,? WHERE ${guard}`).bind(crypto.randomUUID(), now, id, JSON.stringify(record), id, nonce));
     if (remaining.length) {
       const updated = withInvoiceDates({...draft, transfers: remaining, version: record.version + 1});
-      const remainingSummary = summarize(updated, updated.referenceSnapshot ?? reference);
+      const remainingSummary = summarize(reconcile(updated, updated.referenceSnapshot ?? reference));
       const remainingPayload = JSON.stringify({
         ...updated, summary: remainingSummary, acceptedDifference: remainingSummary.acceptedDifference ? updated.acceptedDifference : undefined,
       });
@@ -244,16 +243,16 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   return json({id, version, referenceSnapshot: reference});
 }
 
-export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='reference'||b.action==='linkReference'){
-const linking=b.action==='linkReference';
-const before=linking?await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first():null;
+export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
+const before=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();
+const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
 let items=b.items;
-if(linking){
+if(b.action==='linkReference'){
  const item=b.item as Item;
  if(!item||item.active!==true)return json({error:'أكمل تعريف الصنف قبل الربط'},400);
- const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
  const existing=current.find(entry=>entry.code===item.code);
  const occupied=sapReferences(current).find(entry=>entry.sapCode===item.sapCode);
+ if(occupied?.active&&occupied.code===item.code)return json({reference:current});
  if(occupied&&(occupied.code!==item.code||occupied.active||existing?.sapCode!==item.sapCode))return json({error:'كود SAP مرتبط مسبقًا. راجع مرجع الأصناف أو حدّث الصفحة.'},409);
  if(existing&&existing.sapCode!==item.sapCode){
   if(!existing.active)return json({error:'فعّل صنف المؤسسة في المرجع قبل إضافة كود SAP آخر.'},409);
@@ -262,6 +261,14 @@ if(linking){
  }else{
   items=existing?current.map(entry=>entry===existing?{...item,sapAliases:existing.sapAliases}:entry):[...current,item];
  }
+}else if(b.action==='saveReferenceItem'){
+ const item=b.item as Item;
+ if(!item)return json({error:'أكمل تعريف الصنف قبل الحفظ.'},400);
+ const existing=current.find(entry=>entry.code===item.code);
+ if(JSON.stringify(existing??null)!==JSON.stringify(b.previous))return json({error:'تغيّر تعريف الصنف. افتحه مجددًا لمراجعة التعديل.'},409);
+ items=existing?current.map(entry=>entry===existing?item:entry):[...current,item];
+}else if(b.previous!==undefined&&JSON.stringify(current)!==JSON.stringify(b.previous)){
+ return json({error:'تغيّر مرجع الأصناف. حدّث المرجع وأعد المحاولة.'},409);
 }
 if(!Array.isArray(items)||items.length<1||items.length>500)return json({error:'قائمة الأصناف غير صالحة'},400);
 const codes=new Set<string>(),sap=new Set<string>();
@@ -274,13 +281,10 @@ for(const item of items as Item[]){
  }
 }
 const value=JSON.stringify(items);
-if(linking){
- const write=before
-  ?db().prepare('UPDATE settings SET value=? WHERE key=? AND value=?').bind(value,'reconciliationReference',before.value)
-  :db().prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING').bind('reconciliationReference',value);
- if(!(await write.run()).meta.changes)return json({error:'تغير مرجع الأصناف أثناء الربط. أعد المحاولة.'},409);
- return json({reference:items});
-}
-await db().prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind('reconciliationReference',value).run();return json({ok:true})}
+const write=before
+ ?db().prepare('UPDATE settings SET value=? WHERE key=? AND value=?').bind(value,'reconciliationReference',before.value)
+ :db().prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING').bind('reconciliationReference',value);
+if(!(await write.run()).meta.changes)return json({error:'تغيّر مرجع الأصناف أثناء الحفظ. أعد المحاولة.'},409);
+return json({ok:true,reference:items})}
 if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources);
 return json({error:'طلب غير معروف'},400)}catch{return json({error:'تعذّر الحفظ. أعد المحاولة.'},500)}}

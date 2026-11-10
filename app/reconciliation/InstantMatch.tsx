@@ -5,7 +5,7 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {reconcile, parseTransfer, groupReference, withInvoiceDates, transferNumbers, invoiceDocumentNo, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation, parseTransfer, withInvoiceDates, transferNumbers, invoiceDocumentNo, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
 type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:string; version:number; branch:string};
@@ -305,9 +305,8 @@ export default function InstantMatch({
     finally {setBusy(false);}
   }
 
-  const result=useMemo(()=>draft?reconcile(draft,
-    groupReference(draft.useCurrentReference?undefined:draft.referenceSnapshot,reference,draft.linkedSapCodes)):null,
-    [draft,reference]);
+  const prepared=useMemo(()=>draft?prepareReconciliation(draft,reference):null,[draft,reference]);
+  const result=prepared?.result??null;
   const transferWarnings=useMemo(()=>draft ? draft.transfers.flatMap(transfer=>{
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     return [...parsed.issues,...parsed.excluded].map(issue=>'الترحيل '+transfer.number+': '+issue);
@@ -317,10 +316,10 @@ export default function InstantMatch({
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
     &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null&&dateValue(item.date));
   async function saveAndNext() {
-    if (!draft||!canSave) return;
+    if (!prepared||!canSave) return;
     setBusy(true);setError('');
     try {
-      await saveJson(draft,Object.values(sources));
+      await saveJson(prepared.draft,Object.values(sources));
       await refreshRecords();
       setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setSuggestionsOpen(false);
       setNotice('تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
@@ -456,7 +455,7 @@ export default function InstantMatch({
             <Save size={16}/>{busy?'جارٍ الحفظ…':'حفظ المطابقة والانتقال للتالية'} <ArrowLeft size={16}/></button>
           <button type="button" className="button secondary" onClick={()=>setShowItems(!showItems)}>
             {showItems?'إخفاء الأصناف':'عرض تفاصيل الأصناف ('+result.rows.length+')'}</button>
-          <button type="button" className="button secondary" onClick={()=>onDetailed(draft,sources)}>
+          <button type="button" className="button secondary" onClick={()=>onDetailed(prepared?.draft??draft,sources)}>
             فتح المطابقة التفصيلية</button>
         </div>
         {showItems&&<div className="table-scroll"><table className="blue-table"><thead><tr>
