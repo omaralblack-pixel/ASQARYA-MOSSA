@@ -25,28 +25,37 @@ function readInvoices(remarks:string){
   return [...new Set((prefix.match(/\d+/g)||[]).filter(number=>/^\d{10}$/.test(number)&&invoiceDocumentNo(number)))];
 }
 
-export function parseSapImport(paste:string,branches:string[]):{groups:SapImportGroup[]; issues:string[]}{
+export function readSapImportRows(paste:string):{rows:string[][];issues:string[]}{
   const rows=paste.replace(/^\uFEFF/,'').split(/\r?\n/);
   const headerIndex=rows.findIndex(line=>line.trim());
   const columns=(rows[headerIndex]||'').split('\t').map(normalize);
   const indexes=headers.map(header=>columns.indexOf(normalize(header)));
   const missing=headers.filter((_,i)=>indexes[i]<0);
-  if(missing.length)return {groups:[],issues:['أعمدة مفقودة: '+missing.join('، ')]};
-
-  const branchesByCode=new Map(branches.map(branch=>[branch.split(' — ')[0].trim(),branch]));
-  const branchesByName=new Map(branches.map(branch=>[branch.split(' — ').slice(1).join(' — ').trim(),branch]));
-  const transfers=new Map<string,{meta:string[]; lines:string[]; reversal:boolean; conflict:boolean}>();
+  if(missing.length)return {rows:[],issues:['أعمدة مفقودة: '+missing.join('، ')]};
+  const data:string[][]=[];
   const issues:string[]=[];
   for(let i=headerIndex+1;i<rows.length;i++){
     if(!rows[i].trim())continue;
     const cells=rows[i].split('\t');
     const values=indexes.map(index=>(cells[index]||'').trim());
     if(normalize(values[0])===normalize(headers[0]))continue;
-    const number=digits(values[0]);
-    if(!/^\d+$/.test(number)){
+    values[0]=digits(values[0]);
+    if(!/^\d+$/.test(values[0])){
       issues.push('السطر '+(i+1)+' بلا رقم ترحيل صالح');
       continue;
     }
+    data.push(values);
+  }
+  return {rows:data,issues};
+}
+
+export function parseSapImport(paste:string,branches:string[]):{groups:SapImportGroup[]; issues:string[]}{
+  const {rows,issues}=readSapImportRows(paste);
+  const branchesByCode=new Map(branches.map(branch=>[branch.split(' — ')[0].trim(),branch]));
+  const branchesByName=new Map(branches.map(branch=>[branch.split(' — ').slice(1).join(' — ').trim(),branch]));
+  const transfers=new Map<string,{meta:string[]; lines:string[]; reversal:boolean; conflict:boolean}>();
+  for(const values of rows){
+    const number=values[0];
     const meta=values.slice(1,5);
     const existing=transfers.get(number);
     const entry=existing||{meta,lines:[],reversal:false,conflict:false};
