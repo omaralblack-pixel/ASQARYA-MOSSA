@@ -512,7 +512,7 @@ async function save() {
     N(draft.invoices.some(invoice => invoiceDocumentNo(invoice.number))
 ? 'تم حفظ الفاتورة وترحيلاتها. تدقيقها اليدوي مستقل عن فرز الجندي.'
 : 'تم حفظ الترحيل في السجل.');
-    
+    if(sapPreview.groups.length){
       try{
         const {records}=await api(undefined,'?records=1');
         setSapPreview(current=>({...current,records}));
