@@ -3,6 +3,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
 import GroupLookup from './GroupLookup';
+import SoldierPageSorter from './SoldierPageSorter';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
 import {auditDraftWithSoldier} from '../lib/daily-soldier';
@@ -449,6 +450,7 @@ export default function InstantMatch({
         <button className="button secondary" type="button" disabled={draft.invoices.length>=30}
           onClick={()=>update({...draft,invoices:[...draft.invoices,invoice()]})}><Plus size={16}/>إضافة فاتورة زرقاء</button>
       </section>
+      <SoldierPageSorter draft={draft} catalog={auditCatalog} onChange={update}/>
       <section className="panel">
         <div className="section-title"><h2>ترحيلات SAP</h2></div>
         <div className="form-grid">

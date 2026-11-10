@@ -311,3 +311,107 @@ assert.equal(noRepeat.sap.find(row=>row.code==='FVL00016').institutionAliases.le
 assert.equal(includeSharedInstitutionNumbers(confirmedCatalog),confirmedCatalog,
  'Reopening a catalog must not duplicate the alternative item code');
 console.log('PASS: all four duplicate institution numbers; explicit per-invoice choices, individual prices and cross-invoice isolation.');
+
+
+// Jundi smart invoice-page sorting: link actual SAP rows to the exact blue invoices,
+// never treat a price-only match or ambiguous transfer as proof.
+const {sortSoldierInvoicePages,soldierLineKey}=loadTs('app/lib/soldier-page-sort.ts');
+const {evaluateSerial}=loadTs('app/lib/serial-soldier.ts');
+const threeCatalog={
+ institution:[{code:'11371486',name:'cream',price:1550},
+   {code:'11064245',name:'cheese',price:800},
+   {code:'01234567',name:'potatoes',price:900}],
+ sap:[{code:'DAR00005',name:'cream',unit:'Carton',pack:20,kg:null,institutionCode:'11371486'},
+   {code:'CHS00033',name:'cheese',unit:'Piece',pack:12,kg:null,institutionCode:'11064245'},
+   {code:'FVL99991',name:'fries',unit:'Carton',pack:10,kg:null,institutionCode:'01234567'}],
+};
+const sameTransfer=transfer('2618801',[
+ ['DAR00005','cream','2','Carton','001','011'],
+ ['CHS00033','cheese','12','Piece','002','011'],
+ ['FVL99991','fries','1','Carton','009','011'],
+]);
+const threeInvoices={...draftForSoldier,transfers:[sameTransfer],pages:{},
+ invoices:[
+   auditInv('pg1','26288001','2026-11-12','62.000','11371486\t40'),
+   auditInv('pg2','26288002','2026-11-12','9.600','11064245\t12'),
+   auditInv('pg3','26288003','2026-11-12','9.000','01234567\t10'),
+ ]};
+const classified=sortSoldierInvoicePages(threeInvoices,threeCatalog);
+assert.equal(classified.assigned,3);
+assert.equal(classified.split,0);
+assert.equal(classified.unresolved.length,0);
+assert.deepEqual(classified.pageCounts,[1,1,1]);
+assert.deepEqual(classified.draft.pages,{'i:11371486':'1','i:11064245':'2','i:01234567':'3'});
+assert.equal(auditDraftWithSoldier(classified.draft,threeCatalog).allMatched,true);
+assert.deepEqual(classified.lines.map(line=>line.page),[1,2,3]);
+assert.deepEqual(classified.lines.map(line=>line.value),[62000,9600,9000]);
+const stored={...classified.draft,referenceSnapshot:catalogAuditReference(threeCatalog),
+ summary:{status:'match'}};
+const serial=evaluateSerial(
+ threeInvoices.invoices.map((invoice,i)=>({row:i+2,number:invoice.number,amount:invoice.amount,date:invoice.date})),
+ [{id:'sorted-record',branch:'الجيزة',status:'match',payload:JSON.stringify(stored)}]
+);
+assert.deepEqual(serial.blockers,[]);
+assert.equal(serial.count.received,3);
+for(const row of serial.rows)assert.deepEqual(row.transfers.map(t=>t.number),['2618801']);
+assert.equal(serial.rows[0].transfers[0].kind,'adjustment',
+ 'Mixed SAP warehouse directions must be adjustment, not falsely classified as main or dry.');
+
+const oneLine=transfer('2618802',[['DAR00005','cream','2','Carton','001','011']]);
+const splitDraft={...threeInvoices,transfers:[oneLine],pages:{},
+ invoices:[auditInv('q1','26288004','2026-11-12','31.000','11371486\t20'),
+   auditInv('q2','26288005','2026-11-12','31.000','11371486\t20')]};
+const splitSort=sortSoldierInvoicePages(splitDraft,threeCatalog);
+assert.equal(splitSort.assigned,1);
+assert.equal(splitSort.split,1);
+assert.equal(splitSort.unresolved.length,0);
+assert.deepEqual(Object.values(splitSort.draft.soldierLineAllocations)[0],{'1':20,'2':20});
+assert.equal(auditDraftWithSoldier(splitSort.draft,threeCatalog).allMatched,true);
+const splitSerial=evaluateSerial(
+ splitDraft.invoices.map((invoice,i)=>({row:i+2,number:invoice.number,amount:invoice.amount,date:invoice.date})),
+ [{id:'split-one',branch:'الجيزة',status:'match',
+   payload:JSON.stringify({...splitSort.draft,referenceSnapshot:catalogAuditReference(threeCatalog),summary:{status:'match'}})}]);
+assert.equal(splitSerial.count.received,2);
+assert.deepEqual(splitSerial.blockers,[]);
+assert.ok(splitSerial.rows.every(row=>row.transfers[0]?.number==='2618802'));
+
+const firstTrans=transfer('2618803',[['DAR00005','cream','1','Carton','001','011']]);
+const nextTrans=transfer('2618804',[['DAR00005','cream','1','Carton','001','011']]);
+const uncertain={...splitDraft,transfers:[firstTrans,nextTrans]};
+const uncertainSort=sortSoldierInvoicePages(uncertain,threeCatalog);
+assert.equal(uncertainSort.unresolved.length,2,'Two different transfer numbers with identical lines are genuinely ambiguous.');
+assert.equal(auditDraftWithSoldier(uncertainSort.draft,threeCatalog).allMatched,false);
+const keys=uncertainSort.unresolved.map(row=>row.key);
+const settled={...uncertainSort.draft,
+ soldierLineAllocations:{[keys[0]]:{'1':20},[keys[1]]:{'2':20}},
+ soldierManualLineKeys:keys};
+assert.equal(sortSoldierInvoicePages(settled,threeCatalog).unresolved.length,0);
+assert.equal(auditDraftWithSoldier(settled,threeCatalog).allMatched,true);
+const classifiedSerial=evaluateSerial(
+ uncertain.invoices.map((invoice,i)=>({row:i+2,number:invoice.number,amount:invoice.amount,date:invoice.date})),
+ [{id:'separate',branch:'الجيزة',status:'match',
+   payload:JSON.stringify({...settled,referenceSnapshot:catalogAuditReference(threeCatalog),summary:{status:'match'}})}]);
+assert.deepEqual(classifiedSerial.blockers,[]);
+assert.deepEqual(classifiedSerial.rows.map(r=>r.transfers[0]?.number),['2618803','2618804']);
+const fakePartial={...settled,soldierLineAllocations:{
+ ...settled.soldierLineAllocations,[keys[0]]:{'1':10}}};
+assert.equal(auditDraftWithSoldier(fakePartial,threeCatalog).allMatched,false,
+ 'A forged or partial line distribution must block final match.');
+const invalidSerial=evaluateSerial(
+ [{row:2,number:uncertain.invoices[0].number,amount:uncertain.invoices[0].amount,date:'2026-11-12'}],
+ [{id:'partial',branch:'الجيزة',status:'match',payload:JSON.stringify({
+ ...fakePartial,referenceSnapshot:catalogAuditReference(threeCatalog),summary:{status:'match'}})}]);
+assert.ok(invalidSerial.blockers.some(line=>line.includes('لا يمكن ربط جميع بنوده')),
+ 'A incomplete line allocation can never be silently exported as a known transfer.');
+const reverseSame=transfer('2618805',[['DAR00005','cream','1','Carton','011','001']]);
+const reverseDraft={...draftForSoldier,transfers:[oneLine,reverseSame],
+ invoices:[auditInv('rev','26288006','2026-11-12','31.000','11371486\t20')]};
+const reverseSort=sortSoldierInvoicePages(reverseDraft,threeCatalog);
+assert.equal(reverseSort.unresolved.length,0);
+assert.equal(reverseSort.assigned,2);
+assert.equal(auditDraftWithSoldier(reverseSort.draft,threeCatalog).allMatched,true);
+assert.equal(reverseSort.lines.reduce((sum,line)=>sum+line.pieces,0),20);
+assert.equal(sortSoldierInvoicePages({...splitDraft,invoices:splitDraft.invoices.map(row=>({
+ ...row,auditLines:'',quantities:{}}))},threeCatalog).assigned,0,
+ 'No blue invoice item evidence = no automatic classification.');
+console.log('PASS: three-page sorting, per-page prices, split transfer rows, user-approved ambiguity, serial mapping and reverse entries.');

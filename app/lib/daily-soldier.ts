@@ -1,6 +1,7 @@
 import {catalogAuditReference,catalogAuditReferenceForInvoice,sharedInstitutionOptions,type AuditCatalog} from './audit-catalog';
+import {soldierLineParts} from './soldier-page-sort';
 import {auditInstitutionTransfers,auditInvoiceQuantities} from './institution-audit';
-import {dateValue,digits,fils,invoiceDocumentNo,pageNumber,parseTransfer,sapReferences,transferNumbers,type Draft,type Transfer,type TransferLine} from './reconcile';
+import {dateValue,digits,fils,invoiceDocumentNo,parseTransfer,sapReferences,transferNumbers,convert,type Draft,type Transfer,type TransferLine} from './reconcile';
 
 /** The invoice date, not the transfer date or the group creation date, owns the daily audit. */
 export type SoldierStatus='match'|'review'|'difference';
@@ -42,14 +43,30 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
     for(const line of source.lines){
       const item=bySap.get(line.sapCode.toUpperCase());
       if(!item)continue; // The scope auditor blocks unmatched foreign movements unless fully reversed.
-      const page=draft.invoices.length===1?1:pageNumber(draft.pages?.['i:'+item.code]);
-      if(page<1||page>draft.invoices.length){
-        unassigned.push('ترحيل '+transfer.number+' · '+line.sapCode+' / '+item.code+' لم يُحدد له رقم فاتورة زرقاء.');
+      let absPieces:number;
+      try{
+        if(!item.sapUnit)throw Error('وحدة SAP غير معرّفة');
+        absPieces=Math.abs(convert(line,item));
+        if(!Number.isFinite(absPieces)||absPieces<=0)throw Error('الشدّة أو وزن الحبة غير صالح');
+      }catch{
+        unassigned.push('ترحيل '+transfer.number+' · '+line.sapCode+' لا يمكن تحويله إلى حبات.');
         continue;
       }
-      if(!assigned.has(page))assigned.set(page,new Map());
-      const map=assigned.get(page)!;
-      map.set(transfer.id,[...(map.get(transfer.id)||[]),line]);
+      const parts=soldierLineParts(draft,transfer.id,line,absPieces,item.code);
+      if(!Object.keys(parts).length){
+        unassigned.push('ترحيل '+transfer.number+' · السطر '+line.row+' · '+line.sapCode+' / '+item.code+
+          ' لم يُفرز على صفحة فاتورة محددة. افتح فرز الجندي واعتمد توزيع السطر.');
+        continue;
+      }
+      for(const [pageString,pieces] of Object.entries(parts)){
+        const page=Number(pageString);
+        if(!assigned.has(page))assigned.set(page,new Map());
+        const map=assigned.get(page)!;
+        // Preserve direction and SAP quantity; the split is an allocation, not a new transfer.
+        const fraction=pieces/absPieces;
+        const part={...line,quantity:line.quantity*fraction};
+        map.set(transfer.id,[...(map.get(transfer.id)||[]),part]);
+      }
     }
   }
   const invoices=(draft.invoices||[]).map((invoice,index):SoldierInvoice=>{

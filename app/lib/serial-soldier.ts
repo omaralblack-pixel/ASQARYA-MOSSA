@@ -1,4 +1,5 @@
 import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, sapReferences, transferNumbers, type Draft} from './reconcile';
+import {soldierLineKey} from './soldier-page-sort';
 
 export type SerialInput = {row:number; number:string; amount:string; date:string};
 export type SerialState = 'received'|'pending'|'missing'|'review';
@@ -44,6 +45,20 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
       const linked=new Set<number>();
       let ambiguous=false;
       for(const line of p.lines){
+        if(draft.soldierLineAllocations!==undefined){
+          const key=soldierLineKey(transfer.id,line);
+          const pieces=draft.soldierLineAllocations[key];
+          const expected=draft.soldierLineTotals?.[key];
+          if(!pieces||!expected||!Number.isFinite(expected)||expected<=0||
+            !Object.keys(pieces).length||
+            Object.entries(pieces).some(([pg,qty])=>!/^\\d+$/.test(pg)||+pg<1||+pg>draft.invoices.length||
+              !Number.isFinite(qty)||qty<=0)||
+            Math.abs(Object.values(pieces).reduce((s,v)=>s+v,0)-expected)>0.000001){
+            ambiguous=true;break;
+          }
+          Object.keys(pieces).forEach(pg=>linked.add(Number(pg)-1));
+          continue;
+        }
         const code=references.get(line.sapCode);
         const key=code&&draft.pages?.['i:'+code]?'i:'+code:'s:'+line.sapCode;
         const pg=pageNumber(draft.pages?.[key]);

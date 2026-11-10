@@ -1,5 +1,6 @@
 import {initialAuditCatalog,includeOfficialInstitution2026,includeConfirmedSapLinks,includeSharedInstitutionNumbers,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {auditDraftWithSoldier,dailySoldierRows} from '../../lib/daily-soldier';
+import {sortSoldierInvoicePages} from '../../lib/soldier-page-sort';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
@@ -103,6 +104,18 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
     return json({error: 'بيانات التشييك غير صالحة.'}, 400);
   }
 
+  if(d.soldierLineAllocations!==undefined&&(!d.soldierLineAllocations||
+      typeof d.soldierLineAllocations!=='object'||Array.isArray(d.soldierLineAllocations)||
+      Object.keys(d.soldierLineAllocations).length>3000||
+      Object.entries(d.soldierLineAllocations).some(([key,values])=>
+        !/^l:[^:]{1,120}:\\d+:[A-Z]{2,6}\\d{3,10}$/.test(key)||
+        !values||typeof values!=='object'||Array.isArray(values)||
+        Object.keys(values).length>30||
+        Object.entries(values).some(([page,qty])=>!/^\\d{1,2}$/.test(page)||
+          !Number.isFinite(qty)||typeof qty!=='number'||qty<=0||qty>100000000))))return json({error:'توزيع بنود الجندي على الفواتير غير صالح.'},400);
+  if(d.soldierManualLineKeys!==undefined&&(!Array.isArray(d.soldierManualLineKeys)||
+    d.soldierManualLineKeys.length>3000||d.soldierManualLineKeys.some(key=>typeof key!=='string'||key.length>180)))
+    return json({error:'اعتمادات فرز الصفحات غير صالحة.'},400);
   const ts = d.transfers.map(transfer => documentNo(String(transfer?.number ?? '')));
   const ns = d.invoices.map(invoice => documentNo(String(invoice?.number ?? '')));
   const invoiceNumbers = ns.map(invoiceDocumentNo).filter(Boolean);
@@ -216,14 +229,16 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   const version = (old?.version ?? 0) + 1;
   const nonce = crypto.randomUUID();
   const now = new Date().toISOString();
-  const prepared = prepareReconciliation(withInvoiceDates({
+  const currentCatalog=await currentSoldierCatalog();
+  const sorted=sortSoldierInvoicePages(withInvoiceDates({
     ...d, id, version, referenceSnapshot: previous?.referenceSnapshot,
     transfers: d.transfers.map((transfer, index) => ({...transfer, number: ts[index]})),
     invoices: d.invoices.map((invoice, index) => ({...invoice, number: ns[index]})),
-  }), await refs());
+  }),currentCatalog);
+  const prepared = prepareReconciliation(sorted.draft, await refs());
   const reference = prepared.reference;
   const clean = {...prepared.draft, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
-  const soldier = auditDraftWithSoldier(prepared.draft,await currentSoldierCatalog());
+  const soldier = auditDraftWithSoldier(prepared.draft,currentCatalog);
   const originalSummary = summarize(prepared.result);
   const summary = {...originalSummary,
     status:originalSummary.status==='match'&&!soldier.allMatched?'review':originalSummary.status,
@@ -284,7 +299,11 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   } catch {
     return json({error: 'تعارض في أرقام الفواتير أو الترحيلات. راجع المستندات وأعد المحاولة.'}, 409);
   }
-  return json({id, version, referenceSnapshot: reference, summary});
+  return json({id, version, referenceSnapshot: reference, summary,
+    pageSorting:{assigned:sorted.assigned,split:sorted.split,
+      unresolved:sorted.unresolved.map(row=>({sapCode:row.sapCode,transfer:row.transfer,reason:row.reason}))},
+    pages:prepared.draft.pages,soldierLineAllocations:prepared.draft.soldierLineAllocations,
+    soldierLineTotals:prepared.draft.soldierLineTotals,soldierManualLineKeys:prepared.draft.soldierManualLineKeys});
 }
 
 export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='auditCatalog'){

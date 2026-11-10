@@ -3,6 +3,7 @@ import {useEffect,useMemo,useState} from 'react';
 import SapImport from './SapImport';
 import InstantMatch from './InstantMatch';
 import InstitutionAudit from './InstitutionAudit';
+import SoldierPageSorter from './SoldierPageSorter';
 import {auditDraftWithSoldier} from '../lib/daily-soldier';
 import type {AuditCatalog} from '../lib/audit-catalog';
 import CatalogReplacement from './CatalogReplacement';
@@ -484,7 +485,9 @@ async function save() {
     setTransferSources(current => Object.fromEntries(Object.entries(current).filter(([, source]) => !sources.includes(source))));
     D(current => current && current.transfers[0]?.id === draft.transfers[0]?.id
       ? {...current, id: saved.id, version: saved.version, referenceSnapshot: saved.referenceSnapshot,
-          useCurrentReference: false, linkedSapCodes: undefined}
+          useCurrentReference: false, linkedSapCodes: undefined,
+          pages:saved.pages,soldierLineAllocations:saved.soldierLineAllocations,
+          soldierLineTotals:saved.soldierLineTotals,soldierManualLineKeys:saved.soldierManualLineKeys}
       : current);
     N(draft.invoices.some(invoice => invoiceDocumentNo(invoice.number))
       ? saved.summary?.soldier?.allMatched
@@ -543,6 +546,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
  {soldier?.invoices[i]?.status!=='match'&&soldier?.invoices[i]?.reasons?.length
  ?' — '+soldier.invoices[i].reasons[0]:''}
  </p></article>)}</div></section>
+<SoldierPageSorter draft={draft} catalog={auditCatalog} onChange={next=>D(next)}/>
 <section id="invoice-sheet" className="panel results-panel blue-invoice"><div className="section-title no-print"><span className="step">04</span><div><h2>كشف المؤسسة للمطابقة اليدوية</h2><p>حدد رقم الفاتورة الزرقاء لكل صنف. اضغط على الكمية لتعليمها كمُشيّكة، واضغط مرة ثانية لإلغاء العلامة.</p></div><button type="button" className="button secondary" disabled={!remainingCount} onClick={finishCurrentPage}><Check size={16}/>خلصت من صفحة {finishedPage} — انقل الباقي إلى {nextPage}</button><button className="button secondary" onClick={exportText}><ArrowUpRight size={16}/>تصدير الكشف</button><button className="icon-button" aria-label="طباعة كشف المؤسسة" onClick={()=>window.print()}><Printer size={18}/></button></div>{result.problems.length>0&&<details className="review-list no-print"><summary>{result.problems.length} نقاط يلزم إكمالها قبل اعتماد المطابقة</summary>{result.problems.map((p,i)=><p key={i}>{p}</p>)}</details>}<div className="table-controls no-print"><div className="search"><Search size={16}/><input value={query} onChange={e=>Q(e.target.value)} aria-label="البحث في أصناف الفاتورة" placeholder="ابحث بآخر 4 أرقام من رقم المادة أو بالاسم…"/></div><select aria-label="ترتيب الأصناف" value={sort} onChange={e=>SORT(e.target.value)}><option value="entry">حسب ترتيب إدخال رقم الصفحة</option><option value="asc">رقم المادة تصاعدي</option><option value="desc">رقم المادة تنازلي</option></select><select aria-label="رقم الصفحة" value={pageFilter} onChange={e=>PAGE(e.target.value)}><option value="all">كل الصفحات</option>{pageOptions.map(page=><option key={page} value={page}>{page===0?'صفحة 0 · أصناف بلا رقم':'صفحة '+page+(draft.invoices[page-1]?.number?' · فاتورة '+draft.invoices[page-1].number:'')}</option>)}</select></div>
 {selectedPage===0&&<p className="hint no-print">صفحة 0 تجمع الأصناف اللي ما حددت إلها رقم صفحة. اكتب 2 بجانب أصناف الفاتورة الثانية ثم اختر صفحة 2 لمقارنة مبلغها.</p>}
 {'excludedRows' in result&&(result.excludedRows as typeof result.rows).length>0&&<details className="no-print" open><summary>أصناف مستبعدة من المطابقة ({(result.excludedRows as typeof result.rows).length})</summary><p>الاستبعاد لهذه المجموعة فقط؛ حركة SAP الأصلية محفوظة. عند تغيّر بنود الترحيل يعود الصنف للمراجعة.</p>{(result.excludedRows as typeof result.rows).map(row=><p key={row.key}><b>{row.sapCode} · {row.name}</b> <button type="button" className="text-button" onClick={()=>restoreItem(row.key)}>إرجاع للمطابقة</button></p>)}</details>}
