@@ -71,9 +71,9 @@ function redirect(request: Request, path: string, cookie?: string) {
 function loginPage(error = "", status = 200) {
   return new Response(`<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>إدارة المؤسسة</title>
-<style>body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#f2f6f8;color:#163449;font:16px system-ui}
+<style>body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#f2f6f8;color:#163449;font:15px/1.6 "Segoe UI","Noto Sans Arabic",system-ui,Tahoma,Arial,sans-serif}
 main{width:min(86vw,24rem);box-sizing:border-box;padding:2rem;border:1px solid #d7e2e9;border-radius:1rem;background:white}
-h1{margin:0 0 .4rem}p{margin:0 0 1.5rem;color:#496779}label{display:block;font-weight:600}
+h1{margin:0 0 .4rem;font-size:27px;line-height:1.4}p{margin:0 0 1.5rem;color:#496779}label{display:block;font-weight:600}
 input,button{box-sizing:border-box;width:100%;padding:.8rem;margin-top:.6rem;border:1px solid #b7cbd7;border-radius:.45rem;font:inherit}
 button{background:#196f82;color:white;cursor:pointer}.error{color:#a32929;margin-top:1rem;margin-bottom:0}</style>
 <main><h1>إدارة المؤسسة</h1><p>مركز الكيلاني للأغذية</p><form method="post" action="/login">

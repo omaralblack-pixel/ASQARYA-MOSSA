@@ -80,4 +80,19 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 .instant-document-results button span{font-size:11px;font-weight:700;color:#267e92}
 .instant-document-results button small{font-size:10px;color:#698395;margin-inline-start:auto}
 
+@media screen {
+  :scope { font-family: inherit; }
+  h1 { font-size: 24px; letter-spacing: normal; }
+  h2 { font-size: 15px; }
+  h3 { font-size: 14px; }
+  .stat > strong { font-size: 23px; font-variant-numeric: tabular-nums; }
+}
+@media screen and (max-width: 1200px) {
+  h1 { font-size: 22px; }
+  .stat > strong { font-size: 20px; }
+}
+@media screen and (max-width: 620px) {
+  h1 { font-size: 20px; }
+}
+
 }
