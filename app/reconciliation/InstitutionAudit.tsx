@@ -7,7 +7,7 @@ import {AlertTriangle,CheckCircle2,Search,Plus,RefreshCw} from 'lucide-react';
 import {auditInstitutionTransfers,auditInvoiceQuantities} from '../lib/institution-audit';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
-import {digits,money,type Draft,type Transfer} from '../lib/reconcile';
+import {dateValue,digits,money,type Draft,type Transfer} from '../lib/reconcile';
 
 type StoredRecord={id:string;branch:string;payload:string};
 type Choice={id:string;source:'sap'|'saved';title:string;group?:SapImportGroup;record?:StoredRecord};
@@ -31,6 +31,31 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
   const [inverseNo,setInverseNo]=useState('');
   const [invoiceLines,setInvoiceLines]=useState('');
   const [invoiceAmount,setInvoiceAmount]=useState('');
+  const [dailyDate,setDailyDate]=useState(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'}));
+  const [dailyBusy,setDailyBusy]=useState(false);
+  const [dailyError,setDailyError]=useState('');
+  type DailyRow={recordId:string;branch:string;invoice:{
+    id:string;number:string;date:string;amount:number|null;expected:number|null;
+    status:'match'|'review'|'difference';reasons:string[];transferNumbers:string[];
+    quantityDifferences:number;missingPaperLines:boolean;
+  }};
+  const [daily,setDaily]=useState<{date:string;rows:DailyRow[];counts:{
+    total:number;matched:number;differences:number;review:number;
+  }}|null>(null);
+
+  async function scanDate(){
+    const date=dateValue(dailyDate);
+    if(!date){setDailyError('اكتب التاريخ مثل 01.11.2026 (يوم.شهر.سنة).');setDaily(null);return}
+    setDailyBusy(true);setDailyError('');setDaily(null);
+    try{
+      const response=await fetch('/api/reconcile?soldierDate='+encodeURIComponent(date),{cache:'no-store'});
+      const result=await response.json() as {error?:string;date:string;rows:DailyRow[];
+        counts:{total:number;matched:number;differences:number;review:number}};
+      if(!response.ok)throw Error(result.error||'تعذّر تدقيق فواتير التاريخ المطلوب.');
+      setDaily(result);
+    }catch(e){setDailyError(e instanceof Error?e.message:'تعذّر تدقيق فواتير هذا اليوم.')}
+    finally{setDailyBusy(false)}
+  }
 
   async function refresh(){
     setLoading(true);setFetchError('');
@@ -125,6 +150,39 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
       <button className="button secondary" disabled={loading} type="button" onClick={()=>void refresh()}><RefreshCw size={16}/>تحديث مصادر SAP</button>
     </div>
     <AuditCatalogEditor onCatalog={setCatalog}/>
+    <section className="panel no-print">
+      <div className="section-title"><h2>جدول الجندي حسب تاريخ الفاتورة الزرقاء</h2></div>
+      <p className="hint">أدخل تاريخ الفاتورة الزرقاء (وليس تاريخ الترحيل). يعرض كل فواتير هذا اليوم من السجل ويفحص كميات الحبات والشدّات والأكواد وقيمة كل فاتورة مع ترحيلاتها. الفواتير التي لا تتضمن أصناف الفاتورة الأصلية تظهر «بحاجة مراجعة».</p>
+      <div className="form-grid">
+        <label>تاريخ الفاتورة الزرقاء<input dir="ltr" value={dailyDate} onChange={e=>setDailyDate(e.target.value)} placeholder="01.11.2026"/></label>
+        <div style={{alignSelf:'end'}}><button type="button" className="button primary"
+          disabled={dailyBusy||!catalog} onClick={()=>void scanDate()}><Search size={16}/>{dailyBusy?'جاري التدقيق…':'تدقيق جميع فواتير اليوم'}</button></div>
+      </div>
+      {dailyError&&<p role="alert" className="banner danger">{dailyError}</p>}
+      {daily&&<><p className="hint">النتائج حسب تاريخ الفاتورة الزرقاء: <b>{daily.date}</b></p>
+        <div className="stats">
+          <div className="stat"><span>عدد الفواتير</span><strong>{daily.counts.total}</strong></div>
+          <div className="stat"><span>اجتازت الجندي</span><strong>{daily.counts.matched}</strong></div>
+          <div className="stat"><span>فيها فروقات</span><strong>{daily.counts.differences}</strong></div>
+          <div className="stat"><span>تحتاج مراجعة</span><strong>{daily.counts.review}</strong></div>
+        </div>
+        {daily.rows.length>0?<div className="table-scroll"><table>
+          <thead><tr><th>رقم الفاتورة</th><th>الفرع</th><th>التاريخ</th><th>الترحيلات المرتبطة</th><th>المبلغ</th><th>قيمة SAP</th><th>حالة الجندي</th><th>التفاصيل</th></tr></thead>
+          <tbody>{daily.rows.map(row=><tr key={row.recordId+'-'+row.invoice.id}>
+            <td><b>{row.invoice.number||'بلا رقم'}</b></td><td>{row.branch}</td><td>{row.invoice.date}</td>
+            <td>{row.invoice.transferNumbers.join('، ')||'بحاجة لتحديد الصفحة'}</td>
+            <td>{money(row.invoice.amount)}</td><td>{money(row.invoice.expected)}</td>
+            <td>{row.invoice.status==='match'?'مطابق بعد تدقيق الجندي':row.invoice.status==='difference'?'فرق':'بحاجة مراجعة'}</td>
+            <td>{row.invoice.reasons.length>0?<details><summary>{row.invoice.reasons.length} ملاحظات</summary>
+              {row.invoice.reasons.map((reason,index)=><p key={index} className="hint">{reason}</p>)}</details>:'كل الفحوصات ناجحة'}
+              <button type="button" className="button secondary small" onClick={()=>void choose({
+                id:'saved-'+row.recordId,source:'saved',title:'السجل · '+row.branch+' · فاتورة '+row.invoice.number,
+                record:{id:row.recordId,branch:row.branch,payload:''}
+              })}>فتح الترحيلات</button></td>
+          </tr>)}</tbody></table></div>
+          :<p className="hint">لا توجد فواتير زرقاء مسجلة بتاريخ {daily.date} في السجل.</p>}
+      </>}
+    </section>
     {catalog&&<section className="panel">
       <div className="section-title"><Search size={19}/><h2>اختيار فاتورة أو ترحيل</h2></div>
       <label>رقم الفاتورة الزرقاء أو الترحيل (آخر 4 أرقام أو الرقم الكامل)

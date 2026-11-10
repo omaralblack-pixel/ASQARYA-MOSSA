@@ -1,4 +1,5 @@
-import {initialAuditCatalog,validateAuditCatalog} from '../../lib/audit-catalog';
+import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
+import {auditDraftWithSoldier,dailySoldierRows} from '../../lib/daily-soldier';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
@@ -12,10 +13,22 @@ async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value F
 // Initialize only missing tables on standalone Cloudflare deployments.
 let schemaReady:Promise<unknown>|undefined;
 function ensureSchema(){return schemaReady??=db().batch(schemaStatements.map(sql=>db().prepare(sql))).catch(error=>{schemaReady=undefined;throw error})}
+async function currentSoldierCatalog():Promise<AuditCatalog>{
+ const saved=await db().prepare('SELECT value FROM settings WHERE key=?').bind('institutionAuditCatalog').first<{value:string}>();
+ if(!saved)return initialAuditCatalog(await refs());
+ const catalog=(JSON.parse(saved.value) as {catalog:AuditCatalog}).catalog;
+ if(!validateAuditCatalog(catalog))throw Error('مرجع الجندي المحفوظ غير صالح؛ أصلحه قبل اعتماد أي مطابقة.');
+ return catalog;
+}
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('auditCatalog')){
   const stored=await db().prepare('SELECT value FROM settings WHERE key=?').bind('institutionAuditCatalog').first<{value:string}>();
   return json(stored?JSON.parse(stored.value):{version:null,catalog:initialAuditCatalog(await refs())});
-}if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
+}if(u.searchParams.has('soldierDate')){
+ const value=u.searchParams.get('soldierDate')||'';
+ if(!dateValue(value))return json({error:'تاريخ الفاتورة الزرقاء غير صالح.'},400);
+ const records=await db().prepare('SELECT id,branch,payload FROM reconciliations ORDER BY updated DESC').all<{id:string;branch:string;payload:string}>();
+ return json(dailySoldierRows(records.results,await currentSoldierCatalog(),value));
+ }if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
 type StoredReconciliation = {
   id: string;
   branch: string;
@@ -85,6 +98,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
       d.invoices.some(invoice => !invoice ||
         (invoice.title !== undefined && (typeof invoice.title !== 'string' || invoice.title.length > 80)) ||
         typeof invoice.amount !== 'string' || invoice.amount.length > 30 || typeof invoice.complete !== 'boolean' ||
+        (invoice.auditLines !== undefined && (typeof invoice.auditLines !== 'string' || invoice.auditLines.length > 30000)) ||
         !invoice.quantities || typeof invoice.quantities !== 'object' || Array.isArray(invoice.quantities) ||
         Object.keys(invoice.quantities).length > 500 ||
         Object.values(invoice.quantities).some(value => typeof value !== 'string' || value.length > 40) ||
@@ -189,7 +203,13 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   }), await refs());
   const reference = prepared.reference;
   const clean = {...prepared.draft, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
-  const summary = summarize(prepared.result);
+  const soldier = auditDraftWithSoldier(prepared.draft,await currentSoldierCatalog());
+  const originalSummary = summarize(prepared.result);
+  const summary = {...originalSummary,
+    status:originalSummary.status==='match'&&!soldier.allMatched?'review':originalSummary.status,
+    soldier:{allMatched:soldier.allMatched,
+      invoices:soldier.invoices.map(row=>({id:row.id,number:row.number,date:row.date,
+        status:row.status,reasons:row.reasons.slice(0,12)}))}};
   const payload = JSON.stringify({...clean, summary, acceptedDifference: summary.acceptedDifference ? d.acceptedDifference : undefined});
   const revisions = JSON.stringify(sourceRecords.map(({id, version}) => ({id, version})));
   const sourcesUnchanged = `NOT EXISTS (
@@ -244,7 +264,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   } catch {
     return json({error: 'تعارض في أرقام الفواتير أو الترحيلات. راجع المستندات وأعد المحاولة.'}, 409);
   }
-  return json({id, version, referenceSnapshot: reference});
+  return json({id, version, referenceSnapshot: reference, summary});
 }
 
 export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='auditCatalog'){

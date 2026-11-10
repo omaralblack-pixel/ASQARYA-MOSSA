@@ -123,3 +123,62 @@ assert.throws(()=>importAuditSap('FVL99991\tبطاطا SAP\tCarton\t0',bulk),/ا
 assert.throws(()=>importAuditSap('FVL99991\tبطاطا SAP\tCarton\t10\t\t99999999',bulk),/غير موجود/);
 assert.throws(()=>importAuditInstitution('01234567\tبطاطا\n01234567\tتكرار',bulk),/السطر 2/);
 console.log('PASS: bulk audit catalogs, linked aliases and unit conversion.');
+
+
+// Daily soldier: exact blue-invoice date, linked transfer lines, and hard final-match gate.
+const {auditDraftWithSoldier,dailySoldierRows}=loadTs('app/lib/daily-soldier.ts');
+const soldierCatalog={
+  institution:[{code:'11371486',name:'كريمة المؤسسة',price:1550},
+    {code:'11064245',name:'جبنة المؤسسة',price:800}],
+  sap:[{code:'DAR00005',name:'كريمة SAP',unit:'Carton',pack:20,kg:null,institutionCode:'11371486'},
+    {code:'CHS00033',name:'جبنة SAP',unit:'Piece',pack:12,kg:null,institutionCode:'11064245'}],
+};
+const auditInv=(id,number,date,amount,auditLines,complete=true)=>({
+  id,number,date,amount,auditLines,complete,quantities:{},
+});
+const cleanForward=transfer('2618001',[['DAR00005','cream','2','Carton','001','011']]);
+const draftForSoldier={
+  id:'soldier-one',branch:'الجيزة',driver:'',date:'2026-11-10',mode:'manual',
+  transfers:[cleanForward],notes:'',
+  invoices:[auditInv('paper-one','2622000001','2026-11-01','62.000','11371486\t40')],
+};
+assert.equal(auditDraftWithSoldier(draftForSoldier,soldierCatalog).allMatched,true);
+const day=dailySoldierRows([{id:'soldier-one',branch:'الجيزة',payload:JSON.stringify(draftForSoldier)}],
+  soldierCatalog,'1.11.2026');
+assert.equal(day.date,'2026-11-01');
+assert.equal(day.counts.total,1);
+assert.equal(day.counts.matched,1);
+assert.equal(dailySoldierRows([{id:'soldier-one',branch:'الجيزة',payload:JSON.stringify(draftForSoldier)}],
+  soldierCatalog,'09.11.2026').counts.total,0,
+  'Invoice dates govern the daily table, not SAP transfer dates.');
+assert.equal(auditDraftWithSoldier({...draftForSoldier,invoices:[
+  {...draftForSoldier.invoices[0],auditLines:''}]},soldierCatalog).invoices[0].status,'review',
+  'A perfectly matching amount cannot substitute for missing blue-invoice item quantities.');
+assert.equal(auditDraftWithSoldier({...draftForSoldier,invoices:[
+  {...draftForSoldier.invoices[0],auditLines:'11371486\t39'}]},soldierCatalog).invoices[0].status,'difference');
+assert.equal(auditDraftWithSoldier({...draftForSoldier,invoices:[
+  {...draftForSoldier.invoices[0],amount:'62.001'}]},soldierCatalog).invoices[0].status,'difference');
+assert.equal(auditDraftWithSoldier({...draftForSoldier,transfers:[forward]},soldierCatalog).invoices[0].status,'review',
+  'Unmatched non-institution movement must block approval.');
+assert.equal(auditDraftWithSoldier({...draftForSoldier,transfers:[forward,reverse]},soldierCatalog).allMatched,true,
+  'A fully reversed non-institution movement may be ignored in net item quantities.');
+assert.equal(auditDraftWithSoldier({...draftForSoldier,transfers:[forward,partialReverse]},soldierCatalog).allMatched,false);
+const withoutPack={...soldierCatalog,sap:soldierCatalog.sap.map(item=>item.code==='DAR00005'?{...item,pack:null}:item)};
+assert.equal(auditDraftWithSoldier(draftForSoldier,withoutPack).invoices[0].status,'review');
+const twoInvoices={
+  ...draftForSoldier,
+  transfers:[cleanForward,transfer('2618002',[['CHS00033','cheese','12','Piece','002','011']])],
+  invoices:[
+    auditInv('p1','2622000001','2026-11-01','62.000','11371486\t40'),
+    auditInv('p2','2622000002','2026-11-02','9.600','11064245\t12'),
+  ],
+  pages:{'i:11371486':'1','i:11064245':'2'},
+};
+assert.equal(auditDraftWithSoldier(twoInvoices,soldierCatalog).allMatched,true);
+assert.equal(auditDraftWithSoldier({...twoInvoices,pages:{'i:11371486':'1'}},soldierCatalog).allMatched,false);
+const twoDayRows=dailySoldierRows([{id:'multi',branch:'الجيزة',payload:JSON.stringify(twoInvoices)}],
+  soldierCatalog,'2026-11-02');
+assert.equal(twoDayRows.counts.total,1);
+assert.equal(twoDayRows.rows[0].invoice.number,'2622000002');
+assert.equal(twoDayRows.rows[0].invoice.transferNumbers[0],'2618002');
+console.log('PASS: daily soldier uses blue-invoice date and blocks missing evidence, quantity/amount mismatches, missing pack and unassigned lines.');
