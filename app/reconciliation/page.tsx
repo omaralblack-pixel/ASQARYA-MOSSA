@@ -11,7 +11,7 @@ import InvoiceRegister,{InvoiceRegisterPrint} from './InvoiceRegister';
 import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
 import {ArrowLeftRight,Check,CheckCircle2,AlertTriangle,Plus,Trash2,ClipboardPaste,FileText,CalendarDays,History,Settings2,Search,Save,Printer,Upload,ChevronDown,ArrowUpRight,RefreshCw,Copy,PackageCheck} from 'lucide-react';
-import {prepareReconciliation,withInvoiceDates,editInvoiceDate,addTransferToDraft,invoiceDocumentNo,sapReferences,checkSignature,parseTransfer,monthly,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation,withInvoiceDates,editInvoiceDate,addTransferToDraft,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource} from '../lib/reconcile';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
 const uid=()=>typeof crypto.randomUUID==='function'?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const newInvoice=():Invoice=>({id:uid(),number:'',date:'',amount:'',complete:false,quantities:{},attachments:[]});
@@ -220,12 +220,8 @@ async function findTransferForAddition(number: string, saved: StoredTransfer | n
   const parsed = file && parseSapImport(file.text, branches);
   const member = parsed ? parsed.groups.flatMap(group => group.members).find(row => row.transfer.number === number) : undefined;
   const addingSecond = addingTo.transfers.some(row => transferNumbers(row.number).some(existing => existing !== number));
-  if (addingSecond && member?.invoices.length && (!saved || fromAnotherRecord)) {
-    const openInvoices = new Set(addingTo.invoices.map(invoice => invoiceDocumentNo(invoice.number)).filter(Boolean));
-    const sameInvoices = member.invoices.length === openInvoices.size && member.invoices.every(invoice => openInvoices.has(invoice));
-    if (!sameInvoices) {
-      throw Error(invoiceLinkMessage(number, member.invoices) + ' أرقام الفواتير لا تطابق الكشف المفتوح.');
-    }
+  if (addingSecond && member?.invoices.length && (!saved || fromAnotherRecord) && !matchesInvoiceNumbers(addingTo.invoices, member.invoices)) {
+    throw Error(invoiceLinkMessage(number, member.invoices) + ' أرقام الفواتير لا تطابق الكشف المفتوح.');
   }
   if (!savedPaste && parsed?.issues.length) throw Error('تعذرت قراءة كشف SAP: ' + parsed.issues[0]);
   if (!savedPaste && member && (member.issues.length || (member.reversal && !member.reverseMovement))) {

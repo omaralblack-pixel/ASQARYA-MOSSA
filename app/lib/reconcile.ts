@@ -157,6 +157,10 @@ export function invoiceDocumentNo(value: unknown) {
  const number = documentNo(String(value ?? ''));
  return /^0+$/.test(number) ? '' : number;
 }
+export function matchesInvoiceNumbers(invoices:Invoice[],numbers:string[]):boolean{
+ const openNumbers=new Set(invoices.map(invoice=>invoiceDocumentNo(invoice.number)).filter(Boolean));
+ return numbers.length===openNumbers.size&&numbers.every(number=>openNumbers.has(number));
+}
 export function dateValue(s:string,format='dmy'):string|null{const n=digits(String(s)).trim().split(' ')[0];let m=n.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);let y,mo,day;if(m){y=+m[1];mo=+m[2];day=+m[3]}else{m=n.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);if(!m)return null;y=+m[3];mo=+(format==='mdy'?m[1]:m[2]);day=+(format==='mdy'?m[2]:m[1])}const d=new Date(Date.UTC(y,mo-1,day));if(d.getUTCFullYear()!==y||d.getUTCMonth()!==mo-1||d.getUTCDate()!==day)return null;return `${y}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}`}
 function outgoingTransferDates(transfers: Transfer[]) {
  return transfers.flatMap(transfer=>{

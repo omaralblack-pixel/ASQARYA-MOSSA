@@ -5,7 +5,7 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {prepareReconciliation, parseTransfer, withInvoiceDates, editInvoiceDate, transferNumbers, invoiceDocumentNo, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
 type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:string; version:number; branch:string};
@@ -272,8 +272,8 @@ export default function InstantMatch({
       if (member && (member.reversal || member.issues.length)) {
         throw Error('الترحيل '+searched+' ملغى أو فيه ملاحظات قراءة من SAP. راجعه في شاشة المطابقة الأساسية قبل إضافته.');
       }
-      if (draft.transfers.length>0 && member?.invoices.length) {
-        throw Error('الترحيل '+searched+' يحمل فاتورة زرقاء في كشف SAP. أضف فقط ترحيلًا بلا فاتورة.');
+      if (draft.transfers.length>0 && member?.invoices.length && !matchesInvoiceNumbers(draft.invoices,member.invoices)) {
+        throw Error('فواتير الترحيل '+searched+' في SAP ('+member.invoices.join('، ')+') لا تطابق فواتير الكشف المفتوح.');
       }
       if (member && draft.branch && member.branch && draft.branch!==member.branch) {
         throw Error('الترحيل تابع لفرع '+member.branch+'، وليس فرع الفاتورة الحالية.');
@@ -293,8 +293,7 @@ export default function InstantMatch({
       } else {
         const chosen = stored?.transfer || member?.transfer || {id:uuid(),number:searched,date:localDate(),paste:''};
         const item = {...chosen,id:uuid(),number:searched};
-        update({...draft,branch:draft.branch||stored?.branch||member?.branch||'',
-          transfers:[...draft.transfers,item]});
+        update(addTransferToDraft(draft,item,stored?.branch||member?.branch||''));
         if (stored && stored.recordId!==draft.id) {
           setSources(current=>({...current,[item.id]:{number:searched,recordId:stored.recordId,version:stored.version}}));
         }
