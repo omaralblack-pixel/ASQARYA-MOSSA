@@ -151,9 +151,16 @@ assert.equal(day.counts.matched,1);
 assert.equal(dailySoldierRows([{id:'soldier-one',branch:'الجيزة',payload:JSON.stringify(draftForSoldier)}],
   soldierCatalog,'09.11.2026').counts.total,0,
   'Invoice dates govern the daily table, not SAP transfer dates.');
-assert.equal(auditDraftWithSoldier({...draftForSoldier,invoices:[
-  {...draftForSoldier.invoices[0],auditLines:''}]},soldierCatalog).invoices[0].status,'review',
-  'A perfectly matching amount cannot substitute for missing blue-invoice item quantities.');
+for(const auditLines of ['',invoiceHeader]){
+  const missing=auditDraftWithSoldier({...draftForSoldier,invoices:[
+    {...draftForSoldier.invoices[0],auditLines}]},soldierCatalog).invoices[0];
+  assert.equal(missing.status,'review','An equal amount cannot substitute for missing item quantities.');
+  assert.equal(missing.amount,62000);
+  assert.equal(missing.expected,62000);
+  assert.equal(missing.missingPaperLines,true);
+  assert.equal(missing.quantityDifferences,0);
+  assert.ok(!missing.reasons.some(reason=>reason.startsWith('فرق ')));
+}
 assert.equal(auditDraftWithSoldier({...draftForSoldier,invoices:[
   {...draftForSoldier.invoices[0],auditLines:'11371486\t39'}]},soldierCatalog).invoices[0].status,'difference');
 assert.equal(auditDraftWithSoldier({...draftForSoldier,invoices:[
@@ -176,6 +183,9 @@ const twoInvoices={
 };
 assert.equal(auditDraftWithSoldier(twoInvoices,soldierCatalog).allMatched,true);
 assert.equal(auditDraftWithSoldier({...twoInvoices,pages:{'i:11371486':'1'}},soldierCatalog).allMatched,false);
+const incompleteAllocation=auditDraftWithSoldier({...twoInvoices,pages:{'i:11371486':'1'}},soldierCatalog);
+assert.ok(incompleteAllocation.invoices.every(invoice=>invoice.expected===null&&invoice.quantityDifferences===0),
+  'Unassigned SAP lines must not produce a partial invoice value or fabricated quantity differences.');
 const twoDayRows=dailySoldierRows([{id:'multi',branch:'الجيزة',payload:JSON.stringify(twoInvoices)}],
   soldierCatalog,'2026-11-02');
 assert.equal(twoDayRows.counts.total,1);
@@ -443,8 +453,11 @@ assert.equal(soldierDateRangeRows(rangeRecords,soldierCatalog,'2.11.2026','2.11.
 assert.throws(()=>soldierDateRangeRows(rangeRecords,soldierCatalog,'2.11.2026','1.11.2026'),/البداية/);
 assert.throws(()=>soldierDateRangeRows(rangeRecords,soldierCatalog,'bad','2.11.2026'),/تاريخ/);
 assert.throws(()=>soldierDateRangeRows(rangeRecords,soldierCatalog,'1.1.2025','2.1.2026'),/366/);
-const damaged=soldierDateRangeRows([...rangeRecords,{id:'broken',branch:'غير معروف',payload:'{bad json'}],
+const damaged=soldierDateRangeRows([...rangeRecords,
+ {id:'broken',branch:'غير معروف',payload:'{bad json'},
+ {id:'null',branch:'غير معروف',payload:'null'},
+ {id:'null-invoice',branch:'غير معروف',payload:'{"invoices":[null]}'}],
  soldierCatalog,'1.11.2026','2.11.2026');
 assert.equal(damaged.counts.total,3);
-assert.equal(damaged.unreadableRecords,1,'Unreadable records must be counted, not treated as matching.');
+assert.equal(damaged.unreadableRecords,3,'Unreadable records must be counted without aborting the scan.');
 console.log('PASS: soldier scans an inclusive From/To blue-invoice date range, validates dates and reports unreadable records.');

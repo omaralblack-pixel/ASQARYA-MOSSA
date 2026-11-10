@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import AuditCatalogEditor from './AuditCatalogEditor';
 import {catalogAuditReference,type AuditCatalog} from '../lib/audit-catalog';
 import {AlertTriangle,CheckCircle2,Search,Plus,RefreshCw} from 'lucide-react';
@@ -16,7 +16,10 @@ function choiceLabel(choice:Choice){return choice.title}
 const parseRow=(record:StoredRecord):Partial<Draft>=>{
   try{return JSON.parse(record.payload) as Draft}catch{return {}}
 };
-export default function InstitutionAudit({branches}:{branches:string[]}){
+export default function InstitutionAudit({branches,onOpenInvoice}:{
+  branches:string[];
+  onOpenInvoice:(recordId:string,invoiceId:string)=>Promise<void>;
+}){
   const [catalog,setCatalog]=useState<AuditCatalog|null>(null);
   const reference=useMemo(()=>catalog?catalogAuditReference(catalog):[],[catalog]);
   const sapNames=useMemo(()=>new Map(catalog?.sap.map(row=>[row.code,row.name])),[catalog]);
@@ -25,10 +28,15 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
   const [loading,setLoading]=useState(true);
   const [fetchError,setFetchError]=useState('');
   const [error,setError]=useState('');
+  const [openingInvoice,setOpeningInvoice]=useState('');
+  const [openError,setOpenError]=useState<{key:string;message:string}|null>(null);
+  const [choosing,setChoosing]=useState(false);
+  const transferHeading=useRef<HTMLHeadingElement>(null);
   const [search,setSearch]=useState('');
   const [transfers,setTransfers]=useState<Transfer[]>([]);
-  const [title,setTitle]=useState('');
+  const [openedDocument,setOpenedDocument]=useState<{title:string}|null>(null);
   const [inverseNo,setInverseNo]=useState('');
+  const [inverseError,setInverseError]=useState('');
   const [invoiceLines,setInvoiceLines]=useState('');
   const [invoiceAmount,setInvoiceAmount]=useState('');
   const today=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
@@ -52,7 +60,7 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
     if((Date.parse(to+'T00:00:00Z')-Date.parse(from+'T00:00:00Z'))/86400000>365){
       setDailyError('أقصى مدة للتدقيق سنة واحدة.');setDaily(null);return;
     }
-    setDailyBusy(true);setDailyError('');setDaily(null);
+    setDailyBusy(true);setDailyError('');setOpenError(null);setDaily(null);
     try{
       const params=new URLSearchParams({soldierDateFrom:from,soldierDateTo:to});
       const response=await fetch('/api/reconcile?'+params.toString(),{cache:'no-store'});
@@ -63,6 +71,15 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
       setDaily(result);
     }catch(e){setDailyError(e instanceof Error?e.message:'تعذّر فحص الفواتير ضمن الفترة.')}
     finally{setDailyBusy(false)}
+  }
+
+  async function openInvoice(row:DailyRow){
+    const key=row.recordId+'-'+row.invoice.id;
+    setOpeningInvoice(key);setOpenError(null);
+    try{await onOpenInvoice(row.recordId,row.invoice.id)}
+    catch(e){
+      setOpenError({key,message:e instanceof Error?e.message:'تعذّر فتح الترحيلات.'});
+    }finally{setOpeningInvoice('')}
   }
 
   async function refresh(){
@@ -112,43 +129,53 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
   },[search,imports,records]);
 
   async function choose(choice:Choice){
-    setError('');
+    setError('');setChoosing(true);
     try{
+      let selected:Transfer[];
       if(choice.source==='sap'&&choice.group){
-        setTransfers(choice.group.draft.transfers);
+        selected=choice.group.draft.transfers;
       }else if(choice.record){
         const response=await fetch('/api/reconcile?id='+encodeURIComponent(choice.record.id),{cache:'no-store'});
         const data=await response.json() as {error?:string;record?:StoredRecord};
         if(!response.ok)throw Error(data.error||'تعذّر تحميل الترحيل');
         if(!data.record)throw Error('بيانات الترحيل غير متاحة');
         const draft=JSON.parse(data.record.payload) as Draft;
-        setTransfers(draft.transfers);
+        selected=draft.transfers;
       }else throw Error('المستند غير متاح');
-      setInvoiceLines('');setInvoiceAmount('');setTitle(choiceLabel(choice));setInverseNo('');
+      if(!Array.isArray(selected)||!selected.length)throw Error('لا توجد ترحيلات محفوظة لهذا المستند.');
+      setTransfers(selected);
+      setInvoiceLines('');setInvoiceAmount('');setOpenedDocument({title:choiceLabel(choice)});
+      setInverseNo('');setInverseError('');
     }catch(e){setError(e instanceof Error?e.message:'تعذّر فتح المستند')}
+    finally{setChoosing(false)}
   }
+  useEffect(()=>{
+    if(!openedDocument||!transferHeading.current)return;
+    transferHeading.current.focus({preventScroll:true});
+    transferHeading.current.scrollIntoView({block:'start'});
+  },[openedDocument]);
   function addInverse(){
-    setError('');
+    setInverseError('');
     const number=digits(inverseNo).trim();
-    if(!/^\d{4,20}$/.test(number)){setError('أدخل رقم الترحيل العكسي كاملًا.');return}
-    if(transfers.some(row=>row.number===number)){setError('هذا الترحيل مضاف بالفعل.');return}
+    if(!/^\d{4,20}$/.test(number)){setInverseError('أدخل رقم الترحيل العكسي كاملًا.');return}
+    if(transfers.some(row=>row.number===number)){setInverseError('هذا الترحيل مضاف بالفعل.');return}
     const member=imports.flatMap(group=>group.members).find(row=>row.transfer.number===number);
-    if(!member){setError('الترحيل العكسي غير موجود بملف TXT المحفوظ؛ حدّث الملف من شاشة استيراد SAP أولًا.');return}
-    if(!member.reverseMovement){setError('هذا الرقم ليس ترحيلًا عكسيًا من المستودع 011؛ تحقق من الحركة.');return}
-    if(member.issues.length){setError('الترحيل العكسي فيه مشكلات قراءة ويحتاج مراجعة في SAP.');return}
+    if(!member){setInverseError('الترحيل العكسي غير موجود بملف TXT المحفوظ؛ حدّث الملف من شاشة استيراد SAP أولًا.');return}
+    if(!member.reverseMovement){setInverseError('هذا الرقم ليس ترحيلًا عكسيًا من المستودع 011؛ تحقق من الحركة.');return}
+    if(member.issues.length){setInverseError('الترحيل العكسي فيه مشكلات قراءة ويحتاج مراجعة في SAP.');return}
     setTransfers(old=>[...old,member.transfer]);
     setInverseNo('');
   }
 
   const scope=useMemo(()=>auditInstitutionTransfers(transfers,reference),[transfers,reference]);
   const quantity=useMemo(()=>auditInvoiceQuantities(transfers,reference,invoiceLines,invoiceAmount),[transfers,reference,invoiceLines,invoiceAmount]);
-  const hasLines=!!invoiceLines.trim();
+  const hasLines=quantity.status!=='missing-invoice';
   const hasAmount=!!invoiceAmount.trim();
   const allValid=transfers.length>0&&scope.valid&&hasLines&&hasAmount&&quantity.status==='match'&&quantity.expectedTotal!==null&&quantity.amountDifference===0;
   const problems=[
     ...scope.issues.map(issue=>issue.message),
     ...quantity.issues,
-    ...quantity.rows.filter(row=>Math.abs(row.difference)>0.000001).map(row=>
+    ...quantity.rows.filter(row=>hasLines&&Math.abs(row.difference)>0.000001).map(row=>
       row.code+' — '+row.institutionName+' · SAP '+row.sapPieces+' حبة · الفاتورة '+row.invoicePieces+' حبة · الفرق '+row.difference),
   ];
   return <div dir="rtl">
@@ -170,7 +197,7 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
             onChange={e=>{setDateTo(e.target.value);setDaily(null);setDailyError('')}}/>
         </label>
         <div style={{alignSelf:'end'}}><button type="button" className="button primary"
-          disabled={dailyBusy||!catalog} onClick={()=>void scanRange()}>
+          disabled={dailyBusy||!!openingInvoice||!catalog} onClick={()=>void scanRange()}>
           <Search size={16}/>{dailyBusy?'جاري فحص الفترة…':'فحص جميع فواتير الفترة'}
         </button></div>
       </div>
@@ -187,18 +214,20 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
         </p>}
         {daily.rows.length>0?<div className="table-scroll"><table>
           <thead><tr><th>رقم الفاتورة</th><th>الفرع</th><th>التاريخ</th><th>الترحيلات المرتبطة</th><th>المبلغ</th><th>قيمة SAP</th><th>حالة الجندي</th><th>التفاصيل</th></tr></thead>
-          <tbody>{daily.rows.map(row=><tr key={row.recordId+'-'+row.invoice.id}>
+          <tbody>{daily.rows.map(row=>{
+            const key=row.recordId+'-'+row.invoice.id;
+            return <tr key={key}>
             <td><b>{row.invoice.number||'بلا رقم'}</b></td><td>{row.branch}</td><td>{row.invoice.date}</td>
             <td>{row.invoice.transferNumbers.join('، ')||'بحاجة لتحديد الصفحة'}</td>
             <td>{money(row.invoice.amount)}</td><td>{money(row.invoice.expected)}</td>
             <td>{row.invoice.status==='match'?'مطابق بعد تدقيق الجندي':row.invoice.status==='difference'?'فرق':'بحاجة مراجعة'}</td>
             <td>{row.invoice.reasons.length>0?<details><summary>{row.invoice.reasons.length} ملاحظات</summary>
               {row.invoice.reasons.map((reason,index)=><p key={index} className="hint">{reason}</p>)}</details>:'كل الفحوصات ناجحة'}
-              <button type="button" className="button secondary small" onClick={()=>void choose({
-                id:'saved-'+row.recordId,source:'saved',title:'السجل · '+row.branch+' · فاتورة '+row.invoice.number,
-                record:{id:row.recordId,branch:row.branch,payload:''}
-              })}>فتح الترحيلات</button></td>
-          </tr>)}</tbody></table></div>
+              <button type="button" className="button secondary small" disabled={!!openingInvoice}
+                onClick={()=>void openInvoice(row)}>{openingInvoice===key?'جاري فتح الترحيلات…':'فتح الترحيلات'}</button>
+              {openError?.key===key&&<p role="alert" className="amber">{openError.message}</p>}
+            </td>
+          </tr>})}</tbody></table></div>
           :<p className="hint">لا توجد فواتير زرقاء مسجلة من {daily.from} إلى {daily.to} في السجل. الفحص يشمل الفواتير المحفوظة فقط.</p>}
       </>}
     </section>
@@ -212,13 +241,15 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
       {!!search.trim()&&search.trim().length<4&&<p className="hint">اكتب أربع خانات على الأقل لعرض المستندات.</p>}
       {choices.length>0&&<div className="table-scroll"><table><thead><tr><th>المستند</th><th>فتح</th></tr></thead>
         <tbody>{choices.map(choice=><tr key={choice.id}><td>{choice.title}</td>
-          <td><button type="button" className="button secondary small" onClick={()=>void choose(choice)}>تدقيق</button></td></tr>)}</tbody></table></div>}
+          <td><button type="button" className="button secondary small" disabled={choosing}
+            onClick={()=>void choose(choice)}>{choosing?'جاري فتح المستند…':'تدقيق'}</button></td></tr>)}</tbody></table></div>}
       {search.trim().length>=4&&!loading&&!choices.length&&<p className="hint">لا يوجد مستند مطابق في TXT أو السجل.</p>}
-      {title&&<p className="hint">المستند المختار: <b>{title}</b></p>}
+      {openedDocument&&<p className="hint">المستند المختار: <b>{openedDocument.title}</b></p>}
+      {error&&<p role="alert" className="banner danger"><AlertTriangle size={16}/>{error}</p>}
     </section>}
     {catalog&&transfers.length>0&&<>
       <section className="panel">
-        <div className="section-title"><h2>الترحيلات والفحص الآلي</h2></div>
+        <div className="section-title"><h2 ref={transferHeading} tabIndex={-1}>الترحيلات والفحص الآلي</h2></div>
         <div className="table-scroll"><table><thead><tr><th>رقم الترحيل</th><th>تاريخ الترحيل</th><th>حذف من التدقيق فقط</th></tr></thead>
         <tbody>{transfers.map((transfer,index)=><tr key={transfer.id+'-'+index}>
           <td>{transfer.number}</td><td>{transfer.date||'—'}</td>
@@ -230,7 +261,7 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
             onKeyDown={e=>{if(e.key==='Enter')addInverse()}}/></label>
           <div style={{alignSelf:'end'}}><button type="button" className="button secondary" onClick={addInverse}><Plus size={16}/>فحص الترحيل العكسي وإضافته</button></div>
         </div>
-        {error&&<p role="alert" className="banner danger"><AlertTriangle size={16}/>{error}</p>}
+        {inverseError&&<p role="alert" className="banner danger"><AlertTriangle size={16}/>{inverseError}</p>}
         <div className="stats"><div className="stat"><span>بنود SAP المفحوصة</span><strong>{scope.reviewedLines}</strong></div>
           <div className="stat"><span>بنود معرّفة وقابلة للتحويل</span><strong>{scope.approvedLines}</strong></div>
           <div className="stat"><span>ملاحظات الترحيلات</span><strong>{scope.issues.length}</strong></div></div>
@@ -253,9 +284,9 @@ export default function InstitutionAudit({branches}:{branches:string[]}){
         </div>
         {quantity.rows.length>0&&<div className="table-scroll"><table><thead><tr>
           <th>رقم مادة المؤسسة</th><th>اسم المادة بالمؤسسة</th><th>الصنف في SAP</th><th>كمية SAP بالحبة</th><th>كمية الفاتورة بالحبة</th><th>الفرق</th>
-        </tr></thead><tbody>{quantity.rows.map(row=><tr key={row.code} className={Math.abs(row.difference)>0.000001?'difference':'match'}>
+        </tr></thead><tbody>{quantity.rows.map(row=><tr key={row.code} className={hasLines?(Math.abs(row.difference)>0.000001?'difference':'match'):undefined}>
           <td>{row.code}</td><td>{row.institutionName}</td><td>{row.sapCodes.map(code=>code+' · '+(sapNames.get(code)||'')).join('، ')||'—'}</td>
-          <td>{row.sapPieces}</td><td>{row.invoicePieces}</td><td>{row.difference}</td>
+          <td>{row.sapPieces}</td><td>{hasLines?row.invoicePieces:'—'}</td><td>{hasLines?row.difference:'—'}</td>
         </tr>)}</tbody></table></div>}
         {problems.length>0&&<div className="review-list" role="alert"><b>تنبيهات التدقيق ({problems.length})</b>
           {problems.map((message,index)=><p key={index}><AlertTriangle size={14}/> {message}</p>)}</div>}

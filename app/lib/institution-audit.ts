@@ -191,11 +191,11 @@ export function auditInvoiceQuantities(
       sapCodes:[...(sapCodes.get(code)||[])],sapPieces:sap,invoicePieces:paper,
       difference:Number((paper-sap).toFixed(6)),price:item?.price??null};
   });
-  if(!hasInvoiceRows)return {status:'missing-invoice',rows,issues,invoiceTotal:null,expectedTotal:null,amountDifference:null};
   const invoiceTotal=invoiceAmount.trim()?fils(invoiceAmount):null;
   if(invoiceAmount.trim()&&invoiceTotal===null)issues.push('مبلغ الفاتورة غير صالح؛ أدخله حتى ثلاث منازل عشرية.');
   const expectedTotal=rows.length&&rows.every(row=>row.price!==null)
     ?rows.reduce((total,row)=>total+Math.round(row.sapPieces*row.price!),0):null;
+  if(!hasInvoiceRows)return {status:'missing-invoice',rows,issues,invoiceTotal,expectedTotal,amountDifference:null};
   const amountDifference=invoiceTotal===null||expectedTotal===null?null:invoiceTotal-expectedTotal;
   const status=issues.length?'review':rows.some(row=>Math.abs(row.difference)>0.000001)||
     (amountDifference!==null&&amountDifference!==0)?'difference':'match';

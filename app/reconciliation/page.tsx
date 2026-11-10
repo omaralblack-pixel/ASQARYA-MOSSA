@@ -1,5 +1,5 @@
 'use client';
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import SapImport from './SapImport';
 import InstantMatch from './InstantMatch';
 import InstitutionAudit from './InstitutionAudit';
@@ -42,6 +42,8 @@ function TransferCard({transfer,index,onChange,onRemove,onLookup}:{transfer:any,
 export default function Home(){const [reference,REF]=useState<Item[]>([]),[branches,BR]=useState<string[]>([]),[drivers,DR]=useState<string[]>([]),[draft,D]=useState<OrderedDraft|null>(null),[tab,T]=useState('work'),[loading,L]=useState(true),[busy,B]=useState(false),[error,E]=useState(''),[notice,N]=useState(''),[records,REC]=useState<any[]>([]),[query,Q]=useState(''),[onlyDiff,DIFF]=useState(false),[sort,SORT]=useState('entry'),[pageFilter,PAGE]=useState('all'),[pick,PICK]=useState(''),[edit,EDIT]=useState<Item|null>(null),[linkSap,LINK]=useState(''),[importTexts,IT]=useState<Record<string,string>>({}),[month,M]=useState(today().slice(0,7)),[serial,SERIAL]=useState(''),[columns,COLS]=useState({number:-1,date:-1,branch:-1}),[filtered,FILTERED]=useState(false),[dateFormat,DF]=useState('dmy'),[monthTab,MT]=useState('missing'),[monthReady,MR]=useState(false);
 const [editOriginal,setEditOriginal]=useState<Item|null>(null);
 const [auditCatalog,SETAUDITCAT]=useState<AuditCatalog|null>(null);
+const [auditVisited,setAuditVisited]=useState(false);
+const focusOpenedTransfers=useRef(false);
 const [editAlias,setEditAlias]=useState('');
 const [sapPreview,setSapPreview]=useState<{groups:SapImportGroup[];records:{id:string;payload:string}[]}>({groups:[],records:[]});
 const [transferConflict,setTransferConflict]=useState<{id:string;number:string}|null>(null);
@@ -70,6 +72,14 @@ const result=baseResult?{...baseResult,status:baseResult.status==='match'&&(!sol
 useEffect(()=>{
  if(prepared&&prepared.draft!==draft)D(current=>current===draft?prepared.draft:current);
 },[draft,prepared]);
+useEffect(()=>{
+  if(tab==='audit')setAuditVisited(true);
+  if(tab!=='work'||!focusOpenedTransfers.current)return;
+  focusOpenedTransfers.current=false;
+  const heading=document.getElementById('reconciliation-transfers-heading');
+  heading?.focus({preventScroll:true});
+  heading?.scrollIntoView({block:'start'});
+},[tab]);
 const heads=serialHeaders(serial);
 const numbersOnly=serial.trim()!==''&&serial.trim().split(/\r?\n/).filter(line=>line.trim()).every(isTransferNumber);
 const selectedPage=pageFilter==='all'?null:Number(pageFilter);
@@ -310,15 +320,31 @@ async function exportFullHistory(){
  });
 }
 async function getRecords(){const x=await api(undefined,'?records=1');REC(x.records)}
-async function loadRecord(r:any){
- await run(async()=>{
-  const [data,settings]=await Promise.all([api(undefined,'?id='+encodeURIComponent(r.id)),api()]);
-  const saved=JSON.parse(data.record.payload);
+async function openRecord(id:string,invoiceId?:string){
+  const [data,settings]=await Promise.all([api(undefined,'?id='+encodeURIComponent(id)),api()]);
+  const saved=JSON.parse(data.record.payload) as Draft;
+  let page='all';
+  if(invoiceId!==undefined){
+    const index=saved.invoices?.findIndex(invoice=>invoice.id===invoiceId)??-1;
+    if(index<0)throw Error('الفاتورة لم تعد موجودة في هذا الكشف. أعد فحص الفترة.');
+    if(!Array.isArray(saved.transfers)||!saved.transfers.length)
+      throw Error('لا توجد ترحيلات محفوظة في كشف هذه الفاتورة.');
+    page=String(index+1);
+  }
+  const next=withInvoiceDates({...saved,mode:'manual',checks:saved.checks||{},id:data.record.id,version:data.record.version,useCurrentReference:false});
   REF(settings.reference);
   setTransferSources({});
-  D(withInvoiceDates({...saved,mode:'manual',checks:saved.checks||{},id:data.record.id,version:data.record.version,useCurrentReference:false}));
-  PAGE('all');Q('');T('work');
- });
+  focusOpenedTransfers.current=invoiceId!==undefined;
+  D(next);PAGE(page);Q('');T('work');
+}
+async function loadRecord(r:{id:string}){
+  await run(()=>openRecord(r.id));
+}
+async function openSoldierInvoice(recordId:string,invoiceId:string){
+  if(draft&&(draft.id||draft.branch||draft.driver||draft.transfers.some(row=>row.number||row.paste.trim())||
+    draft.invoices.some(row=>row.number||row.amount||row.auditLines||row.complete))&&
+    !confirm('فتح ترحيلات الفاتورة سيستبدل الكشف المفتوح على الشاشة. احفظ أي تعديلات تحتاجها قبل المتابعة. هل تريد فتحها؟'))return;
+  await openRecord(recordId,invoiceId);
 }
 function showDefinition(item:Item,sapCode?:string){
   LINK('');
@@ -508,14 +534,16 @@ function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);const h=s
 if(!draft)return <div className="initial">جاري تجهيز مساحة المطابقة…</div>;
 return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="private-dot"/>مساحة عمل خاصة<form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');if(key==='history'||key==='invoices'||key==='monthly')run(async()=>{await getRecords();T(key)});else T(key)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
- {tab==='audit'&&<InstitutionAudit branches={branches}/>}
+ {(tab==='audit'||auditVisited)&&<div hidden={tab!=='audit'}>
+   <InstitutionAudit branches={branches} onOpenInvoice={openSoldierInvoice}/>
+ </div>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
  {tab==='work'&&result&&<><div className="page-title"><div><p className="eyebrow">{draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'مطابقة الفاتورة الزرقاء':draft.id?'ترحيل محفوظ':'ترحيل جديد'}</p><h1>ألصق الترحيلات. ووزّع الأصناف على الفواتير الزرقاء.</h1><p>كشف بأكواد المؤسسة وتسمياتها وأسعارها، جاهز للمطابقة اليدوية.</p></div><button className="button secondary" onClick={()=>{if(draft.transfers.some(t=>t.paste.trim())&&!confirm('فتح ترحيل جديد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;setTransferSources({});D(blank());PAGE('all');Q('');N('');E('')}}><Plus size={16}/>ترحيل جديد</button></div>{draft.id&&!draft.useCurrentReference&&<div className="banner info">تُستخدم الأسعار والشدّات المسجلة وقت الحفظ، وتُستكمل التعريفات الناقصة من المرجع المعتمد.<button className="text-button" onClick={()=>change({useCurrentReference:true})}>إعادة المطابقة بالمرجع الحالي</button></div>}<div className="stats"><div className={'stat status-stat '+result.status}><span>نتيجة المطابقة</span><strong><Badge state={result.status} label={soldier?.allMatched&&acceptedDifference?'مطابق باعتمادك':result.status==='review'&&baseResult?.status==='match'?'بانتظار تدقيق الجندي':undefined}/></strong><small>{result.differences} فروقات أصناف · {result.review} بحاجة مراجعة</small></div><div className="stat"><span>مجموع مبالغ الفواتير</span><strong>{money(result.total)} <small>د.أ</small></strong><small>{draft.invoices.length} فواتير مرتبطة</small></div><div className="stat"><span>قيمة الترحيلات حسب أسعار المؤسسة</span><strong>{money(result.expected)} <small>د.أ</small></strong><small>{draft.transfers.length} ترحيلات مرتبطة</small></div><div className={'stat '+(result.priceDifference?'warn':'')}><span>فرق القيمة</span><strong dir="ltr">{money(result.priceDifference)} <small>د.أ</small></strong><small>الفواتير − قيمة الترحيلات</small></div></div><SapImport records={sapPreview.records} onPreview={(groups,records)=>setSapPreview({groups,records})} branches={branches} readRecords={async()=>{const data=await api(undefined,'?records=1');return data.records}} saveDraft={async imported=>{const data=await api({action:'save',draft:imported});return data.id}} openSaved={id=>loadRecord({id})} openDraft={imported=>{
   if((draft.id||draft.transfers.some(transfer=>transfer.paste.trim()))&&!confirm('فتح كشف الاستيراد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;
   setTransferSources({});D(imported);PAGE('all');Q('');E('');
   document.getElementById('reconciliation-group')?.scrollIntoView({block:'start'});
-}}/><section id="reconciliation-group" className="panel"><div className="section-title"><span className="step">01</span><div><h2>بيانات المطابقة</h2><p>حدّد فرع الفاتورة الزرقاء.</p></div></div><div className="form-grid"><GroupLookup label="فرع المؤسسة" required placeholder="اكتب اسم الفرع أو رقمه" items={branches} value={draft.branch} onChange={branch=>change({branch})}/><GroupLookup label="الشوفير" placeholder="اكتب اسم الشوفير أو رقمه (اختياري)" items={drivers} value={draft.driver} onChange={driver=>change({driver})}/><label>تاريخ الكشف<input type="date" value={draft.date} onChange={e=>change({date:e.target.value})}/></label></div></section><section className="panel"><div className="section-title"><span className="step">02</span><div><h2>ترحيلات SAP</h2><p>أضف الترحيل برقم SAP. تُخصم الكميات العكسية من الصافي.</p></div><button type="button" className="button secondary" aria-haspopup="dialog" disabled={busy} onClick={()=>{setSearchTransferNumber('');setSearchTransferError('');setSearchTransferMissing(false);setSearchTransferOpen(true)}}><Plus size={16}/>إضافة ترحيل بالرقم</button></div>
+}}/><section id="reconciliation-group" className="panel"><div className="section-title"><span className="step">01</span><div><h2>بيانات المطابقة</h2><p>حدّد فرع الفاتورة الزرقاء.</p></div></div><div className="form-grid"><GroupLookup label="فرع المؤسسة" required placeholder="اكتب اسم الفرع أو رقمه" items={branches} value={draft.branch} onChange={branch=>change({branch})}/><GroupLookup label="الشوفير" placeholder="اكتب اسم الشوفير أو رقمه (اختياري)" items={drivers} value={draft.driver} onChange={driver=>change({driver})}/><label>تاريخ الكشف<input type="date" value={draft.date} onChange={e=>change({date:e.target.value})}/></label></div></section><section className="panel"><div className="section-title"><span className="step">02</span><div><h2 id="reconciliation-transfers-heading" tabIndex={-1}>ترحيلات SAP</h2><p>أضف الترحيل برقم SAP. تُخصم الكميات العكسية من الصافي.</p>{selectedInvoice&&<p>الفاتورة المفتوحة <b>{selectedInvoice.number||"بلا رقم"}</b> · صفحة {selectedPage} · <a href="#soldier-page-sort">فرز الأصناف</a> · <a href="#invoice-sheet">عرض كشف الفاتورة</a></p>}</div><button type="button" className="button secondary" aria-haspopup="dialog" disabled={busy} onClick={()=>{setSearchTransferNumber('');setSearchTransferError('');setSearchTransferMissing(false);setSearchTransferOpen(true)}}><Plus size={16}/>إضافة ترحيل بالرقم</button></div>
 <div className="cards-grid">{draft.transfers.map((t,i)=><TransferCard key={t.id} transfer={t} index={i} onChange={v=>editTransfer(i,v)} onRemove={()=>change({transfers:draft.transfers.filter((_,j)=>j!==i)})} onLookup={number=>lookupTransfer(t.id,number)}/>)}</div></section><section className="panel invoice-entry"><div className="section-title"><span className="step">03</span><div><h2>الفواتير الورقية المرتبطة</h2><p>الفاتورة 1 للأصناف التي وضعت لها 1، والفاتورة 2 للأصناف التي وضعت لها 2، وهكذا. اكتب رقم الفاتورة الورقية الحقيقي في الحقل المقابل.</p></div><button className="button secondary" disabled={draft.invoices.length>=30} onClick={()=>change({invoices:[...draft.invoices,newInvoice()]})}><Plus size={16}/>إضافة فاتورة</button></div><div className="invoice-grid">{draft.invoices.map((inv,i)=><article className="invoice-card" key={inv.id}><div className="card-title"><FileText size={18}/><input className="invoice-title-input" aria-label={'عنوان الفاتورة الزرقاء '+(i+1)} title="اضغط لتعديل عنوان الفاتورة" maxLength={80} value={inv.title??'الفاتورة الزرقاء '+(i+1)} onChange={e=>invoiceChange(i,{title:e.target.value})} onBlur={()=>{const title=inv.title?.trim()||undefined;if(title!==inv.title)invoiceChange(i,{title})}}/><button type="button" className="text-button" onClick={()=>{PAGE(String(i+1));Q('');document.getElementById('invoice-sheet')?.scrollIntoView({block:'start'})}}>عرض كشف الفاتورة {i+1}</button>{i>0&&<button className="icon-button danger" aria-label={'حذف الفاتورة '+(i+1)} onClick={()=>removeInvoice(i)}><Trash2 size={15}/></button>}</div><div className="invoice-fields"><label>رقم الفاتورة الورقية الحقيقي<input value={inv.number} onChange={e=>invoiceChange(i,{number:e.target.value,manualNumber:true})}/></label><label>مبلغ الفاتورة (د.أ)<input inputMode="decimal" value={inv.amount} onChange={e=>invoiceChange(i,{amount:e.target.value})} placeholder="0.000"/></label><div className="invoice-date-field"><label>{inv.manualDate?'تاريخ الفاتورة · تعديل يدوي':'تاريخ الفاتورة · قبل الترحيل بيوم'}<input type="date" value={inv.date} onChange={e=>change({invoices:editInvoiceDate(draft.invoices,inv.id,e.target.value)})}/></label>{inv.manualDate&&<button type="button" className="text-button" onClick={()=>invoiceChange(i,{date:'',manualDate:false})}>رجوع للتاريخ التلقائي</button>}</div></div><label className="check-label"><input type="checkbox" checked={inv.complete} onChange={e=>invoiceChange(i,{complete:e.target.checked})}/>الفاتورة الورقية موجودة لدي</label>
  <details className="no-print"><summary>تدقيق الجندي — أصناف الفاتورة بالحبة</summary>
  <p className="hint">الصق من الفاتورة الزرقاء عمود رقم المادة ثم عمود الكمية بالحبة. كل فاتورة لها بنودها المستقلة؛ لا يعتمد الجندي المبلغ وحده.</p>

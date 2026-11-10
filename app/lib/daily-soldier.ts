@@ -102,21 +102,22 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
     }
     const invoiceReference=catalogAuditReferenceForInvoice(catalog,choices);
     const audited=auditInvoiceQuantities(selected,invoiceReference,text,invoice.amount||'');
-    const missingPaperLines=!text.trim();
+    const missingPaperLines=audited.status==='missing-invoice';
+    const completeSap=selected.length>0&&scope.valid&&!unassigned.length&&!sharedReasons.length;
     const reasons:string[]=[];
     if(!invoiceDocumentNo(invoice.number))reasons.push('رقم الفاتورة الزرقاء غير مكتمل.');
     if(!dateValue(invoice.date||''))reasons.push('تاريخ الفاتورة الزرقاء غير صالح أو مفقود.');
     if(!invoice.complete)reasons.push('الفاتورة الورقية لم يتم تأكيد وجودها.');
     if(missingPaperLines)reasons.push('ألصق أرقام المواد وكمياتها بالحبة من الفاتورة الزرقاء؛ المبلغ وحده لا يكفي.');
     if(fils(invoice.amount||'')===null)reasons.push('مبلغ الفاتورة الزرقاء غير صالح أو مفقود.');
-    if(audited.expectedTotal===null)reasons.push('لا يمكن حساب القيمة: أسعار أو أصناف SAP غير مكتملة.');
+    if(selected.length&&audited.expectedTotal===null)reasons.push('لا يمكن حساب القيمة: أسعار أو أصناف SAP غير مكتملة.');
     if(!selected.length)reasons.push('لا توجد بنود SAP مسندة إلى هذه الفاتورة.');
     reasons.push(...scopeIssues,...unassigned,...sharedReasons,...audited.issues);
-    const differences=audited.rows.filter(row=>Math.abs(row.difference)>0.000001);
+    const differences=missingPaperLines||!completeSap?[]:audited.rows.filter(row=>Math.abs(row.difference)>0.000001);
     for(const row of differences.slice(0,25)){
       reasons.push('فرق '+row.code+' · '+row.institutionName+': SAP '+row.sapPieces+' حبة، الفاتورة '+row.invoicePieces+' حبة.');
     }
-    if(audited.amountDifference!==null&&audited.amountDifference!==0)
+    if(completeSap&&audited.amountDifference!==null&&audited.amountDifference!==0)
       reasons.push('فرق مالي بقيمة '+(audited.amountDifference/1000).toFixed(3)+' دينار.');
     const hardReview=scopeIssues.length>0||unassigned.length>0||sharedReasons.length>0||missingPaperLines||
       audited.issues.length>0||audited.expectedTotal===null||!selected.length||
@@ -127,7 +128,7 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
       :audited.status==='match'&&reasons.length===0?'match':'review';
     return {
       id:invoice.id,number:invoiceDocumentNo(invoice.number)||'',date:dateValue(invoice.date||'')||'',
-      amount:audited.invoiceTotal,expected:audited.expectedTotal,status,
+      amount:audited.invoiceTotal,expected:completeSap?audited.expectedTotal:null,status,
       reasons:[...new Set(reasons)].slice(0,60),
       transferNumbers:[...new Set((draft.transfers||[])
         .filter(transfer=>assignedLines.has(transfer.id)).flatMap(transfer=>transferNumbers(transfer.number)))],
@@ -152,14 +153,16 @@ export function soldierDateRangeRows(
   const rows:{recordId:string;branch:string;invoice:SoldierInvoice}[]=[];
   let unreadableRecords=0;
   for(const record of records){
-    let draft:Draft;
-    try{draft=JSON.parse(record.payload) as Draft}catch{unreadableRecords++;continue}
-    if(!Array.isArray(draft.invoices)){unreadableRecords++;continue}
-    if(!draft.invoices.some(row=>{
-      const date=dateValue(row.date||'');
-      return date!==null&&date>=from&&date<=to;
-    }))continue;
     try{
+      const draft=JSON.parse(record.payload) as Draft|null;
+      if(!Array.isArray(draft?.invoices)||draft.invoices.some(row=>!row||typeof row!=='object')){
+        unreadableRecords++;
+        continue;
+      }
+      if(!draft.invoices.some(row=>{
+        const date=dateValue(row.date||'');
+        return date!==null&&date>=from&&date<=to;
+      }))continue;
       const check=auditDraftWithSoldier(draft,catalog);
       for(const invoice of check.invoices){
         if(invoice.date>=from&&invoice.date<=to)rows.push({
