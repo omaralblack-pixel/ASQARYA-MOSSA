@@ -78,7 +78,7 @@ export default function SoldierPageSorter({draft,catalog,onChange}:{
          <td>{row.value===null?'ناقص':money(row.value)}</td>
          <td>{[...row.transfers].join('، ')}</td>
        </tr>)}</tbody></table></div>}
-       {status?.status!=='match'&&status?.reasons?.length>0&&<p className="amber">
+       {status&&status.status!=='match'&&status.reasons.length>0&&<p className="amber">
          {status.reasons.slice(0,3).join(' · ')}</p>}
      </details>;
    })}
