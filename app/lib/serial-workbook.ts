@@ -123,7 +123,7 @@ function ensureStyles(files:Archive){
   const index=children(fills,'fill').length;
   const fill=element(doc,'fill'),pattern=element(doc,'patternFill'),fg=element(doc,'fgColor'),bg=element(doc,'bgColor');
   pattern.setAttribute('patternType','solid');fg.setAttribute('rgb',color);bg.setAttribute('indexed','64');
-  pattern.append(fg,bg);fill.appendChild(pattern);fills.appendChild(fill);
+  pattern.appendChild(fg);pattern.appendChild(bg);fill.appendChild(pattern);fills.appendChild(fill);
   fillsByState.set(state,index);
  }
  fills.setAttribute('count',String(children(fills,'fill').length));
