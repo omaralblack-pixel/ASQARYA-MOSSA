@@ -122,7 +122,8 @@ export function sortSoldierInvoicePages(draft:Draft,catalog:AuditCatalog):PageSo
    }else problem(row,'التوزيع اليدوي القديم لم يعد يطابق سطر SAP أو صفحات الفواتير؛ أعد اعتماده.');
  }
  for(const group of grouped.values()){
-   const pending=group.filter(row=>!allocations[row.key]);
+   // A stale manual approval is blocked, never silently replaced by automatic sorting.
+   const pending=group.filter(row=>!allocations[row.key]&&!originalManual.has(row.key));
    if(!pending.length)continue;
    const onePage=[...new Set(group.flatMap(row=>row.candidates))];
    if(onePage.length===1&&pending.every(row=>row.candidates.includes(onePage[0]))){

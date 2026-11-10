@@ -397,6 +397,12 @@ const fakePartial={...settled,soldierLineAllocations:{
  ...settled.soldierLineAllocations,[keys[0]]:{'1':10}}};
 assert.equal(auditDraftWithSoldier(fakePartial,threeCatalog).allMatched,false,
  'A forged or partial line distribution must block final match.');
+const invalidManualResort=sortSoldierInvoicePages(fakePartial,threeCatalog);
+assert.ok(invalidManualResort.unresolved.some(issue=>issue.key===keys[0]),
+ 'An outdated human-approved quantity must raise a review notice.');
+assert.equal(invalidManualResort.draft.soldierLineAllocations[keys[0]],undefined,
+ 'Automatic sorting may not silently overwrite an outdated manual allocation.');
+
 const invalidSerial=evaluateSerial(
  [{row:2,number:uncertain.invoices[0].number,amount:uncertain.invoices[0].amount,date:'2026-11-12'}],
  [{id:'partial',branch:'الجيزة',status:'match',payload:JSON.stringify({
