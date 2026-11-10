@@ -50,14 +50,16 @@ export function soldierLineParts(draft:Draft,transferId:string,line:TransferLine
      !Number.isFinite(pieces)||pieces<=0)||!same(sum(explicit),Math.abs(totalPieces)))return {};
    return explicit;
  }
- if(draft.soldierLineAllocations!==undefined)return {}; // Explicit sorted state: no guessed fallback.
- const fallback=draft.invoices.length===1?1:
-   Number(draft.pages?.['i:'+defaultCode]||draft.pages?.['s:'+line.sapCode]||0);
+ // Old saves could store an empty distribution even when there was only one page.
+ if(draft.invoices.length===1)
+   return draft.soldierManualLineKeys?.includes(key)?{}:{'1':Math.abs(totalPieces)};
+ if(draft.soldierLineAllocations!==undefined)return {};
+ const fallback=Number(draft.pages?.['i:'+defaultCode]||draft.pages?.['s:'+line.sapCode]||0);
  if(!Number.isSafeInteger(fallback)||fallback<1||fallback>draft.invoices.length)return {};
  return {[String(fallback)]:Math.abs(totalPieces)};
 }
 
-/** Deterministic classification from each blue invoice's actual item codes and quantities.
+/** Deterministic classification for the only page, or from each invoice's actual item codes and quantities.
  * Never assigns by invoice amount alone; repeated SKU across different SAP transfers
  * requires unique quantity evidence or an explicit human split/selection.
  */
@@ -81,7 +83,7 @@ export function sortSoldierInvoicePages(draft:Draft,catalog:AuditCatalog):PageSo
      try{pieces=convert(line,item)}catch{continue}
      if(!Number.isFinite(pieces)||Math.abs(pieces)<epsilon)continue;
      const alias=shared.get(sapCode);
-     const candidates=papers.flatMap((paper,i)=>{
+     const candidates=draft.invoices.length===1?[1]:papers.flatMap((paper,i)=>{
        const chosen=draft.invoices[i].sapInstitutionChoices?.[sapCode];
        const code=alias?chosen:item.code;
        if(alias&&(!chosen||!alias.codes.some(r=>r.code===chosen)))return [];

@@ -41,7 +41,7 @@ export default function SoldierPageSorter({draft,catalog,onChange}:{
  return <section className="panel no-print" id="soldier-page-sort">
    <div className="section-title">
      <div><h2>الجندي — فرز الأصناف إلى صفحات الفواتير الزرقاء</h2>
-       <p>يطابق أرقام المؤسسة والكميات بالحبة مع سطور SAP، ثم يحسب قيمة كل صفحة ويحفظ توزيع كل ترحيل.</p></div>
+       <p>إذا كان للكشف فاتورة واحدة، تُسند أصنافها إلى صفحة 1. عند تعدد الفواتير، يفرز الجندي الأصناف حسب البنود والكميات بالحبة.</p></div>
      <button type="button" className="button primary" onClick={()=>{
        onChange(proposed.draft);
        setError('');
@@ -63,11 +63,12 @@ export default function SoldierPageSorter({draft,catalog,onChange}:{
          transfers:new Set([...(old?.transfers||[]),line.transferNumber])});
      }
      const status=check?.invoices[index];
-     const total=groups.size&&[...groups.values()].every(row=>row.value!==null)
-       ?[...groups.values()].reduce((s,row)=>s+row.value!,0):null;
+     const total=status?.expected??null;
+     const paperDetailsId='soldier-paper-lines-'+invoice.id;
      return <details key={invoice.id} open={index===0} className="review-list">
        <summary>الفاتورة {page} · {invoice.number||'بدون رقم'} · {lines.length} سطر موزع
-         {' '}· {status?.status==='match'?'مطابق':status?.status==='difference'?'يوجد فرق':'بانتظار إكمال التدقيق'}</summary>
+         {' '}· {status?.status==='match'?'مطابق':status?.status==='difference'?'يوجد فرق':
+           status?.missingPaperLines?'بانتظار بنود الفاتورة':'بانتظار إكمال التدقيق'}</summary>
        <p className="hint">المبلغ الورقي: {invoice.amount||'غير مدخل'} د.أ
          {' '}· قيمة الأصناف المحسوبة: {total===null?'غير مكتملة':money(total)+' د.أ'}</p>
        {groups.size>0&&<div className="table-scroll"><table><thead><tr>
@@ -80,6 +81,10 @@ export default function SoldierPageSorter({draft,catalog,onChange}:{
        </tr>)}</tbody></table></div>}
        {status&&status.status!=='match'&&status.reasons.length>0&&<p className="amber">
          {status.reasons.slice(0,3).join(' · ')}</p>}
+       {status?.missingPaperLines&&<a className="text-button" href={'#'+paperDetailsId} onClick={()=>{
+         const details=document.getElementById(paperDetailsId);
+         if(details instanceof HTMLDetailsElement)details.open=true;
+       }}>إدخال بنود الفاتورة الورقية</a>}
      </details>;
    })}
    {proposed.unresolved.length>0&&<details open className="review-list">

@@ -326,6 +326,34 @@ console.log('PASS: all four duplicate institution numbers; explicit per-invoice 
 // Jundi smart invoice-page sorting: link actual SAP rows to the exact blue invoices,
 // never treat a price-only match or ambiguous transfer as proof.
 const {sortSoldierInvoicePages,soldierLineKey}=loadTs('app/lib/soldier-page-sort.ts');
+const singlePageWithoutPaper={
+  ...twoInvoices,
+  invoices:[{...draftForSoldier.invoices[0],amount:'71.600',auditLines:''}],
+  pages:{},soldierLineAllocations:{},
+};
+const singlePageSort=sortSoldierInvoicePages(singlePageWithoutPaper,soldierCatalog);
+assert.equal(singlePageSort.assigned,2);
+assert.deepEqual(singlePageSort.pageCounts,[2]);
+assert.deepEqual(singlePageSort.unresolved,[]);
+assert.deepEqual(singlePageSort.lines.map(row=>[row.page,row.pieces]),[[1,40],[1,12]]);
+assert.deepEqual(singlePageSort.draft.pages,{'i:11371486':'1','i:11064245':'1'});
+for(const draft of [singlePageWithoutPaper,singlePageSort.draft]){
+  const [invoice]=auditDraftWithSoldier(draft,soldierCatalog).invoices;
+  assert.equal(invoice.expected,71600);
+  assert.equal(invoice.status,'review','A known page and equal totals cannot verify missing paper quantities.');
+  assert.equal(invoice.missingPaperLines,true);
+  assert.deepEqual(invoice.transferNumbers,['2618001','2618002']);
+  assert.ok(!invoice.reasons.some(reason=>reason.includes('لم يُفرز')||reason.includes('لا توجد بنود SAP')));
+}
+assert.equal(auditDraftWithSoldier({...singlePageSort.draft,invoices:[
+  {...singlePageWithoutPaper.invoices[0],auditLines:'11371486\t40\n11064245\t12'},
+]},soldierCatalog).allMatched,true);
+const multiplePagesWithoutPaper={
+  ...twoInvoices,invoices:twoInvoices.invoices.map(invoice=>({...invoice,auditLines:''})),
+  pages:{},soldierLineAllocations:{},
+};
+assert.equal(sortSoldierInvoicePages(multiplePagesWithoutPaper,soldierCatalog).assigned,0);
+assert.equal(auditDraftWithSoldier(multiplePagesWithoutPaper,soldierCatalog).unassigned.length,2);
 const {evaluateSerial}=loadTs('app/lib/serial-soldier.ts');
 const threeCatalog={
  institution:[{code:'11371486',name:'cream',price:1550},
