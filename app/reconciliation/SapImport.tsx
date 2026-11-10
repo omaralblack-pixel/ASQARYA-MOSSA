@@ -1,13 +1,13 @@
 'use client';
 
-import {useEffect,useState,type ChangeEvent} from 'react';
+import {useEffect,useMemo,useState,type ChangeEvent} from 'react';
 import {Search} from 'lucide-react';
 import {digits,invoiceDocumentNo,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
 import {deleteSavedSapImport,maxSapFileBytes,readSavedSapImport,saveSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 
-type SavedRecord={id:string;branch:string;payload:string};
-type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;originalRecordId?:string};
+type SavedRecord={id:string;payload:string};
+type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;unsavedMembers:SapImportGroup['members'];originalRecordId?:string};
 
 function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):PreviewGroup[]{
   const byTransfer=new Map<string,string>();
@@ -28,17 +28,19 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
     const transferIds=group.draft.transfers.flatMap(transfer=>transferNumbers(transfer.number).flatMap(number=>[...(transferOwners.get(number)||[])]));
     const invoiceIds=group.draft.invoices.flatMap(invoice=>[...(byInvoice.get(invoiceDocumentNo(invoice.number||''))||[])]);
     const savedIds=[...new Set([...transferIds,...invoiceIds])];
-    const allTransfersSaved=group.draft.transfers.every(transfer=>transferNumbers(transfer.number).every(number=>transferOwners.has(number)));
+    const unsavedMembers=group.members.filter(member=>!transferOwners.has(member.transfer.number));
+    const allTransfersSaved=unsavedMembers.length===0;
     const original=group.members[0].canceledTransferNo;
-    return {...group,savedIds,allTransfersSaved,originalRecordId:original?byTransfer.get(original):undefined};
+    return {...group,savedIds,allTransfersSaved,unsavedMembers,originalRecordId:original?byTransfer.get(original):undefined};
   });
 }
 
 const searchText=(value:string)=>digits(value).trim().toLowerCase().replace(/[أإآٱ]/g,'ا').replace(/[\u064B-\u065F\u0670ـ]/g,'');
 const keyOf=(group:SapImportGroup)=>group.draft.transfers[0].number;
 const isReady=(group:PreviewGroup)=>!group.reversal&&!group.issues.length&&!group.savedIds.length;
-export default function SapImport({branches,readRecords,saveDraft,openDraft,openSaved,onPreview}:{
+export default function SapImport({branches,records,readRecords,saveDraft,openDraft,openSaved,onPreview}:{
   branches:string[];
+  records:SavedRecord[];
   readRecords:()=>Promise<SavedRecord[]>;
   saveDraft:(draft:Draft)=>Promise<string>;
   openDraft:(draft:Draft)=>void;
@@ -49,30 +51,30 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
   const [savedFile,setSavedFile]=useState<SavedSapImport>();
   const [loadingFile,setLoadingFile]=useState(true);
   const [fileError,setFileError]=useState('');
-  const [groups,setGroups]=useState<PreviewGroup[]>([]);
+  const [importedGroups,setGroups]=useState<SapImportGroup[]>([]);
   const [issues,setIssues]=useState<string[]>([]);
   const [selected,setSelected]=useState<string[]>([]);
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState('');
   const [notification,setNotification]=useState<{text:string;error:boolean}|null>(null);
   const [errors,setErrors]=useState<Record<string,string>>({});
-  const [filter,setFilter]=useState('all');
+  const [filter,setFilter]=useState('pending');
   const [query,setQuery]=useState('');
+  const groups=useMemo(()=>compareWithSaved(importedGroups,records),[importedGroups,records]);
+  const pending=groups.filter(group=>!group.reversal&&!group.allTransfersSaved);
   const ready=groups.filter(isReady);
   const selectedGroups=ready.filter(group=>selected.includes(keyOf(group)));
   const search=searchText(query);
+  const visibleMembers=(group:PreviewGroup)=>filter==='saved'||group.reversal?group.members:group.unsavedMembers;
   const matching=groups.filter(group=>!search||[
     group.draft.branch,
-    ...group.members.flatMap(member=>[member.transfer.number,member.branchLabel,member.canceledTransferNo||'']),
+    ...visibleMembers(group).flatMap(member=>[member.transfer.number,member.branchLabel,member.canceledTransferNo||'']),
     ...group.draft.invoices.map(invoice=>invoice.number),
   ].some(value=>searchText(value).includes(search)));
   const reversals=groups.filter(group=>group.reversal);
   const visibleReversals=matching.filter(group=>group.reversal);
-  const shown=matching.filter(group=>!group.reversal&&(filter==='all'||(
-    filter==='ready'?isReady(group):
-    filter==='saved'?group.allTransfersSaved:
-    !isReady(group)&&!group.allTransfersSaved
-  )));
+  const shown=matching.filter(group=>!group.reversal&&(filter==='saved'?group.allTransfersSaved:
+    !group.allTransfersSaved&&(filter==='pending'||(filter==='ready'?isReady(group):!isReady(group)))));
   const shownReady=shown.filter(isReady);
   const hiddenSelected=selectedGroups.filter(group=>!shown.includes(group)).length;
 
@@ -113,9 +115,9 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       setIssues(result.issues);
       const records=await readRecords();
       if(!isActive())return;
-      setGroups(compareWithSaved(result.groups,records));
+      setGroups(result.groups);
       onPreview(result.issues.length?[]:result.groups,records);
-      setFilter('all');
+      setFilter('pending');
       setQuery('');
     }catch(error){
       if(isActive())setIssues([error instanceof Error?error.message:'تعذّر تجهيز المعاينة']);
@@ -200,19 +202,17 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
         const key=keyOf(group);
         try{
           if(group.savedIds.length){
-            setGroups(previous=>previous.map(row=>keyOf(row)===key?group:row));
             throw Error('الترحيل أو الفاتورة محفوظة مسبقًا. افتحها من السجل.');
           }
           const id=await saveDraft(group.draft);
           saved++;
-          newlySaved.push({id,branch:group.draft.branch,payload:JSON.stringify(group.draft)});
-          setGroups(previous=>previous.map(row=>keyOf(row)===key?{...row,savedIds:[id],allTransfersSaved:true}:row));
+          newlySaved.push({id,payload:JSON.stringify(group.draft)});
         }catch(error){
           failed++;
           setErrors(previous=>({...previous,[key]:error instanceof Error?error.message:'تعذّر الحفظ'}));
         }
       }
-      onPreview(groups,[...records,...newlySaved]);
+      onPreview(importedGroups,[...records,...newlySaved]);
       setMessage('تم حفظ '+saved+' كشف'+(failed?'، و'+failed+' بحاجة لمراجعة.':'.'));
     }catch(error){
       setMessage(error instanceof Error?error.message:'تعذّر التحقق من السجل');
@@ -249,7 +249,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
     {groups.length>0&&<>
       <div className="table-controls">
         <div className="search"><Search size={16}/><input type="search" aria-label="بحث في نتائج استيراد SAP" placeholder="ابحث برقم الترحيل أو الفاتورة أو الفرع" value={query} onChange={event=>{setQuery(event.target.value);setSelected([])}}/></div>
-        <button className="button secondary" type="button" aria-pressed={filter==='reversal'} onClick={()=>setFilter(filter==='reversal'?'all':'reversal')}>
+        <button className="button secondary" type="button" aria-pressed={filter==='reversal'} onClick={()=>setFilter(filter==='reversal'?'pending':'reversal')}>
           {filter==='reversal'?'رجوع لمعاينة الاستيراد':'الترحيلات الملغاة ('+reversals.length+')'}
         </button>
       </div>
@@ -275,7 +275,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
       </>:<>
       <div className="table-controls">
         <select aria-label="حالة الاستيراد" value={filter} onChange={event=>setFilter(event.target.value)}>
-          <option value="all">كل الكشوف ({groups.length-reversals.length})</option>
+          <option value="pending">غير محفوظة في السجل ({pending.length})</option>
           <option value="ready">جاهزة للحفظ ({ready.length})</option>
           <option value="saved">مسجّلة سابقًا</option>
           <option value="review">بحاجة لمراجعة</option>
@@ -290,16 +290,17 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
         <thead><tr><th>تحديد</th><th>الترحيلات</th><th>الفرع</th><th>الفواتير الزرقاء</th><th>البنود</th><th>الحالة</th><th>فتح</th></tr></thead>
         <tbody>{shown.map(group=>{
           const key=keyOf(group);
+          const members=visibleMembers(group);
           return <tr key={key}>
             <td>{isReady(group)&&<input className="sap-import-check" type="checkbox" aria-label={'تحديد كشف '+key}
               checked={selected.includes(key)} disabled={busy||!!issues.length}
               onChange={event=>setSelected(previous=>event.target.checked?[...previous,key]:previous.filter(item=>item!==key))}/>}</td>
-            <td>{group.members.map(item=><details key={item.transfer.number}>
+            <td>{members.map(item=><details key={item.transfer.number}>
               <summary><code>{item.transfer.number}</code></summary><p dir="auto">{item.remarks||'بدون Remarks'}</p>
             </details>)}</td>
             <td>{group.draft.branch||group.members[0].branchLabel||'—'}</td>
             <td dir="ltr">{group.draft.invoices.map(invoice=>invoice.number).filter(Boolean).join('، ')||'—'}</td>
-            <td>{group.members.reduce((count,item)=>count+item.lineCount,0)}</td>
+            <td>{members.reduce((count,item)=>count+item.lineCount,0)}</td>
             <td>{group.allTransfersSaved?'محفوظ':group.savedIds.length?'مرتبط بسجل سابق':group.issues.join('، ')||
               (group.draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'جاهز للحفظ':'ترحيل بلا فاتورة زرقاء')}
               {errors[key]&&<p className="red">{errors[key]}</p>}</td>
@@ -309,7 +310,7 @@ export default function SapImport({branches,readRecords,saveDraft,openDraft,open
           </tr>;
         })}</tbody>
       </table></div>
-      {!shown.length&&<p className="hint">{search?'ما في كشوف بتطابق البحث والفلتر.':'ما في كشوف بهالحالة.'}</p>}
+      {!shown.length&&<p className="hint">{search?'ما في كشوف بتطابق البحث والفلتر.':filter==='pending'?'كل الترحيلات في هذه القائمة محفوظة بالسجل.':'ما في كشوف بهالحالة.'}</p>}
       </>}
     </>}
   </details>{notification&&<div className="modal-backdrop notification-backdrop"><section className="modal panel notification-dialog" role="alertdialog" aria-modal="true" aria-label={notification.error?'تنبيه':'إشعار'}><h2>{notification.error?'تنبيه':'إشعار'}</h2><p>{notification.text}</p><div className="notification-actions"><button type="button" className="button primary" onClick={()=>setNotification(null)}>حسنًا</button></div></section></div>}</>;
