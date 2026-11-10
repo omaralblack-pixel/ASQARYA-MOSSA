@@ -100,6 +100,8 @@ const pageAmount=selectedInvoice?fils(selectedInvoice.amount):null;
 const expected=selectedPage===null?result?.expected??null:pageExpected;
 const paperAmount=selectedPage===null?result?.total??null:pageAmount;
 const difference=paperAmount===null||expected===null?null:paperAmount-expected;
+const selectedSoldierMatch=selectedPage===null?soldier?.allMatched:soldier?.invoices[selectedPage-1]?.status==='match';
+const comparisonStatus=difference===null?'review':difference!==0&&!(selectedPage===null&&acceptedDifference)?'difference':selectedSoldierMatch?'match':'review';
 const acceptedDifference=!!result&&'acceptedDifference' in result&&result.acceptedDifference===true;
 const comparisonLabel=selectedPage===null?'مطابقة إجمالي الكشف':'مطابقة الفاتورة '+selectedPage;
 const pageOptions=[...new Set([0,...(draft?.invoices.map((_,i)=>i+1)||[]),...sortedRows.map(row=>getPage(row.key))])].sort((a,b)=>a-b);const monthResult=useMemo(()=>monthly(serial,month,columns,filtered,dateFormat,records),[serial,month,columns,filtered,dateFormat,records]);
@@ -550,7 +552,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
     <strong>فرق القيمة: {money(difference)} دينار</strong>
     <div className="blue-comparison">
       <span>{comparisonLabel}</span>
-      {difference!==null?<Badge state={difference===0||(selectedPage===null&&acceptedDifference)?(selectedPage===null?soldier?.allMatched:soldier?.invoices[selectedPage-1]?.status==='match')?'match':difference===0?'review':'difference'} label={difference===0&&!soldier?.allMatched?'بانتظار تدقيق الجندي':selectedPage===null&&acceptedDifference&&soldier?.allMatched?'مطابق باعتمادك':undefined}/>:<small>{expected===null?'قيمة الأصناف غير مكتملة':'أدخل مبلغ الفاتورة الورقية لإظهار النتيجة'}</small>}
+      {difference!==null?<Badge state={comparisonStatus} label={difference===0&&!soldier?.allMatched?'بانتظار تدقيق الجندي':selectedPage===null&&acceptedDifference&&soldier?.allMatched?'مطابق باعتمادك':undefined}/>:<small>{expected===null?'قيمة الأصناف غير مكتملة':'أدخل مبلغ الفاتورة الورقية لإظهار النتيجة'}</small>}
       {selectedInvoice&&<button type="button" className="button secondary small no-print" disabled={busy||difference!==0} onClick={checkInvoicePage}><Check size={14}/>تشييك كل أصناف الفاتورة</button>}
     </div>
   </>}
