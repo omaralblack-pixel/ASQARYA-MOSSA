@@ -270,6 +270,10 @@ assert.equal(noChoice.invoices[0].status,'review');
 assert.deepEqual(noChoice.invoices[0].sharedCodes[0].codes.map(x=>x.code),
  ['11367181','94234612']);
 assert.match(noChoice.invoices[0].reasons.join('|'),/يوجد صنف برقمين للمؤسسة/);
+const paperOnly=auditDraftWithSoldier({...sharedDraft,transfers:[]},confirmedCatalog);
+assert.equal(paperOnly.invoices[0].sharedCodes.some(row=>row.sapCode==='FVL00016'),true,
+ 'A dual-number warning must also appear when the item is on the paper but SAP transfer is missing.');
+assert.equal(paperOnly.allMatched,false);
 const withChoice={...sharedDraft,invoices:[{...sharedDraft.invoices[0],
  sapInstitutionChoices:{FVL00016:'94234612'}}]};
 assert.equal(auditDraftWithSoldier(withChoice,confirmedCatalog).invoices[0].status,'match');

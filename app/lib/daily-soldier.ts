@@ -60,14 +60,13 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
     })).filter(transfer=>transfer.paste.length>0);
     const text=invoiceText(invoice);
     const choices=invoice.sapInstitutionChoices||{};
-    const sharedCodes:SoldierSharedChoice[]=[...new Set(selected.flatMap(transfer=>
-      parseTransfer(transfer.paste,{allowReverse:true}).lines.map(line=>line.sapCode.toUpperCase())))]
-      .flatMap(code=>{
-        const shared=sharedBySap.get(code);
-        return shared?[{...shared,chosen:choices[code]||''}]:[];
-      });
     const paperCodes=new Set(text.replace(/\r/g,'').split('\n')
       .map(line=>digits(line.split('\t')[0]?.trim()||'')).filter(code=>/^\d{8}$/.test(code)));
+    const transferredCodes=new Set(selected.flatMap(transfer=>
+      parseTransfer(transfer.paste,{allowReverse:true}).lines.map(line=>line.sapCode.toUpperCase())));
+    const sharedCodes:SoldierSharedChoice[]=[...sharedBySap.values()]
+      .filter(row=>transferredCodes.has(row.sapCode)||row.codes.some(option=>paperCodes.has(option.code)))
+      .map(row=>({...row,chosen:choices[row.sapCode]||''}));
     const sharedReasons:string[]=[];
     for(const shared of sharedCodes){
       const codes=shared.codes.map(row=>row.code);
