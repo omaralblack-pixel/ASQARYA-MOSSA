@@ -1,7 +1,7 @@
 'use client';
 
 import {useEffect,useRef,useState,type FormEvent} from 'react';
-import {confirmedSapLinkConflicts,importAuditInstitution,importAuditSap,validateAuditCatalog,type AuditCatalog} from '../lib/audit-catalog';
+import {confirmedSapLinkConflicts,sharedInstitutionOptions,importAuditInstitution,importAuditSap,validateAuditCatalog,type AuditCatalog} from '../lib/audit-catalog';
 import {digits,fils,money,numeric} from '../lib/reconcile';
 
 type SavedCatalog={catalog:AuditCatalog;version:string|null};
@@ -62,7 +62,10 @@ export default function AuditCatalogEditor({onCatalog}:{onCatalog:(catalog:Audit
         if(edit.pack.trim()&&pack===null||edit.kg.trim()&&kg===null)throw Error('راجع الشدّة ووزن الحبة.');
         if(institutionCode&&!catalog.institution.some(row=>row.code===institutionCode))
           throw Error('أضف رقم المؤسسة إلى القائمة السفلية قبل ربطه.');
-        return {...catalog,sap:[...catalog.sap.filter(row=>row.code!==code),{code,name,unit:edit.unit,pack,kg,institutionCode}]};
+        const original=catalog.sap.find(row=>row.code===code);
+        return {...catalog,sap:[...catalog.sap.filter(row=>row.code!==code),
+          {code,name,unit:edit.unit,pack,kg,institutionCode,
+            institutionAliases:original?.institutionAliases?.filter(alias=>alias!==institutionCode)}]};
       }
       const price=edit.price.trim()?fils(edit.price):null;
       if(edit.price.trim()&&price===null)throw Error('راجع سعر الحبة بالدينار.');
@@ -75,14 +78,17 @@ export default function AuditCatalogEditor({onCatalog}:{onCatalog:(catalog:Audit
     void save(catalog=>side==='sap'
       ? {...catalog,sap:catalog.sap.filter(row=>row.code!==code)}
       : {...catalog,institution:catalog.institution.filter(row=>row.code!==code),
-        sap:catalog.sap.map(row=>row.institutionCode===code?{...row,institutionCode:''}:row)});
+        sap:catalog.sap.map(row=>({...row,
+          institutionCode:row.institutionCode===code?'':row.institutionCode,
+          institutionAliases:row.institutionAliases?.filter(alias=>alias!==code)}))});
   }
 
   const catalog=saved?.catalog;
   const conflicts=catalog?confirmedSapLinkConflicts(catalog):[];
+  const shared=catalog?sharedInstitutionOptions(catalog):[];
   const unitsPending=catalog?.sap.filter(row=>row.institutionCode&&!row.unit)||[];
   const institutionByCode=new Map(catalog?.institution.map(row=>[row.code,row]));
-  const linkedCodes=new Set(catalog?.sap.map(row=>row.institutionCode));
+  const linkedCodes=new Set(catalog?.sap.flatMap(row=>[row.institutionCode,...(row.institutionAliases||[])]));
   const matches=(...values:string[])=>values.join(' ').toLowerCase().includes(query.trim().toLowerCase());
   const field=(key:Exclude<keyof Edit,'existing'>,label:string)=>{
     if(!edit)return null;
@@ -133,6 +139,14 @@ export default function AuditCatalogEditor({onCatalog}:{onCatalog:(catalog:Audit
         <button className="button primary" disabled={busy}>حفظ الصنف</button>{' '}
         <button className="button secondary" type="button" disabled={busy} onClick={()=>setEdit(null)}>إغلاق</button>
       </form>}
+      {shared.length>0&&<section className="panel">
+        <h3>أصناف SAP المرتبطة برقمين للمؤسسة ({shared.length})</h3>
+        <p className="hint">الصنف له كود SAP واحد، ورقمان معتمدان لدى المؤسسة. الجندي ينبهك عند ظهوره في فاتورة ويطلب منك اختيار الرقم الموجود على الفاتورة قبل اعتماد المطابقة.</p>
+        <div className="table-scroll"><table><thead><tr><th>كود SAP</th><th>أرقام مادة المؤسسة</th></tr></thead>
+          <tbody>{shared.map(row=><tr key={row.sapCode}><td>{row.sapCode}</td>
+            <td>{row.codes.map(option=><p key={option.code}>{option.code} — {option.name}</p>)}</td>
+          </tr>)}</tbody></table></div>
+      </section>}
       {(conflicts.length>0||unitsPending.length>0)&&<section className="panel">
         <h3>روابط مؤكدة تحتاج إكمال بيانات SAP</h3>
         <p className="hint">أرقام المؤسسة وكود SAP مؤكدة منك، لكن وحدة SAP وشدّتها لا تُستنتج من تعبئة كرتونة المؤسسة. لا يُعتمد الصنف حتى تكتمل بيانات التحويل.</p>
@@ -150,7 +164,10 @@ export default function AuditCatalogEditor({onCatalog}:{onCatalog:(catalog:Audit
           {catalog.sap.filter(row=>matches(row.code,row.name,row.institutionCode,institutionByCode.get(row.institutionCode)?.name||'')).map(row=><tr key={row.code}>
             <td>{row.code}</td><td>{row.name}</td><td>{row.unit||'بانتظار وحدة SAP'}</td><td>{row.pack??(row.unit==='Carton'?'مطلوبة':'—')}</td>
             <td>{row.kg??(row.unit==='KG'?'مطلوب':'—')}</td>
-            <td>{institutionByCode.has(row.institutionCode)?row.institutionCode+' · '+institutionByCode.get(row.institutionCode)?.name:'بحاجة إلى ربط'}</td>
+            <td>{institutionByCode.has(row.institutionCode)?row.institutionCode+' · '+institutionByCode.get(row.institutionCode)?.name:'بحاجة إلى ربط'}
+              {(row.institutionAliases||[]).map(alias=><p key={alias} className="hint">
+                رقم مؤسسة إضافي: {alias} · {institutionByCode.get(alias)?.name||'غير معروف'}
+              </p>)}</td>
             <td><button type="button" className="button small secondary" disabled={busy} onClick={()=>setEdit({
               ...blank('sap'),existing:true,code:row.code,name:row.name,unit:row.unit,pack:String(row.pack??''),kg:String(row.kg??''),link:row.institutionCode,
             })}>تعديل / ربط</button>{' '}

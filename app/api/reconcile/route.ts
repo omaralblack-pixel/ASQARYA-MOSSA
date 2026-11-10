@@ -1,4 +1,4 @@
-import {initialAuditCatalog,includeOfficialInstitution2026,includeConfirmedSapLinks,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
+import {initialAuditCatalog,includeOfficialInstitution2026,includeConfirmedSapLinks,includeSharedInstitutionNumbers,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {auditDraftWithSoldier,dailySoldierRows} from '../../lib/daily-soldier';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
@@ -19,7 +19,7 @@ async function currentSoldierCatalogEnvelope():Promise<{version:string|null;cata
  if(!row)return {version:null,catalog:initialAuditCatalog(await refs())};
  const previous=JSON.parse(row.value) as {version:string;catalog:AuditCatalog};
  if(!validateAuditCatalog(previous.catalog))throw Error('مرجع الجندي المحفوظ غير صالح؛ أصلحه قبل اعتماد أي مطابقة.');
- const upgraded=includeConfirmedSapLinks(includeOfficialInstitution2026(previous.catalog));
+ const upgraded=includeSharedInstitutionNumbers(includeConfirmedSapLinks(includeOfficialInstitution2026(previous.catalog)));
  if(upgraded===previous.catalog)return previous;
  // Optimistic one-time migration. Preserve custom links, prices, and deletions.
  const next={version:crypto.randomUUID(),catalog:upgraded};
@@ -114,6 +114,11 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
         (invoice.title !== undefined && (typeof invoice.title !== 'string' || invoice.title.length > 80)) ||
         typeof invoice.amount !== 'string' || invoice.amount.length > 30 || typeof invoice.complete !== 'boolean' ||
         (invoice.auditLines !== undefined && (typeof invoice.auditLines !== 'string' || invoice.auditLines.length > 30000)) ||
+        (invoice.sapInstitutionChoices !== undefined && (!invoice.sapInstitutionChoices ||
+          typeof invoice.sapInstitutionChoices !== 'object'||Array.isArray(invoice.sapInstitutionChoices)||
+          Object.keys(invoice.sapInstitutionChoices).length>100||
+          Object.entries(invoice.sapInstitutionChoices).some(([sap,code])=>
+            !/^[A-Z]{2,6}\d{3,10}$/.test(sap)||typeof code!=='string'||!/^\d{8}$/.test(code)))) ||
         !invoice.quantities || typeof invoice.quantities !== 'object' || Array.isArray(invoice.quantities) ||
         Object.keys(invoice.quantities).length > 500 ||
         Object.values(invoice.quantities).some(value => typeof value !== 'string' || value.length > 40) ||

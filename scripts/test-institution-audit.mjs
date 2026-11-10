@@ -223,9 +223,11 @@ const collisionPairs=[
 ];
 const collisions=confirmedSapLinkConflicts(confirmedCatalog);
 for(const [code,current,requested] of collisionPairs){
- assert.equal(confirmedCatalog.sap.find(row=>row.code===code)?.institutionCode,current,
-  'Prior SAP mapping must not be reassigned without conflict approval: '+code);
- assert.ok(collisions.some(row=>row.code===code&&row.current===current&&row.requested===requested));
+ const row=confirmedCatalog.sap.find(row=>row.code===code);
+ assert.equal(row?.institutionCode,current,'Existing SAP primary institution number must be preserved: '+code);
+ assert.deepEqual(row?.institutionAliases,[requested],
+  'The confirmed second institution code must be available for invoice-specific selection: '+code);
+ assert.equal(collisions.some(row=>row.code===code),false,'Dual codes are not unresolved conflicts');
 }
 assert.equal(confirmedCatalog.confirmedLinksVersion,1);
 const withoutMarker={...confirmedCatalog,confirmedLinksVersion:undefined};
@@ -248,3 +250,60 @@ assert.equal(auditInstitutionTransfers([
  transfer('2618112',[['CFC00003','farfalle','1','Carton','001','011']])
 ],catalogAuditReference(importedUnitCatalog)).valid,true);
 console.log('PASS: user-confirmed mapping imports without SAP unit assumptions; collisions preserve historical codes; missing UoM blocks approval.');
+
+
+// A real invoice must choose which of the two institution numbers is printed,
+// and the choice is scoped to that invoice, never to the shared SAP master.
+const {catalogAuditReferenceForInvoice,sharedInstitutionOptions,includeSharedInstitutionNumbers}=loadTs('app/lib/audit-catalog.ts');
+assert.equal(sharedInstitutionOptions(confirmedCatalog).length,4);
+assert.equal(validateAuditCatalog(confirmedCatalog),true);
+const sharedFvl=confirmedCatalog.sap.find(row=>row.code==='FVL00016');
+assert.equal(sharedFvl.institutionCode,'11367181');
+assert.deepEqual(sharedFvl.institutionAliases,['94234612']);
+const singleShared=transfer('2618200',[['FVL00016','mango 1kg','1','Carton','001','011']]);
+const sharedDraft={
+ ...draftForSoldier,transfers:[singleShared],
+ invoices:[auditInv('p-mango','2622200000','2026-11-01','31.840','94234612\t16')],
+};
+const noChoice=auditDraftWithSoldier(sharedDraft,confirmedCatalog);
+assert.equal(noChoice.invoices[0].status,'review');
+assert.deepEqual(noChoice.invoices[0].sharedCodes[0].codes.map(x=>x.code),
+ ['11367181','94234612']);
+assert.match(noChoice.invoices[0].reasons.join('|'),/يوجد صنف برقمين للمؤسسة/);
+const withChoice={...sharedDraft,invoices:[{...sharedDraft.invoices[0],
+ sapInstitutionChoices:{FVL00016:'94234612'}}]};
+assert.equal(auditDraftWithSoldier(withChoice,confirmedCatalog).invoices[0].status,'match');
+assert.equal(auditDraftWithSoldier(withChoice,confirmedCatalog).allMatched,true);
+assert.equal(catalogAuditReferenceForInvoice(confirmedCatalog,{FVL00016:'94234612'})
+ .find(row=>row.code==='94234612').sapCode,'FVL00016');
+assert.equal(catalogAuditReference(confirmedCatalog).find(row=>row.code==='11367181').sapCode,'FVL00016',
+ 'The original mapping must not be overwritten by invoice choice');
+assert.equal(auditDraftWithSoldier({...sharedDraft,invoices:[
+ {...sharedDraft.invoices[0],sapInstitutionChoices:{FVL00016:'11367181'}}]},confirmedCatalog).allMatched,false,
+ 'Chosen number absent from pasted blue invoice must not pass');
+assert.equal(auditDraftWithSoldier({...sharedDraft,invoices:[
+ {...sharedDraft.invoices[0],sapInstitutionChoices:{FVL00016:'99999999'}}]},confirmedCatalog).allMatched,false,
+ 'Unapproved institution alias must not pass');
+assert.equal(auditDraftWithSoldier({...withChoice,invoices:[
+ {...withChoice.invoices[0],auditLines:'94234612\t16\n11367181\t16'}]},confirmedCatalog).allMatched,false,
+ 'Both numbers on the same paper must not be silently collapsed');
+const secondPaper={...sharedDraft,invoices:[
+ {...sharedDraft.invoices[0],number:'2622200001',auditLines:'11367181\t16',
+   sapInstitutionChoices:{FVL00016:'11367181'}}]};
+const withBothPrices={...confirmedCatalog,
+ institution:confirmedCatalog.institution.map(row=>row.code==='11367181'?{...row,price:1990}:row)};
+assert.equal(auditDraftWithSoldier(secondPaper,withBothPrices).allMatched,true,
+ 'A distinct invoice can approve the original institution number');
+assert.equal(auditDraftWithSoldier(withChoice,withBothPrices).allMatched,true,
+ 'Previous invoice can separately approve the alternate number');
+const dailyShared=dailySoldierRows([
+ {id:'p1',branch:'الجيزة',payload:JSON.stringify(secondPaper)},
+ {id:'p2',branch:'الجيزة',payload:JSON.stringify(withChoice)},
+],withBothPrices,'2026-11-01');
+assert.equal(dailyShared.counts.matched,2);
+assert.equal(dailyShared.rows.length,2);
+const noRepeat=includeSharedInstitutionNumbers({...confirmedCatalog,sharedInstitutionVersion:undefined});
+assert.equal(noRepeat.sap.find(row=>row.code==='FVL00016').institutionAliases.length,1);
+assert.equal(includeSharedInstitutionNumbers(confirmedCatalog),confirmedCatalog,
+ 'Reopening a catalog must not duplicate the alternative item code');
+console.log('PASS: all four duplicate institution numbers; explicit per-invoice choices, individual prices and cross-invoice isolation.');

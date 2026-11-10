@@ -1,13 +1,17 @@
-import {catalogAuditReference,type AuditCatalog} from './audit-catalog';
+import {catalogAuditReference,catalogAuditReferenceForInvoice,sharedInstitutionOptions,type AuditCatalog} from './audit-catalog';
 import {auditInstitutionTransfers,auditInvoiceQuantities} from './institution-audit';
 import {dateValue,digits,fils,invoiceDocumentNo,pageNumber,parseTransfer,sapReferences,transferNumbers,type Draft,type Transfer,type TransferLine} from './reconcile';
 
 /** The invoice date, not the transfer date or the group creation date, owns the daily audit. */
 export type SoldierStatus='match'|'review'|'difference';
+export type SoldierSharedChoice={
+  sapCode:string;sapName:string;chosen:string;
+  codes:{code:string;name:string;price:number|null}[];
+};
 export type SoldierInvoice={
   id:string; number:string; date:string; amount:number|null; expected:number|null;
   status:SoldierStatus; reasons:string[]; transferNumbers:string[];
-  quantityDifferences:number; missingPaperLines:boolean;
+  quantityDifferences:number; missingPaperLines:boolean;sharedCodes:SoldierSharedChoice[];
 };
 export type SoldierResult={allMatched:boolean;invoices:SoldierInvoice[];scopeIssues:string[];unassigned:string[]};
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
@@ -27,6 +31,7 @@ function transferPaste(lines:TransferLine[]){
  */
 export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierResult {
   const reference=catalogAuditReference(catalog);
+  const sharedBySap=new Map(sharedInstitutionOptions(catalog).map(row=>[row.sapCode,row]));
   const bySap=new Map(sapReferences(reference.filter(item=>item.active)).map(item=>[item.sapCode.toUpperCase(),item]));
   const scope=auditInstitutionTransfers(draft.transfers||[],reference);
   const scopeIssues=scope.issues.map(issue=>issue.message);
@@ -54,7 +59,33 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
       ...transfer,paste:transferPaste(assignedLines.get(transfer.id)||[]),
     })).filter(transfer=>transfer.paste.length>0);
     const text=invoiceText(invoice);
-    const audited=auditInvoiceQuantities(selected,reference,text,invoice.amount||'');
+    const choices=invoice.sapInstitutionChoices||{};
+    const sharedCodes:SoldierSharedChoice=[...new Set(selected.flatMap(transfer=>
+      parseTransfer(transfer.paste,{allowReverse:true}).lines.map(line=>line.sapCode.toUpperCase())))]
+      .flatMap(code=>{
+        const shared=sharedBySap.get(code);
+        return shared?[{...shared,chosen:choices[code]||''}]:[];
+      });
+    const paperCodes=new Set(text.replace(/\r/g,'').split('\n')
+      .map(line=>digits(line.split('\t')[0]?.trim()||'')).filter(code=>/^\d{8}$/.test(code)));
+    const sharedReasons:string[]=[];
+    for(const shared of sharedCodes){
+      const codes=shared.codes.map(row=>row.code);
+      if(!shared.chosen){
+        sharedReasons.push('يوجد صنف برقمين للمؤسسة: SAP '+shared.sapCode+' · '+codes.join(' أو ')+
+          '. اختر الرقم المطبوع على هذه الفاتورة واعتمده.');
+      }else if(!codes.includes(shared.chosen)){
+        sharedReasons.push('الرقم المعتمد لـ '+shared.sapCode+' غير موجود ضمن رقمي المؤسسة المعرّفين.');
+      }else if(!paperCodes.has(shared.chosen)){
+        sharedReasons.push('اعتمدت '+shared.chosen+' للصنف '+shared.sapCode+
+          ' لكنه غير موجود في بنود الفاتورة الزرقاء الملصقة.');
+      }
+      if(codes.filter(code=>paperCodes.has(code)).length>1)
+        sharedReasons.push('الفاتورة تحتوي الرقمين للصنف '+shared.sapCode+
+          '؛ يلزم توزيع بنودهما صراحة قبل اعتماد المطابقة.');
+    }
+    const invoiceReference=catalogAuditReferenceForInvoice(catalog,choices);
+    const audited=auditInvoiceQuantities(selected,invoiceReference,text,invoice.amount||'');
     const missingPaperLines=!text.trim();
     const reasons:string[]=[];
     if(!invoiceDocumentNo(invoice.number))reasons.push('رقم الفاتورة الزرقاء غير مكتمل.');
@@ -64,14 +95,14 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
     if(fils(invoice.amount||'')===null)reasons.push('مبلغ الفاتورة الزرقاء غير صالح أو مفقود.');
     if(audited.expectedTotal===null)reasons.push('لا يمكن حساب القيمة: أسعار أو أصناف SAP غير مكتملة.');
     if(!selected.length)reasons.push('لا توجد بنود SAP مسندة إلى هذه الفاتورة.');
-    reasons.push(...scopeIssues,...unassigned,...audited.issues);
+    reasons.push(...scopeIssues,...unassigned,...sharedReasons,...audited.issues);
     const differences=audited.rows.filter(row=>Math.abs(row.difference)>0.000001);
     for(const row of differences.slice(0,25)){
       reasons.push('فرق '+row.code+' · '+row.institutionName+': SAP '+row.sapPieces+' حبة، الفاتورة '+row.invoicePieces+' حبة.');
     }
     if(audited.amountDifference!==null&&audited.amountDifference!==0)
       reasons.push('فرق مالي بقيمة '+(audited.amountDifference/1000).toFixed(3)+' دينار.');
-    const hardReview=scopeIssues.length>0||unassigned.length>0||missingPaperLines||
+    const hardReview=scopeIssues.length>0||unassigned.length>0||sharedReasons.length>0||missingPaperLines||
       audited.issues.length>0||audited.expectedTotal===null||!selected.length||
       !invoiceDocumentNo(invoice.number)||!dateValue(invoice.date||'')||!invoice.complete||
       fils(invoice.amount||'')===null;
@@ -84,7 +115,7 @@ export function auditDraftWithSoldier(draft:Draft,catalog:AuditCatalog):SoldierR
       reasons:[...new Set(reasons)].slice(0,60),
       transferNumbers:[...new Set((draft.transfers||[])
         .filter(transfer=>assignedLines.has(transfer.id)).flatMap(transfer=>transferNumbers(transfer.number)))],
-      quantityDifferences:differences.length,missingPaperLines,
+      quantityDifferences:differences.length,missingPaperLines,sharedCodes,
     };
   });
   return {allMatched:invoices.length>0&&scope.valid&&unassigned.length===0&&invoices.every(row=>row.status==='match'),

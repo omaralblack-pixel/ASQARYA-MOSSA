@@ -422,6 +422,23 @@ export default function InstantMatch({
                 onChange={e=>updateInvoice(item.id,{auditLines:e.target.value})}
                 placeholder={'رقم المادة\tالكمية\n11371486\t24'}/>
             </details>
+            {(soldier?.invoices[index]?.sharedCodes||[]).map(choice=><div key={choice.sapCode}
+              className="review-list" role="alert">
+              <p><AlertTriangle size={16}/> <b>يوجد صنف برقمين للمؤسسة</b> · SAP {choice.sapCode} — {choice.sapName}</p>
+              <label>اختر رقم المؤسسة الموجود على الفاتورة الزرقاء
+                <select aria-label={'اعتماد رقم المؤسسة للصنف '+choice.sapCode+' في الفاتورة '+(index+1)}
+                  value={item.sapInstitutionChoices?.[choice.sapCode]||''}
+                  onChange={e=>updateInvoice(item.id,{sapInstitutionChoices:{
+                    ...(item.sapInstitutionChoices||{}),[choice.sapCode]:e.target.value,
+                  }})}>
+                  <option value="">اعتماد أحد الرقمين مطلوب</option>
+                  {choice.codes.map(option=><option key={option.code} value={option.code}>
+                    {option.code} — {option.name}
+                  </option>)}
+                </select>
+              </label>
+              {choice.chosen&&<p className="hint">رقم هذه الفاتورة المعتمد: {choice.chosen}</p>}
+            </div>)}
             <p className="hint">الجندي: <b>{soldier?.invoices[index]?.status==='match'?'مطابق':
               soldier?.invoices[index]?.status==='difference'?'يوجد فرق':'بانتظار مراجعة'}</b>
               {soldier?.invoices[index]?.reasons?.[0]?' — '+soldier.invoices[index].reasons[0]:''}</p>

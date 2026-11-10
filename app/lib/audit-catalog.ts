@@ -4,10 +4,10 @@ import confirmedLinks from './confirmed-audit-links.json';
 import {digits, numeric, sapReferences, type Item} from './reconcile';
 
 export type SapCatalogRow = {
-  code:string; name:string; unit:string; pack:number|null; kg:number|null; institutionCode:string;
+  code:string; name:string; unit:string; pack:number|null; kg:number|null; institutionCode:string; institutionAliases?:string[];
 };
 export type InstitutionCatalogRow = {code:string; name:string; price:number|null};
-export type AuditCatalog = {sap:SapCatalogRow[]; institution:InstitutionCatalogRow[]; officialSeedVersion?:number; confirmedLinksVersion?:number};
+export type AuditCatalog = {sap:SapCatalogRow[]; institution:InstitutionCatalogRow[]; officialSeedVersion?:number; confirmedLinksVersion?:number; sharedInstitutionVersion?:number};
 const sapCode = /^[A-Z]{2,6}\d{3,10}$/;
 const institutionCode = /^\d{8}$/;
 const validName = (name:unknown) => typeof name==='string' && !!name.trim() && name.length<=400;
@@ -38,12 +38,47 @@ export function includeConfirmedSapLinks(catalog:AuditCatalog):AuditCatalog{
   }
   return {...catalog,confirmedLinksVersion:1,sap:[...sap.values()]};
 }
+/**
+ * The same SAP SKU can have two legitimate institution item numbers.
+ * Keep the original number as the default and add confirmed alternatives.
+ * Import only once so a later user edit/removal is not silently undone.
+ */
+export function includeSharedInstitutionNumbers(catalog:AuditCatalog):AuditCatalog {
+  if(catalog.sharedInstitutionVersion===1)return catalog;
+  const codes=new Set(catalog.institution.map(row=>row.code));
+  const sap=catalog.sap.map(row=>{
+    const alternate=userConfirmedLinks[row.code];
+    if(!alternate||!codes.has(alternate)||!row.institutionCode||row.institutionCode===alternate)return row;
+    if((row.institutionAliases||[]).includes(alternate))return row;
+    return {...row,institutionAliases:[...(row.institutionAliases||[]),alternate]};
+  });
+  return {...catalog,sharedInstitutionVersion:1,sap};
+}
+export function sharedInstitutionOptions(catalog:AuditCatalog){
+  const byCode=new Map(catalog.institution.map(row=>[row.code,row]));
+  return catalog.sap.flatMap(row=>{
+    const codes=[row.institutionCode,...(row.institutionAliases||[])].filter(code=>byCode.has(code));
+    return codes.length>1?[{sapCode:row.code,sapName:row.name,
+      codes:codes.map(code=>({code,name:byCode.get(code)!.name,price:byCode.get(code)!.price}))}]:[];
+  });
+}
+/** A per-invoice SAP mapping, without mutating the saved default or other invoices. */
+export function catalogAuditReferenceForInvoice(catalog:AuditCatalog,choices:Record<string,string>={}):Item[]{
+  const sap=catalog.sap.map(row=>{
+    const selected=choices[row.code];
+    const allowed=[row.institutionCode,...(row.institutionAliases||[])];
+    return selected&&allowed.includes(selected)?{...row,institutionCode:selected}:row;
+  });
+  return catalogAuditReference({...catalog,sap});
+}
 /** Conflicts remain visible even after the one-time additive migration. */
 export function confirmedSapLinkConflicts(catalog:AuditCatalog){
   const bySap=new Map(catalog.sap.map(row=>[row.code,row]));
   return Object.entries(userConfirmedLinks).flatMap(([code,requested])=>{
-    const current=bySap.get(code)?.institutionCode;
-    return current&&current!==requested?[{code,requested,current}]:[];
+    const currentRow=bySap.get(code);
+    const current=currentRow?.institutionCode;
+    return current&&current!==requested&&!(currentRow?.institutionAliases||[]).includes(requested)
+      ?[{code,requested,current}]:[];
   });
 }
 /**
@@ -81,7 +116,8 @@ export function initialAuditCatalog(reference:Item[]):AuditCatalog {
       institutionCode:row?.institutionCode || (institution.has(linked)?linked:''),
     });
   }
-  return includeConfirmedSapLinks(includeOfficialInstitution2026({sap:[...sap.values()],institution:[...institution.values()]}));
+  return includeSharedInstitutionNumbers(includeConfirmedSapLinks(includeOfficialInstitution2026({sap:[...sap.values()],institution:[...institution.values()]})));
+
 }
 
 export function catalogAuditReference(catalog:AuditCatalog):Item[] {
@@ -114,7 +150,11 @@ export function validateAuditCatalog(value:unknown):value is AuditCatalog {
   return sap.every(row=>row && typeof row.code==='string' && sapCode.test(row.code) &&
     validName(row.name) && ['','Piece','Carton','KG'].includes(row.unit) &&
     validNumber(row.pack,10000,true) && validNumber(row.kg,10000) &&
-    typeof row.institutionCode==='string' && (!row.institutionCode || institutionCode.test(row.institutionCode))) &&
+    typeof row.institutionCode==='string' && (!row.institutionCode || institutionCode.test(row.institutionCode)) &&
+    (row.institutionAliases===undefined||Array.isArray(row.institutionAliases)&&
+      row.institutionAliases.length<=15&&new Set(row.institutionAliases).size===row.institutionAliases.length&&
+      row.institutionAliases.every(code=>typeof code==='string'&&institutionCode.test(code)&&
+        code!==row.institutionCode&&institution.some(item=>item.code===code)))) &&
     institution.every(row=>row && typeof row.code==='string' && institutionCode.test(row.code) &&
       validName(row.name) && (row.price===0 || validNumber(row.price,100000000,true))) &&
     unique(sap) && unique(institution);
@@ -160,7 +200,7 @@ export function importAuditSap(input:string, catalog:AuditCatalog):AuditCatalog 
       throw Error('راجع كود SAP والاسم والوحدة والشدّة في السطر '+(i+1)+'.');
     if(linked&&!institutionCodes.has(target))throw Error('رقم المؤسسة '+target+' في السطر '+(i+1)+' غير موجود في قائمة المؤسسة.');
     seen.add(code);
-    rows.set(code,{code,name,unit,pack,kg,institutionCode:target});
+    rows.set(code,{code,name,unit,pack,kg,institutionCode:target,institutionAliases:previous?.institutionAliases});
   }
   if(!seen.size)throw Error('الصق بند SAP واحدًا على الأقل.');
   return {...catalog,sap:[...rows.values()]};

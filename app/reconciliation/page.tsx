@@ -520,6 +520,23 @@ return <div className="recon-app"><header className="topbar"><a className="brand
  value={inv.auditLines||''} onChange={e=>invoiceChange(i,{auditLines:e.target.value})}
  placeholder={'رقم المادة\tالكمية\n11371486\t24'}/>
  </details>
+ {(soldier?.invoices[i]?.sharedCodes||[]).map(choice=><div key={choice.sapCode}
+   className="review-list no-print" role="alert">
+   <p><AlertTriangle size={16}/> <b>يوجد صنف برقمين للمؤسسة</b> · SAP {choice.sapCode} — {choice.sapName}</p>
+   <label>اعتمد رقم مادة المؤسسة المكتوب على الفاتورة الزرقاء
+     <select aria-label={'اعتماد رقم المؤسسة للصنف '+choice.sapCode+' في الفاتورة '+(i+1)}
+       value={inv.sapInstitutionChoices?.[choice.sapCode]||''}
+       onChange={e=>invoiceChange(i,{sapInstitutionChoices:{
+         ...(inv.sapInstitutionChoices||{}),[choice.sapCode]:e.target.value,
+       }})}>
+       <option value="">اختر الرقم من الفاتورة — مطلوب قبل المطابقة</option>
+       {choice.codes.map(option=><option key={option.code} value={option.code}>
+         {option.code} — {option.name}
+       </option>)}
+     </select>
+   </label>
+   {choice.chosen&&<p className="hint">الرقم المعتمد لهذه الفاتورة: <b>{choice.chosen}</b>. الاختيار محفوظ مع الفاتورة فقط.</p>}
+ </div>)}
  <p className={'hint '+(soldier?.invoices[i]?.status==='match'?'':'amber')}>
  <b>الجندي: {soldier?.invoices[i]?.status==='match'?'مطابق بالأصناف والكميات والقيمة':
  soldier?.invoices[i]?.status==='difference'?'يوجد فرق':'بانتظار التدقيق'}</b>
