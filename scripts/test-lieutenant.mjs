@@ -49,6 +49,6 @@ assert.equal(repeated.issues.length,0);
 const excelEpoch=Date.UTC(1899,11,30);
 const excelSerial=Math.floor((Date.UTC(2026,10,1)-excelEpoch)/86400000);
 const excelRow=normal.replace('01/11/2026',String(excelSerial));
-const excelScan=parseLieutenantTransfers(en+'\\n'+excelRow,['21 — السرو']);
+const excelScan=parseLieutenantTransfers(en+'\n'+excelRow,['21 — السرو']);
 assert.equal(excelScan.transfers[0].transfer.date,'2026-11-01','Excel serial dates must be preserved');
 console.log('Lieutenant parser regressions passed');
