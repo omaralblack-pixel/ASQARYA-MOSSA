@@ -83,7 +83,9 @@ function rowsFrom(p:Package):{rows:SerialInput[]; errors:string[]}{
   const number=digits(invoice).replace(/\s/g,'');
   if(!/^\d{8,20}$/.test(number))errors.push('صف '+index+': رقم فاتورة مفقود أو غير صالح ('+(invoice||'فارغ')+').');
   if(!amount)errors.push('صف '+index+': مبلغ الفاتورة '+(number||'غير معروف')+' مفقود.');
-  result.push({row:index,number,amount,date:dateValue(text(getCell(row,'C'+index),p.shared))});
+  const originalTransfers=Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+index),p.shared))
+    .flatMap(raw=>raw.match(/\d{4,20}/g)||[]);
+  result.push({row:index,number,amount,date:dateValue(text(getCell(row,'C'+index),p.shared)),originalTransfers});
  }
  if(!result.length)errors.push('لم أعثر على أي فواتير صالحة في الشيت.');
  return {rows:result,errors};
@@ -148,70 +150,169 @@ function editCell(doc:Document,cell:Element,expected:string,shared:string[]){
  const is=element(doc,'is'),t=element(doc,'t');
  t.setAttribute('xml:space','preserve');setText(doc,t,expected);is.appendChild(t);cell.appendChild(is);
 }
+// A separate, non-authoritative audit sheet retains every warning for manual review.
+function appendAuditSheet(pkg:Package,report:SerialReport){
+ const workbook=readXml(pkg.files['xl/workbook.xml']);
+ const sheets=find(workbook,'sheets');
+ if(!sheets)throw Error('قائمة شيتات Excel الأصلية مفقودة.');
+ const relationships=readXml(pkg.files['xl/_rels/workbook.xml.rels']);
+ const contentTypes=readXml(pkg.files['[Content_Types].xml']);
+ const sheetIds=Array.from(workbook.getElementsByTagNameNS(NS,'sheet')).map(el=>Number(el.getAttribute('sheetId'))||0);
+ const sheetId=Math.max(0,...sheetIds)+1;
+ const usedIds=new Set(Array.from(relationships.documentElement.children).map(el=>el.getAttribute('Id')));
+ let relNumber=1;while(usedIds.has('rId'+relNumber))relNumber++;
+ const relId='rId'+relNumber;
+ let path='xl/worksheets/omar-audit.xml',suffix=2;
+ while(pkg.files[path])path='xl/worksheets/omar-audit-'+suffix+++'.xml';
+ const doc=new DOMParser().parseFromString('<worksheet xmlns="'+NS+'"><sheetData/></worksheet>','application/xml');
+ const data=find(doc,'sheetData')!;
+ let index=0;
+ function put(values:string[]){
+  index++;
+  const row=element(doc,'row');
+  row.setAttribute('r',String(index));
+  data.appendChild(row);
+  values.forEach((value,c)=>{
+   if(!value)return;
+   const cell=ensureCell(doc,row,c+1,index);
+   editCell(doc,cell,String(value),[]);
+  });
+ }
+ put(['تقرير مراجعة عمر — نسخة للمراجعة فقط، لا تغيّر قاعدة المشروع']);
+ put(['عدد فواتير سجى',String(report.rows.length),'واصل',String(report.count.received),'غير واصل',String(report.count.missing),'غير مؤكد',String(report.count.pending),'مراجعة',String(report.count.review)]);
+ put(['صف سجى','حالة المطابقة','رقم الفاتورة — عمر','المبلغ — عمر','رقم الفاتورة — سجى','المبلغ — سجى','ترحيلات عمر المرتبطة','ترحيلات المجموعة المعتمدة','الملاحظات']);
+ for(const row of report.rows)put([
+  String(row.row),row.state,row.omarNumber,row.omarAmount,row.number,row.amount,
+  serialColumns(row.transfers).filter(Boolean).join('، '),
+  [...new Set((row.unassignedTransfers||[]).map(t=>t.number))].join('، '),row.reason,
+ ]);
+ index++; // blank line separating invoice data from critical validation findings
+ put(['جميع أخطاء الفحص — لا تعني إيقاف تنزيل نسخة المراجعة']);
+ for(const issue of report.blockers)put([issue]);
+ if(report.legacyWarnings.length){
+  index++;
+  put(['تنبيهات المجموعات القديمة']);
+  for(const warning of report.legacyWarnings)put([warning]);
+ }
+ const sheet=element(workbook,'sheet');
+ sheet.setAttribute('name','مراجعة عمر');sheet.setAttribute('sheetId',String(sheetId));
+ sheet.setAttributeNS(REL,'r:id',relId);sheets.appendChild(sheet);
+ const relNS='http://schemas.openxmlformats.org/package/2006/relationships';
+ const rel=relationships.createElementNS(relNS,'Relationship');
+ rel.setAttribute('Id',relId);
+ rel.setAttribute('Type','http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet');
+ rel.setAttribute('Target',path.slice(3));
+ relationships.documentElement.appendChild(rel);
+ const ctNS='http://schemas.openxmlformats.org/package/2006/content-types';
+ const override=contentTypes.createElementNS(ctNS,'Override');
+ override.setAttribute('PartName','/'+path);
+ override.setAttribute('ContentType','application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
+ contentTypes.documentElement.appendChild(override);
+ pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(workbook));
+ pkg.files['xl/_rels/workbook.xml.rels']=strToU8(new XMLSerializer().serializeToString(relationships));
+ pkg.files['[Content_Types].xml']=strToU8(new XMLSerializer().serializeToString(contentTypes));
+ pkg.files[path]=strToU8(new XMLSerializer().serializeToString(doc));
+}
 export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob {
- if(report.blockers.length)throw Error('لا يمكن تصدير تقرير يحوي أخطاء حرجة.');
  const pkg=load(new Uint8Array(input));
  const actual=rowsFrom(pkg);
- if(actual.errors.length)throw Error(actual.errors.join(' | '));
  if(actual.rows.length!==report.rows.length||actual.rows.some((r,i)=>r.row!==report.rows[i].row||r.number!==report.rows[i].number||r.amount!==report.rows[i].amount))
   throw Error('تغيّر محتوى الملف منذ المطابقة. ارفع ملف سجى من جديد.');
  const styles=ensureStyles(pkg.files);
  const d=pkg.doc,data=find(d,'sheetData')!;
  const rowElements=new Map(children(data,'row').map(row=>[Number(row.getAttribute('r')),row]));
- const count=Math.max(7,...report.rows.map(row=>serialColumns(row.transfers).length));
- const lastTransfer=10+count;
- const legacyColumn=report.rows.some(row=>row.unassignedTransfers?.length)?lastTransfer+1:0;
- const last=legacyColumn||lastTransfer;
- if(count>7||legacyColumn){
-  const headers=[{row:3,base:'Q3'}, {row:4,base:'Q4'}];
-  for(const h of headers){
-   const row=rowElements.get(h.row)!;
-   const origin=getCell(row,h.base);
-   for(let c=18;c<=last;c++){
-    const cell=ensureCell(d,row,c,h.row);
-    if(origin?.getAttribute('s'))cell.setAttribute('s',origin.getAttribute('s')!);
-    editCell(d,cell,c===legacyColumn?(h.row===3?'ترحيلات المجموعة المعتمدة':'ارتباط معتمد بالمجموعة'):(h.row===3?'تعديل '+(c-12):'تحويل رقم'),pkg.shared);
-   }
+ // Keep the original D/F and existing transfer values. Append Omar's values in new columns
+ // beyond all populated template cells, so Saja's guessed values are always visible.
+ let originalEnd=17;
+ for(const row of rowElements.values()){
+  const no=Number(row.getAttribute('r'));
+  if(no!==3&&no!==4&&!report.rows.some(r=>r.row===no))continue;
+  for(const cell of children(row,'c')){
+   if(value(cell,pkg.shared).trim()||find(cell,'f'))
+    originalEnd=Math.max(originalEnd,cellColumn(cell.getAttribute('r')||''));
   }
-  const cols=find(d,'cols');
-  if(cols){
-   for(let c=18;c<=last;c++){
-    const node=element(d,'col');
-    node.setAttribute('min',String(c));node.setAttribute('max',String(c));
-    node.setAttribute('width','17');node.setAttribute('customWidth','1');cols.appendChild(node);
-   }
-  }
-  const dim=find(d,'dimension');
-  if(dim){const ref=dim.getAttribute('ref')||'A1:Q1';dim.setAttribute('ref',ref.replace(/:[A-Z]+(\d+)$/,':'+columnName(last)+'$1'));}
-  // Expand an existing print area if one was set to the original final column.
-  const book=readXml(pkg.files['xl/workbook.xml']);
-  for(const defined of book.getElementsByTagNameNS(NS,'definedName')){
-   if(defined.getAttribute('name')==='_xlnm.Print_Area'&&defined.textContent){
-    defined.textContent=defined.textContent.replace(/\$Q(\$\d+)?/g,'$'+columnName(last)+'$1');
-   }
-  }
-  pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(book));
  }
+ const labels=[
+  ['بيانات عمر','رقم الفاتورة — عمر'],
+  ['بيانات عمر','المبلغ — عمر'],
+  ['بيانات سجى الأصلية','رقم الفاتورة — سجى'],
+  ['بيانات سجى الأصلية','المبلغ — سجى'],
+  ['ترحيلات عمر','ترحيلات مرتبطة بالفاتورة'],
+  ['ترحيلات المجموعة المعتمدة','غير منسوبة لصفحة منفردة'],
+  ['نتيجة المراجعة','الملاحظات والفروقات'],
+ ];
+ const start=originalEnd+1,last=start+labels.length-1;
+ for(const rowNo of [3,4]){
+  const row=rowElements.get(rowNo);
+  if(!row)throw Error('صف عنوان سجى '+rowNo+' مفقود.');
+  const template=getCell(row,'Q'+rowNo)||getCell(row,'K'+rowNo);
+  for(let i=0;i<labels.length;i++){
+   const cell=ensureCell(d,row,start+i,rowNo);
+   if(template?.getAttribute('s')&&!cell.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
+   editCell(d,cell,labels[i][rowNo===3?0:1],pkg.shared);
+  }
+ }
+ const cols=find(d,'cols');
+ if(cols){
+  for(let c=start;c<=last;c++){
+   const node=element(d,'col');
+   node.setAttribute('min',String(c));node.setAttribute('max',String(c));
+   node.setAttribute('width',c===last?'60':'23');node.setAttribute('customWidth','1');cols.appendChild(node);
+  }
+ }
+ const dim=find(d,'dimension');
+ if(dim){
+  const ref=dim.getAttribute('ref')||'A1:Q1';
+  dim.setAttribute('ref',ref.replace(/:[A-Z]+(\d+)$/,':'+columnName(last)+'$1'));
+ }
+ const book=readXml(pkg.files['xl/workbook.xml']);
+ const originalName=columnName(originalEnd);
+ for(const defined of book.getElementsByTagNameNS(NS,'definedName')){
+  if(defined.getAttribute('name')==='_xlnm.Print_Area'&&defined.textContent){
+   const expr=new RegExp('\\$'+originalName+'(?=\\$\\d+)','g');
+   defined.textContent=defined.textContent.replace(expr,'$'+columnName(last));
+  }
+ }
+ pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(book));
  for(const item of report.rows){
   const row=rowElements.get(item.row);
   if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في Excel.');
   const transfers=serialColumns(item.transfers);
-  for(let c=11;c<=lastTransfer;c++){
+  const conflicts:string[]=[];
+  // Only fill blank K:Q positions. A differing original value remains untouched;
+  // the full authoritative transfer list is always written into Omar's own column.
+  for(let c=11;c<=17;c++){
+   const expected=transfers[c-11]||'';
+   if(!expected)continue;
    const cell=ensureCell(d,row,c,item.row);
+   const existing=value(cell,pkg.shared).trim();
+   if(find(cell,'f')||(existing&&existing!==expected)){
+    conflicts.push(columnName(c)+': سجى '+(existing||'معادلة')+' / عمر '+expected);
+    continue;
+   }
    if(!cell.getAttribute('s')){
     const template=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row)||getCell(row,'D'+item.row);
     if(template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
    }
-   editCell(d,cell,transfers[c-11]||'',pkg.shared);
+   editCell(d,cell,expected,pkg.shared);
   }
-  if(legacyColumn){
-    const unassigned=[...new Set((item.unassignedTransfers||[]).map(transfer=>transfer.number))];
-    if(unassigned.length){
-      const cell=ensureCell(d,row,legacyColumn,item.row);
-      const sample=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row);
-      if(!cell.getAttribute('s')&&sample?.getAttribute('s'))cell.setAttribute('s',sample.getAttribute('s')!);
-      editCell(d,cell,unassigned.join('، '),pkg.shared);
-    }
+  const transferNumbers=[...item.transfers,...item.unassignedTransfers,...(item.originalTransfers||[]).map(number=>({number,kind:'adjustment' as const}))].map(t=>t.number);
+  const related=report.blockers.filter(issue=>
+    issue.startsWith('صف '+item.row+':')||
+    [item.number,item.omarNumber].filter(Boolean).some(no=>issue.includes('فاتورة '+no))||
+    transferNumbers.some(no=>issue.includes('الترحيل '+no)));
+  const notes=[item.reason,...related,...conflicts.map(v=>'اختلاف الترحيل '+v)].filter(Boolean).filter((n,i,a)=>a.indexOf(n)===i).join(' | ');
+  const values=[
+    item.omarNumber,item.omarAmount,item.number,item.amount,
+    transfers.filter(Boolean).join('، '),
+    [...new Set(item.unassignedTransfers.map(t=>t.number))].join('، '),
+    notes
+  ];
+  for(let i=0;i<values.length;i++){
+   const cell=ensureCell(d,row,start+i,item.row);
+   const template=getCell(row,'Q'+item.row)||getCell(row,'D'+item.row);
+   if(!cell.getAttribute('s')&&template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
+   editCell(d,cell,values[i],pkg.shared);
   }
   for(let c=2;c<=last;c++){
    const cell=ensureCell(d,row,c,item.row);
@@ -224,6 +325,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
  }
  pkg.files[pkg.name]=strToU8(new XMLSerializer().serializeToString(d));
  pkg.files['xl/styles.xml']=strToU8(new XMLSerializer().serializeToString(styles.doc));
+ appendAuditSheet(pkg,report);
  const output=zipSync(pkg.files,{level:6});
  return new Blob([new Uint8Array(output)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
 }
