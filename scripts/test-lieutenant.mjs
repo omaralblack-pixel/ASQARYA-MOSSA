@@ -93,6 +93,12 @@ const cashWithoutRemark=[...cashRows[1]];cashWithoutRemark[4]='بدون ملاح
 const noRefScan=parseLieutenantTransfers([englishHeader,cashRows[0].join('\t'),cashWithoutRemark.join('\t')].join('\n'),['7 — عجلون']);
 assert.equal(analyzeLieutenantMovements(noRefScan.transfers,'2026-11-30').get('2615767').kind,'reversed',
   'One unique exact inverse must be recognized even without an explicit reference');
+const duplicateExplicit=[...cashRows[1]];duplicateExplicit[0]='2616501';
+const manyReversals=parseLieutenantTransfers(
+  [englishHeader,cashRows[0].join('\t'),cashRows[1].join('\t'),duplicateExplicit.join('\t')].join('\n'),
+  ['7 — عجلون']);
+assert.equal(analyzeLieutenantMovements(manyReversals.transfers,'2026-11-30').get('2615767').kind,'cashvan-pending',
+  'Two reversals explicitly claiming one original are ambiguous');
 const secondCash=[...cashRows[0]];secondCash[0]='2615768';
 const ambiguousScan=parseLieutenantTransfers([englishHeader,cashRows[0].join('\t'),secondCash.join('\t'),cashWithoutRemark.join('\t')].join('\n'),['7 — عجلون']);
 assert.equal(analyzeLieutenantMovements(ambiguousScan.transfers,'2026-11-30').get('2615767').kind,'cashvan-pending',
