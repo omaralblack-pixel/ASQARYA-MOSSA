@@ -4,6 +4,7 @@ import {useEffect,useMemo,useState,type ChangeEvent} from 'react';
 import {AlertTriangle,CheckCircle2,FileArchive,FileUp,RefreshCw,Search,ShieldCheck} from 'lucide-react';
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenant';
+import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,transferNumbers,type Draft,type Transfer} from '../lib/reconcile';
 
 type FileKind='transfers'|'opening'|'balance'|'other';
@@ -12,7 +13,7 @@ type SavedRecord={id:string;branch:string;status:string;payload:string};
 type QueueRecord={transfer_no:string;doc_date:string;payload:string;source_file:string;created:string};
 type OpeningStock={snapshot_date:string;warehouse:string;sap_code:string;item_name:string;unit:string;quantity:number;source:string;approved_at:string};
 type RecordSnapshot={records:SavedRecord[];queue:QueueRecord[];openingStock:OpeningStock[]};
-type ReviewStatus='approved'|'paper'|'linked'|'unlinked'|'queued'|'missing'|'review';
+type ReviewStatus='approved'|'paper'|'linked'|'unlinked'|'queued'|'missing'|'review'|'reversed'|'reverse'|'sap-canceled'|'sap-cancel-doc'|'cashvan-pending'|'cancellation-review';
 type ReviewRow={source:LieutenantTransfer;status:ReviewStatus;recordId?:string;note:string};
 
 const fileKinds:Record<FileKind,string>={
@@ -29,18 +30,42 @@ const statusText:Record<ReviewStatus,string>={
   queued:'مستورد تلقائيًا — بانتظار الجندي',
   missing:'غير مستورد — يحتاج معالجة',
   review:'يحتاج مراجعة بيانات SAP',
+  reversed:'تمت التسوية بعكسي مطابق',
+  reverse:'ترحيل عكسي — بلا فاتورة مستقلة',
+  'sap-canceled':'ملغى رسميًا على SAP',
+  'sap-cancel-doc':'مستند إلغاء SAP',
+  'cashvan-pending':'كاش فان — عكسي/إلغاء غير مثبت',
+  'cancellation-review':'إلغاء يحتاج تحقق',
 };
 const empty:RecordSnapshot={records:[],queue:[],openingStock:[]};
 const fileLimit=16*1024*1024;
 async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
-  const response=await fetch(url,{cache:'no-store',...init});
-  if(response.status===401){window.location.assign('/login');throw Error('انتهت الجلسة.')}
-  const data=await response.json() as T&{error?:string};
-  if(!response.ok)throw Error(data.error||'تعذّر الاتصال بقاعدة البيانات.');
+  let response:Response;
+  try{response=await fetch(url,{cache:'no-store',redirect:'manual',...init})}
+  catch{throw Error('انقطع الاتصال بالسيرفر أثناء طلب '+url.split('?')[0]+'. البيانات المرفوعة سابقًا لا تحتاج إعادة رفع.')}
+  if(response.status===401||response.status===403&&response.headers.get('location')?.includes('/login')||
+    response.type==='opaqueredirect'||[301,302,303,307,308].includes(response.status)){
+    window.location.assign('/login');
+    throw Error('انتهت جلسة الدخول. سجّل دخولك وافتح الملف المحفوظ من الأرشيف.');
+  }
+  if(response.status===413)throw Error('حجم دفعة الترحيلات أكبر من الحد المسموح. الملف الأصلي محفوظ؛ افتحه وأعد فحص الناقص.');
+  const body=await response.text();
+  const contentType=response.headers.get('content-type')||'';
+  if(!contentType.includes('json')&&!body.trimStart().startsWith('{')&&!body.trimStart().startsWith('[')){
+    throw Error('السيرفر أعاد صفحة HTML بدل بيانات JSON عند '+url.split('?')[0]+
+      ' (HTTP '+response.status+'). الملف المحفوظ لم يُحذف؛ المشكلة في مسار الخادم أو جلسة الدخول، وليس في محتوى SAP.');
+  }
+  let data:T&{error?:string};
+  try{data=JSON.parse(body) as T&{error?:string}}
+  catch{throw Error('السيرفر أعاد بيانات غير صالحة عند '+url.split('?')[0]+' (HTTP '+response.status+').')}
+  if(!response.ok)throw Error(data?.error||'تعذّر إتمام الطلب '+url.split('?')[0]+' (HTTP '+response.status+').');
   return data;
 }
 
-function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot):ReviewRow[]{
+const completeStatuses=new Set<ReviewStatus>(['approved','reversed','reverse','sap-canceled','sap-cancel-doc']);
+const soldierEligible=(status:ReviewStatus)=>['missing','queued','unlinked','linked','paper'].includes(status);
+function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodEnd:string):ReviewRow[]{
+  const movements=analyzeLieutenantMovements(transfers,periodEnd);
   const saved=new Map<string,{id:string;status:ReviewStatus;note:string}>();
   for(const record of snapshot.records){
     let draft:Draft;
@@ -60,6 +85,9 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot):Review
     const number=source.transfer.number;
     const result=saved.get(number);
     if(source.issues.length)return {source,status:'review',note:source.issues.join(' · ')};
+    const movement=movements.get(number);
+    if(movement&&movement.kind!=='normal')
+      return {source,status:movement.kind,recordId:result?.id,note:movement.note};
     if(result)return {source,status:result.status,recordId:result.id,note:result.note};
     if(queue.has(number))return {source,status:'queued',note:'محفوظ مستقلًا عن الفواتير؛ لم تُنشأ فاتورة تلقائية.'};
     return {source,status:'missing',note:'الترحيل موجود في ملف SAP، لكن ليس في السجل ولا قائمة الجندي.'};
@@ -167,35 +195,49 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     return()=>{active=false};
   },[]);
 
-  const rows=useMemo(()=>makeRows(transfers,snapshot).filter(row=>
+  const rows=useMemo(()=>makeRows(transfers,snapshot,to).filter(row=>
     row.source.transfer.date>=from&&row.source.transfer.date<=to),[transfers,snapshot,from,to]);
-  const pending=rows.filter(row=>row.status!=='approved');
-  const visible=rows.filter(row=>(filter==='all'||(filter==='pending'?row.status!=='approved':row.status===filter))&&
+  const pending=rows.filter(row=>!completeStatuses.has(row.status));
+  const visible=rows.filter(row=>(filter==='all'||(filter==='pending'?!completeStatuses.has(row.status):row.status===filter))&&
     (!query||[row.source.transfer.number,row.source.branch,row.source.remarks,row.note].some(value=>value.includes(query))));
   const counts=useMemo(()=>({
     approved:rows.filter(row=>row.status==='approved').length,
     queued:rows.filter(row=>row.status==='queued').length,
-    review:rows.filter(row=>row.status==='review'||row.source.cancellationState!=='active'||row.source.cancellationMentioned).length,
+    review:rows.filter(row=>row.status==='review'||row.status==='cashvan-pending'||row.status==='cancellation-review').length,
     pending:pending.length,
   }),[rows,pending.length]);
 
   async function enqueue(source:LieutenantTransfer[],key:string){
-    const valid=source.filter(row=>!row.issues.length);
+    // Cash Van, the exact reverse, SAP-canceled and cancellation documents
+    // are inventory-control cases, not missing blue invoices.
+    const movements=analyzeLieutenantMovements(source,'9999-12-31');
+    const valid=source.filter(row=>!row.issues.length&&movements.get(row.transfer.number)?.kind==='normal');
+    const skipped=source.length-valid.length;
     let added=0,existing=0;
-    for(let start=0;start<valid.length;start+=10){
-      const batch=valid.slice(start,start+10).map(row=>({
-        number:row.transfer.number,date:row.transfer.date,paste:row.transfer.paste,
+    const batches:Array<Array<{number:string;date:string;paste:string;branch:string;remarks:string;reverse:boolean;cancellationMentioned:boolean;cancellationState:string;invoiceNumbers:string[]}>>=[];
+    let batch:typeof batches[number]=[];
+    for(const row of valid){
+      const data={number:row.transfer.number,date:row.transfer.date,paste:row.transfer.paste,
         branch:row.branch,remarks:row.remarks,reverse:row.reverse,
-        cancellationMentioned:row.cancellationMentioned,cancellationState:row.cancellationState,invoiceNumbers:row.invoiceNumbers,
-      }));
+        cancellationMentioned:row.cancellationMentioned,cancellationState:row.cancellationState,invoiceNumbers:row.invoiceNumbers};
+      const next=[...batch,data];
+      const size=new Blob([JSON.stringify({action:'lieutenantImport',sourceFile:key,transfers:next})]).size;
+      if(batch.length&&(next.length>10||size>650000)){
+        batches.push(batch);batch=[data];
+      }else batch=next;
+      if(new Blob([JSON.stringify({action:'lieutenantImport',sourceFile:key,transfers:batch})]).size>1800000)
+        throw Error('الترحيل '+data.number+' كبير جدًا لإرساله بدفعة واحدة؛ ملف SAP محفوظ بالأرشيف ويمكن مراجعة هذا الترحيل بشكل منفصل.');
+    }
+    if(batch.length)batches.push(batch);
+    for(const payload of batches){
       const result=await checkedJson<{added:number;existing:number}>('/api/reconcile',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action:'lieutenantImport',sourceFile:key,transfers:batch}),
+        body:JSON.stringify({action:'lieutenantImport',sourceFile:key,transfers:payload}),
       });
       added+=result.added;existing+=result.existing;
     }
     await refreshSnapshot();
-    return {added,existing,invalid:source.length-valid.length};
+    return {added,existing,skipped};
   }
 
   async function upload(event:ChangeEvent<HTMLInputElement>){
@@ -233,9 +275,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       }
       const result=parseLieutenantTransfers(text,branches);
       setTransfers(result.transfers);setIssues(result.issues);
-      const imported=result.transfers.length?await enqueue(result.transfers,stored.key):{added:0,existing:0,invalid:0};
+      const imported=result.transfers.length?await enqueue(result.transfers,stored.key):{added:0,existing:0,skipped:0};
       setMessage('تم حفظ الملف في Supabase. أُضيف '+imported.added+' ترحيلًا لقائمة الجندي؛ '+imported.existing+
-        ' موجودة مسبقًا؛ '+imported.invalid+' تحتاج مراجعة. لم تُنشأ أي فاتورة زرقاء.');
+        ' موجودة مسبقًا؛ '+imported.skipped+' حركات عكسية/كاش فان/ملغاة أو غير صالحة أُبعدت عن الجندي. لم تُنشأ أي فاتورة زرقاء.');
     }catch(cause){
       setError(cause instanceof Error?cause.message:'تعذّر حفظ ملف الملازم أول.');
     }finally{setBusy(false)}
@@ -247,7 +289,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     try{
       const result=await enqueue(transfers,selected);
       setMessage('اكتمل تحديث الرقابة: '+result.added+' ترحيلًا جديدًا؛ '+result.existing+
-        ' محفوظًا مسبقًا؛ '+result.invalid+' يحتاج مراجعة.');
+        ' محفوظًا مسبقًا؛ '+result.skipped+' مستبعدًا من جندي الفواتير (عكسي/كاش فان/ملغى أو غير صالح).');
     }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر تحديث الفحص.')}
     finally{setBusy(false)}
   }
@@ -313,7 +355,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         <button className="button primary" disabled={busy||!transfers.length||from>to}
           onClick={()=>void auditAgain()}><Search size={16}/> تحديث الفحص وإرسال الناقص للجندي</button>
         <select aria-label="فلترة ترحيلات الملازم أول" value={filter} onChange={event=>setFilter(event.target.value)}>
-          <option value="pending">المطلوبة فقط</option>
+          <option value="pending">المطلوبة فقط (بدون العكسي المسوّى)</option>
           <option value="all">الكل</option>
           {Object.entries(statusText).map(([key,text])=><option key={key} value={key}>{text}</option>)}
         </select>
@@ -336,8 +378,8 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         <td dir="ltr"><b>{row.source.transfer.number}</b></td>
         <td dir="ltr">{row.source.transfer.date}</td><td>{row.source.branch||'غير محدد'}</td>
         <td>{row.source.reverse?'صادر من 011':'وارد إلى 011'}</td>
-        <td><span className={'badge '+(row.status==='approved'?'match':row.status==='review'||row.status==='missing'?'difference':'review')}>
-          {row.status==='approved'?<CheckCircle2 size={13}/>:<AlertTriangle size={13}/>}
+        <td><span className={'badge '+(completeStatuses.has(row.status)?'match':row.status==='review'||row.status==='missing'?'difference':'review')}>
+          {completeStatuses.has(row.status)?<CheckCircle2 size={13}/>:<AlertTriangle size={13}/>}
           {statusText[row.status]}</span>
           {row.source.cancellationState==='canceled'&&<small style={{display:'block'}}>حالة SAP: ترحيل ملغى (Y)</small>}
           {row.source.cancellationState==='cancellation'&&<small style={{display:'block'}}>حالة SAP: مستند إلغاء (C)</small>}
@@ -345,10 +387,10 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
           {row.source.cancellationMentioned&&row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>Remarks تذكر إلغاء دون إثبات</small>}</td>
         <td>{row.note}</td>
         <td>{row.recordId?<button type="button" className="button secondary small" onClick={()=>onOpenRecord(row.recordId!)}>فتح الفاتورة</button>:
-          <button type="button" className="button secondary small" disabled={!!row.source.issues.length} onClick={()=>onOpenTransfer(row.source.transfer,row.source.branch)}>إرسال للجندي</button>}</td>
+          <button type="button" className="button secondary small" disabled={!soldierEligible(row.status)||!!row.source.issues.length} onClick={()=>onOpenTransfer(row.source.transfer,row.source.branch)}>{soldierEligible(row.status)?'إرسال للجندي':'ليس لفاتورة زرقاء'}</button>}</td>
       </tr>)}</tbody></table></div>}
       {selected&&transfers.length>0&&!visible.length&&<p className="hint">لا توجد ترحيلات بهذه الفلاتر.</p>}
-      {counts.review>0&&<p className="hint">هناك {counts.review} ترحيلًا يحتاج تدقيق حالة الإلغاء أو بيانات المصدر. لا نعتبر الترحيل ملغى بمجرد وجود كلمة إلغاء في Remarks.</p>}
+      {counts.review>0&&<p className="hint">هناك {counts.review} حركة تحتاج تدقيق العكسي أو الإلغاء أو بيانات المصدر. العكسي المطابق ليس إلغاء SAP؛ لا يُرسل كاش فان للجندي لمجرد عدم وجود فاتورة زرقاء.</p>}
     </section>
     <MovementSummary rows={rows}/>
   </div>;
