@@ -1,8 +1,10 @@
 import {dateValue, invoiceDocumentNo, pageNumber, parseTransfer, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
+import {isVerifiedFinancialSort,type FinancialDraft} from './historical-financial-sort';
 
 export type CollectedInvoice = {
   recordId: string; invoiceId: string; number: string; branch: string; date: string;
   transferNumbers: string[]; unresolvedTransferNumbers: string[]; amount: string;
+  allocation: 'saved'|'financial'|'unknown';
 };
 export type CollectedInvoiceResult = {
   from: string; to: string; days: number; rows: CollectedInvoice[];
@@ -36,6 +38,9 @@ export function collectInvoicesByDate(
 
     const invoices=draft.invoices;
     const multi=invoices.length>1;
+    const financialDraft=draft as FinancialDraft;
+    const verifiedFinancial=isVerifiedFinancialSort(financialDraft);
+    const invalidFinancial=!!financialDraft.financialPageSort&&!verifiedFinancial;
     const exactByPage=new Map<number,Set<string>>();
     const uncertain=new Set<string>();
     const reference=new Map(sapReferences(draft.referenceSnapshot||[]).map(item=>[item.sapCode.toUpperCase(),item.code]));
@@ -48,6 +53,7 @@ export function collectInvoicesByDate(
         numbers.forEach(number=>exactByPage.get(1)!.add(number));
         continue;
       }
+      if(invalidFinancial){numbers.forEach(number=>uncertain.add(number));continue}
       const parsed=parseTransfer(transfer.paste||'',{allowReverse:true});
       if(!parsed.lines.length||parsed.issues.length||parsed.excluded.length){
         numbers.forEach(number=>uncertain.add(number));continue;
@@ -96,6 +102,7 @@ export function collectInvoicesByDate(
         date,transferNumbers:[...(exactByPage.get(index+1)||new Set<string>())],
         unresolvedTransferNumbers:[...uncertain],
         amount:String(invoice.amount||''),
+        allocation:invalidFinancial?'unknown':verifiedFinancial?'financial':uncertain.size?'unknown':'saved',
       });
     }
   }
