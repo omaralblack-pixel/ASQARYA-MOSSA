@@ -51,4 +51,12 @@ const excelSerial=Math.floor((Date.UTC(2026,10,1)-excelEpoch)/86400000);
 const excelRow=normal.replace('01/11/2026',String(excelSerial));
 const excelScan=parseLieutenantTransfers(en+'\n'+excelRow,['21 — السرو']);
 assert.equal(excelScan.transfers[0].transfer.date,'2026-11-01','Excel serial dates must be preserved');
+const englishHeader=['Document Number','Document Date','Branch Code','Branch Name','Remarks','Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'].join('\t');
+const englishScan=parseLieutenantTransfers([englishHeader,
+ ['2617006','01/11/2026','21','السرو','','DAR00005','كريمة','1','Piece','001','011'].join('\t'),
+ englishHeader,
+ ['2617007','02/11/2026','21','السرو','','DAR00005','كريمة','1','Piece','011','001'].join('\t')
+].join('\n'),['21 — السرو']);
+assert.equal(englishScan.issues.length,0,'Repeated English headers must be ignored');
+assert.equal(englishScan.transfers.length,2,'Both English-header transfers must survive');
 console.log('Lieutenant parser regressions passed');
