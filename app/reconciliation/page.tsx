@@ -13,6 +13,7 @@ import GroupLookup from './GroupLookup';
 import InvoiceRegister,{InvoiceRegisterPrint} from './InvoiceRegister';
 import SerialSoldier from './SerialSoldier';
 import StockReport from './StockReport';
+import FirstLieutenant from './FirstLieutenant';
 import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
 import {ArrowLeftRight,Check,CheckCircle2,AlertTriangle,Plus,Trash2,ClipboardPaste,FileText,CalendarDays,History,Settings2,Search,Save,Printer,Upload,ChevronDown,ArrowUpRight,RefreshCw,Copy,PackageCheck} from 'lucide-react';
@@ -58,7 +59,7 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
   const stored=JSON.parse(record.payload) as Draft;
   return stored.transfers.flatMap(transfer=>transferNumbers(transfer.number).map(number=>[number,record.id] as const));
 })),[sapPreview.records]);
-useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','audit','replace','stock','serial-soldier'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
+useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','audit','replace','stock','serial-soldier','lieutenant'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
 useEffect(()=>{let active=true;fetch('/api/reconcile?pageSortingCatalog=1',{cache:'no-store'})
  .then(async response=>{if(!response.ok)throw Error('مرجع الجندي غير متاح.');return await response.json() as {catalog:AuditCatalog}})
  .then(data=>{if(active)SETAUDITCAT(data.catalog as AuditCatalog)})
@@ -532,6 +533,15 @@ return <div className="recon-app"><header className="topbar"><a className="brand
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
+  {tab==='lieutenant'&&<FirstLieutenant branches={branches}
+    onOpenRecord={id=>{void run(()=>openRecord(id));}}
+    onOpenTransfer={(transfer,branch)=>{
+      const next=blank();
+      D({...next,branch,transfers:[{...transfer,id:uid()}]});
+      setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+
+        ' من الملازم أول. أدخل الفاتورة الزرقاء وشيّكها قبل الحفظ.');T('work');
+    }}/>}
+
  {tab==='work'&&result&&<><div className="page-title"><div><p className="eyebrow">{draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'مطابقة الفاتورة الزرقاء':draft.id?'ترحيل محفوظ':'ترحيل جديد'}</p><h1>ألصق الترحيلات. ووزّع الأصناف على الفواتير الزرقاء.</h1><p>كشف بأكواد المؤسسة وتسمياتها وأسعارها، جاهز للمطابقة اليدوية.</p></div><button className="button secondary" onClick={()=>{if(draft.transfers.some(t=>t.paste.trim())&&!confirm('فتح ترحيل جديد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;setTransferSources({});D(blank());PAGE('all');Q('');N('');E('')}}><Plus size={16}/>ترحيل جديد</button></div>{draft.id&&!draft.useCurrentReference&&<div className="banner info">تُستخدم الأسعار والشدّات المسجلة وقت الحفظ، وتُستكمل التعريفات الناقصة من المرجع المعتمد.<button className="text-button" onClick={()=>change({useCurrentReference:true})}>إعادة المطابقة بالمرجع الحالي</button></div>}<div className="stats"><div className={'stat status-stat '+result.status}><span>نتيجة المطابقة</span><strong><Badge state={result.status} label={acceptedDifference?'مطابق باعتمادك':undefined}/></strong><small>{result.differences} فروقات أصناف · {result.review} بحاجة مراجعة</small></div><div className="stat"><span>مجموع مبالغ الفواتير</span><strong>{money(result.total)} <small>د.أ</small></strong><small>{draft.invoices.length} فواتير مرتبطة</small></div><div className="stat"><span>قيمة الترحيلات حسب أسعار المؤسسة</span><strong>{money(result.expected)} <small>د.أ</small></strong><small>{draft.transfers.length} ترحيلات مرتبطة</small></div><div className={'stat '+(result.priceDifference?'warn':'')}><span>فرق القيمة</span><strong dir="ltr">{money(result.priceDifference)} <small>د.أ</small></strong><small>الفواتير − قيمة الترحيلات</small></div></div><SapImport records={sapPreview.records} onPreview={(groups,records)=>setSapPreview({groups,records})} branches={branches} readRecords={async()=>{const data=await api(undefined,'?records=1');return data.records}} saveDraft={async imported=>{const data=await api({action:'save',draft:imported});return data.id}} openSaved={id=>loadRecord({id})} openDraft={imported=>{
   if((draft.id||draft.transfers.some(transfer=>transfer.paste.trim()))&&!confirm('فتح كشف الاستيراد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;
   setTransferSources({});D(imported);PAGE('all');Q('');E('');
