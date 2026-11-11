@@ -6,7 +6,7 @@ const compile=source=>ts.transpileModule(source,{compilerOptions:{target:ts.Scri
 const url=source=>'data:text/javascript;base64,'+Buffer.from(source).toString('base64');
 const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
 const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'");
-const {evaluateSerial,serialColumns}=await import(url(compile(source)));
+const {evaluateSerial,serialColumns,serialReviewNote}=await import(url(compile(source)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from,to)=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
 const invoice=(number,amount,complete=true)=>({number,amount,complete});
@@ -118,5 +118,16 @@ assert.equal(result.rows[0].state,'missing','Ambiguous transfer ownership must n
 assert.equal(result.rows[0].omarNumber,'');
 assert.ok(evaluateSerial([row(5,'2624002303','186.400')],[record('broken',[invoice('2624002303','186.400')],[])])
  .rows[0].state==='review','No verified transfers must not produce a green invoice');
+const clean=evaluateSerial([row(5,'2624002303','186.400')],[correct]).rows[0];
+assert.equal(serialReviewNote(clean),'','Matched invoices must not clutter the sheet with duplicate values');
+const amountMismatch=evaluateSerial([row(5,'2624002303','186.401')],[correct]).rows[0];
+assert.equal(serialReviewNote(amountMismatch),'فرق المبلغ: عمر 186.400 د.أ، سجى 186.401 د.أ');
+const wrongNumber=evaluateSerial([guessedSaja],[correct]).rows[0];
+assert.equal(serialReviewNote(wrongNumber),'فرق رقم الفاتورة: عمر 2624002303، سجى 2660506908');
+const bothWrong=evaluateSerial([{...guessedSaja,amount:'186.420'}],[correct]).rows[0];
+assert.ok(serialReviewNote(bothWrong).includes('فرق رقم الفاتورة: عمر'));
+assert.ok(serialReviewNote(bothWrong).includes('فرق المبلغ: عمر 186.400'));
+assert.equal(serialReviewNote(evaluateSerial([row(5,'9999999999','2.000')],[correct]).rows[0]),'غير موجودة في سجل عمر؛ وصول الورق غير مؤكد');
+console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: Omar/Saja numbers and amounts are preserved side by side; uncertain links remain unresolved');
 console.log('PASS: serial soldier retains approved old group matching without page numbers, while enforcing amount, duplicates and new records');
