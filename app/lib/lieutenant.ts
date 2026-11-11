@@ -74,6 +74,14 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
   const read=(cells:string[],field:Field)=>indexes[field]<0?'':(cells[indexes[field]]||'').trim();
   const byCode=new Map(branches.map(item=>[digits(item.split(' — ')[0].trim()),item]));
   const byName=new Map(branches.map(item=>[item.split(' — ').slice(1).join(' — ').trim(),item]));
+  const normalizedBranch=(value:string)=>value.replace(/[أإآٱ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي')
+    .replace(/[\u064B-\u065F\u0670ـ]/g,'').replace(/[^\p{L}\p{N}]+/gu,' ').trim().toLowerCase();
+  const inferBranch=(remarks:string)=>{
+    const normalized=' '+normalizedBranch(remarks)+' ';
+    const matches=[...byName.entries()].filter(([name])=>name.length>2&&
+      normalized.includes(' '+normalizedBranch(name)+' '));
+    return matches.length===1?matches[0][1]:'';
+  };
   const grouped=new Map<string,Group>();
   const issues:string[]=[];
   for(let i=first+1;i<raw.length;i++){
@@ -119,7 +127,7 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
     if(!date)problems.push('تاريخ الترحيل غير صالح.');
     transfers.push({
       transfer:{id:'lieutenant-'+number,number,date,paste:[lineHeader,...group.lines].join('\n')},
-      branch:byCode.get(digits(branchCode))||byName.get(branchName)||'',
+      branch:byCode.get(digits(branchCode))||byName.get(branchName)||inferBranch(remarks)||'',
       remarks,lineCount:group.lines.length,reverse:group.reverse,
       cancellationState:state,
       cancellationMentioned:/has been canceled|cancelled|ملغى|إلغاء/i.test(remarks),
