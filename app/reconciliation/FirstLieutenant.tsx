@@ -1,11 +1,12 @@
 'use client';
 
-import {useEffect,useMemo,useState,type ChangeEvent} from 'react';
-import {AlertTriangle,CheckCircle2,FileArchive,FileUp,RefreshCw,Search,ShieldCheck} from 'lucide-react';
+import {useEffect,useMemo,useRef,useState,type ChangeEvent} from 'react';
+import {AlertTriangle,CheckCircle2,Copy,FileArchive,FileUp,RefreshCw,Search,ShieldCheck} from 'lucide-react';
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenant';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,transferNumbers,type Draft,type Transfer} from '../lib/reconcile';
+import {sapStockBalanceQuery} from '../lib/sap-stock-query';
 
 type FileKind='transfers'|'opening'|'balance'|'other';
 type StoredFile={key:string;name:string;kind:FileKind;size:number;created:string};
@@ -136,11 +137,34 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   const [snapshot,setSnapshot]=useState<RecordSnapshot>(empty);
   const [from,setFrom]=useState('2026-11-01');
   const [to,setTo]=useState('2026-11-30');
+  const [stockDate,setStockDate]=useState<string|null>(null);
+  const [stockCopyMessage,setStockCopyMessage]=useState('');
+  const stockQueryRef=useRef<HTMLTextAreaElement>(null);
+  const stockQueryDate=stockDate??to;
+  const stockQuery=sapStockBalanceQuery(stockQueryDate);
   const [filter,setFilter]=useState('pending');
   const [query,setQuery]=useState('');
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const [message,setMessage]=useState('');
+
+  async function copyStockQuery(){
+    if(!stockQuery)return;
+    let copied=false;
+    try{
+      if(navigator.clipboard?.writeText){
+        await navigator.clipboard.writeText(stockQuery);
+        copied=true;
+      }
+    }catch{/* Older browsers can use the selected textarea below. */}
+    if(!copied){
+      stockQueryRef.current?.focus();
+      stockQueryRef.current?.select();
+      try{copied=document.execCommand('copy')}catch{/* Keep the text selected for manual copy. */}
+    }
+    setStockCopyMessage(copied?'تم نسخ الكويري كاملًا لتاريخ '+stockQueryDate+'.':
+      'المتصفح منع النسخ التلقائي. تم تحديد الكويري؛ اضغط Ctrl+C أو اختر نسخ.');
+  }
 
   async function refreshSnapshot(){
     const state=await checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1');
@@ -314,6 +338,27 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         <p className="hint">لم تظهر أرصدة افتتاحية معتمدة من قاعدة البيانات بعد.</p>}
       <p className="hint">الرصيد الافتتاحي وحده لا يثبت مطابقة SAP؛ يجب إضافة جميع حركات الفترة والرصيد الفعلي بنهايتها.</p>
     </section>
+    <section className="panel sap-stock-query no-print" aria-labelledby="sap-stock-query-title">
+      <div className="section-title"><div><h2 id="sap-stock-query-title">كويري SAP — رصيد المستودع 011</h2>
+        <p>رصيد نهاية اليوم من جميع حركات المخزون في OINM حتى التاريخ المحدد، بما فيها الحركات السابقة للشهر. تبقى الأصناف ذات الرصيد الصفري في النتيجة.</p>
+      </div></div>
+      <div className="table-controls sap-stock-query-controls">
+        <label>تاريخ الرصيد — نهاية اليوم<input type="date" dir="ltr" value={stockQueryDate}
+          onChange={event=>{setStockDate(event.target.value);setStockCopyMessage('')}}/></label>
+        <button type="button" className="button primary" disabled={!stockQuery} onClick={()=>void copyStockQuery()}>
+          <Copy size={16}/> نسخ الكويري</button>
+        {stockDate!==null&&stockDate!==to&&<button type="button" className="button secondary" onClick={()=>{
+          setStockDate(null);setStockCopyMessage('');
+        }}>استخدام «إلى تاريخ»</button>}
+      </div>
+      <p className="hint">يتبع حقل «إلى تاريخ» تلقائيًا، ويمكن اختيار يوم آخر للكويري. تغيير «إلى تاريخ» يعيد ربط الكويري به.</p>
+      <textarea ref={stockQueryRef} aria-label="كويري SAP لرصيد المستودع 011" dir="ltr" readOnly
+        spellCheck={false} wrap="off" rows={17} value={stockQuery}/>
+      {!stockQuery&&<p role="alert" className="red">اختر تاريخًا صالحًا لإنشاء الكويري ونسخه.</p>}
+      {stockCopyMessage&&<p role="status" className="sap-stock-copy-status">{stockCopyMessage}</p>}
+      <p className="sap-stock-query-instructions">انسخ الكويري إلى SAP، شغّله، صدّر النتيجة إلى Excel، ثم ارفعها للملازم أول تحت نوع الملف: رصيد 011 الفعلي في نهاية الفترة.</p>
+      <p className="hint">هذا رصيد فعلي بنهاية اليوم المختار، ويشمل حركات ذلك اليوم. الرصيد الافتتاحي في 01/11 هو الرصيد قبل أول حركة في ذلك اليوم؛ لا ترفع نتيجة هذا الكويري كرصيد افتتاحي.</p>
+    </section>
     <section className="panel">
       <div className="section-title"><div><h2>أرشيف ملفات الملازم أول</h2>
         <p>ترفع الملف مرة واحدة، وتستعيده في أي وقت. الملف الأصلي لا يُستبدل عند رفع ملف جديد.</p></div></div>
@@ -348,7 +393,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         <p>الفترة تحدد نتائج التقرير، ولا تحذف أو تخفي أي ترحيل من قاعدة البيانات.</p></div></div>
       <div className="form-grid">
         <label>من تاريخ<input type="date" value={from} onChange={event=>setFrom(event.target.value)}/></label>
-        <label>إلى تاريخ<input type="date" value={to} onChange={event=>setTo(event.target.value)}/></label>
+        <label>إلى تاريخ<input type="date" value={to} onChange={event=>{
+          setTo(event.target.value);setStockDate(null);setStockCopyMessage('');
+        }}/></label>
         <label>البحث<input type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder="رقم الترحيل أو الفرع"/></label>
       </div>
       <div className="table-controls">

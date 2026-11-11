@@ -36,6 +36,8 @@ jobs:
           done
       - name: First lieutenant 011 regression tests
         run: node scripts/test-lieutenant.mjs
+      - name: SAP 011 closing stock query regression tests
+        run: node scripts/test-sap-stock-query.mjs
       - name: Storage, invoice registry and uniqueness checks
         run: |
           python3 scripts/test-storage.py
