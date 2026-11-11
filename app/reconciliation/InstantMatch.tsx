@@ -3,10 +3,8 @@
 import {useEffect, useMemo, useState} from 'react';
 import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
 import GroupLookup from './GroupLookup';
-import SoldierPageSorter from './SoldierPageSorter';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {sharedInstitutionOptions,type AuditCatalog} from '../lib/audit-catalog';
 import {prepareReconciliation, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
@@ -113,13 +111,7 @@ export default function InstantMatch({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [showItems, setShowItems] = useState(false);
-  const [auditCatalog,setAuditCatalog] = useState<AuditCatalog|null>(null);
-  useEffect(()=>{let active=true;
-    getJson<{catalog:AuditCatalog}>('/api/reconcile?pageSortingCatalog=1')
-      .then(data=>{if(active)setAuditCatalog(data.catalog)})
-      .catch(()=>{if(active)setAuditCatalog(null)});
-    return ()=>{active=false};
-  },[]);
+
   const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind),[records,imports,number,kind]);
 
   async function refreshRecords() {
@@ -314,7 +306,6 @@ export default function InstantMatch({
   }
 
   const prepared=useMemo(()=>draft?prepareReconciliation(draft,reference):null,[draft,reference]);
-  const sharedCodes=useMemo(()=>auditCatalog?sharedInstitutionOptions(auditCatalog):[],[auditCatalog]);
   const originalResult=prepared?.result??null;
   const result=originalResult;
   const transferWarnings=useMemo(()=>draft ? draft.transfers.flatMap(transfer=>{
@@ -414,28 +405,8 @@ export default function InstantMatch({
             </div>
             <label className="check-label"><input type="checkbox" checked={item.complete}
               onChange={e=>updateInvoice(item.id,{complete:e.target.checked})}/>الفاتورة الورقية موجودة عندي</label>
-            <details><summary>بنود الفاتورة للمساعدة في فرز الصفحات</summary>
-              <p className="hint">الصق رقم المادة وكمية الحبات في عمودين لاستخدامها في فرز الصفحات فقط، دون تدقيق أو اعتماد إضافي.</p>
-              <textarea dir="ltr" rows={4} maxLength={30000}
-                aria-label={'بنود فاتورة الفرز '+(index+1)} value={item.auditLines||''}
-                onChange={e=>updateInvoice(item.id,{auditLines:e.target.value})}
-                placeholder={'رقم المادة\tالكمية\n11371486\t24'}/>
-            </details>
-            {sharedCodes.filter(choice=>(item.auditLines||'').split(/\r?\n/).some(line=>
-              choice.codes.some(option=>digits(line.split('\t')[0]||'').trim()===option.code))).map(choice=><div key={choice.sapCode}
-              className="review-list" role="alert">
-              <p><AlertTriangle size={16}/> <b>صنف له رقمان لدى المؤسسة</b> · SAP {choice.sapCode} — {choice.sapName}</p>
-              <label>اختر رقم المادة الموجود على الفاتورة لإتمام فرز الصفحات
-                <select aria-label={'رقم المؤسسة للصنف '+choice.sapCode+' في الفاتورة '+(index+1)}
-                  value={item.sapInstitutionChoices?.[choice.sapCode]||''}
-                  onChange={event=>updateInvoice(item.id,{sapInstitutionChoices:{
-                    ...(item.sapInstitutionChoices||{}),[choice.sapCode]:event.target.value,
-                  }})}>
-                  <option value="">اختر الرقم من الورق</option>
-                  {choice.codes.map(option=><option key={option.code} value={option.code}>{option.code} — {option.name}</option>)}
-                </select>
-              </label>
-            </div>)}
+
+
             {index>0&&<button className="text-button" type="button"
               onClick={()=>update({...draft,invoices:draft.invoices.filter(row=>row.id!==item.id)})}>حذف الفاتورة</button>}
           </article>)}
@@ -443,7 +414,6 @@ export default function InstantMatch({
         <button className="button secondary" type="button" disabled={draft.invoices.length>=30}
           onClick={()=>update({...draft,invoices:[...draft.invoices,invoice()]})}><Plus size={16}/>إضافة فاتورة زرقاء</button>
       </section>
-      <SoldierPageSorter draft={draft} catalog={auditCatalog} onChange={update}/>
       <section className="panel">
         <div className="section-title"><h2>ترحيلات SAP</h2></div>
         <div className="form-grid">
@@ -479,7 +449,6 @@ export default function InstantMatch({
           <div className={'stat status-stat '+result.status}><span>الحالة</span>
             <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?'مطابق':result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
         </div>
-        {draft.invoices.length>1&&<p className="hint">عند وجود أكثر من فاتورة، وزّع الأصناف على الصفحات من جندي الفرز قبل حفظ أو تصدير روابط الترحيلات.</p>}
         {draft.invoices.some(item=>!dateValue(item.date))&&<p className="hint" role="alert">حدّد تاريخ الفاتورة الزرقاء أو صحّح التاريخ التلقائي قبل الحفظ، حتى يظل محفوظًا في السجل.</p>}
                 {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
           {transferWarnings.map((text,index)=><p key={'transfer-'+index}>{text}</p>)}
