@@ -1,6 +1,6 @@
 import {strFromU8,strToU8,unzipSync,zipSync} from 'fflate';
 import {digits} from './reconcile';
-import {serialColumns, serialReviewNote, type SerialInput, type SerialReport, type SerialState} from './serial-soldier';
+import {serialInvoiceColumns, serialReviewNote, type SerialInput, type SerialReport, type SerialState} from './serial-soldier';
 
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -232,7 +232,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
   // A confirmed historical group belongs to every invoice in that saved group, even
   // when the old record has no per-invoice page allocation. Place its shared transfer
   // numbers in Saja's transfer slots as GROUP associations (not claimed page ownership).
-  const transfers=serialColumns([...item.transfers,...item.unassignedTransfers]);
+  const transfers=serialInvoiceColumns(item);
   const original=new Set((item.originalTransfers||[]).filter(Boolean));
   const missingTransfers:string[]=[];
   // Fill ONLY empty slots in K:Q. Never replace an existing Saja transfer.
