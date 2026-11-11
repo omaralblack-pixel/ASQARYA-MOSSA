@@ -9,10 +9,16 @@ export const stockHeaders = ['كود SAP','اسم الصنف في SAP','الوح
 const units = new Map([['piece','حبة'],['carton','كرتونة'],['kg','كغم']]);
 const roundQuantity = (value:number)=>Number(value.toFixed(6));
 
-export function stockReport(text:string) {
+export type StockDateRange={from?:string;to?:string};
+
+// Dates are the SAP transfer document dates (not the upload date).
+// The same inclusive range applies to incoming, reverse, and cancellation lines.
+export function stockReport(text:string,range:StockDateRange={}) {
   const {rows,issues}=readSapImportRows(text);
   const byCodeAndUnit=new Map<string,StockRow>();
   const dates=new Set<string>();
+  const allDocuments=new Set<string>();
+  const allCodes=new Set<string>();
   const documents=new Set<string>();
   for(const [document,dateText,,,,rawCode,name,rawQuantity,rawUnit,from,to] of rows){
     if(!from||!to){
@@ -27,9 +33,16 @@ export function stockReport(text:string) {
     const canceled=/^[-−]/.test(rawQuantity);
     const quantity=numeric(canceled?rawQuantity.slice(1):rawQuantity);
     if(!date||!sapCode||!rawUnit||quantity===null){
-      issues.push('الترحيل '+document+'، الصنف '+(sapCode||'—')+' — راجع التاريخ والكود والكمية والوحدة.');
+      // A damaged row outside a selected period cannot change its subtotal,
+      // but missing/invalid dates must still be disclosed (period unknown).
+      if(!date||(!range.from||date>=range.from)&&(!range.to||date<=range.to))
+        issues.push('الترحيل '+document+'، الصنف '+(sapCode||'—')+' — راجع التاريخ والكود والكمية والوحدة.');
       continue;
     }
+    dates.add(date);
+    allDocuments.add(document);
+    allCodes.add(sapCode);
+    if((range.from&&date<range.from)||(range.to&&date>range.to))continue;
 
     const unit=units.get(rawUnit.toLowerCase())??rawUnit;
     const key=JSON.stringify([sapCode,unit]);
@@ -39,7 +52,6 @@ export function stockReport(text:string) {
     else if(destination==='011')row.incoming+=quantity;
     else row.reverse+=quantity;
     byCodeAndUnit.set(key,row);
-    dates.add(date);
     documents.add(document);
   }
   const items=[...byCodeAndUnit.values()].sort((a,b)=>a.sapCode.localeCompare(b.sapCode)||a.unit.localeCompare(b.unit,'ar'));
@@ -50,5 +62,7 @@ export function stockReport(text:string) {
     row.cancellation=roundQuantity(row.cancellation);
   }
   const period=[...dates].sort();
-  return {items,issues,from:period[0],to:period.at(-1),documents:documents.size,codes:new Set(items.map(row=>row.sapCode)).size};
+  return {items,issues,from:period[0],to:period.at(-1),
+    documents:documents.size,codes:new Set(items.map(row=>row.sapCode)).size,
+    allDocuments:allDocuments.size,allCodes:allCodes.size};
 }
