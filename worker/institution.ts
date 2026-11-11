@@ -170,11 +170,24 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
       if (!safeKey(key)) return reply(400, "معرّف الملف غير صالح.");
       const file = await fetch(objectUrl(key, true), { headers });
       if (!file.ok) return reply(file.status === 404 ? 404 : 502, "تعذّر فتح الملف المحفوظ.");
-      return new Response(file.body, {
+      // The existing private bucket permits application/json only. Archive originals
+      // losslessly as base64 inside a JSON envelope, then restore their exact bytes here.
+      const wrapped = await file.json() as { data?: string; originalSize?: number };
+      if (typeof wrapped?.data !== "string" ||
+          wrapped.data.length > Math.ceil(maxSapFileBytes * 4 / 3) + 16) {
+        return reply(502, "الملف المؤرشف غير صالح.");
+      }
+      const decoded = Buffer.from(wrapped.data, "base64");
+      if (!decoded.length || decoded.length > maxSapFileBytes ||
+          decoded.length !== wrapped.originalSize) return reply(502, "حجم الملف المؤرشف غير متطابق.");
+      const restored = new Uint8Array(decoded.length);
+      restored.set(decoded);
+      return new Response(restored.buffer, {
         headers: {
           ...privateHeaders,
-          "Content-Type": file.headers.get("Content-Type") || "application/octet-stream",
+          "Content-Type": "application/octet-stream",
           "X-Content-Type-Options": "nosniff",
+          "Content-Disposition": "attachment",
         },
       });
     }
@@ -220,17 +233,28 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
     const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
       byte => byte.toString(16).padStart(2, "0")).join("");
     const key = "lieutenant/" + kind + "__" + digest.slice(0, 32) + "__" + filename;
+    // Preserve bytes exactly, using JSON envelope because the existing bucket is
+    // explicitly restricted to application/json (and is intentionally kept unchanged).
+    const body = JSON.stringify({
+      originalSize: bytes.byteLength,
+      data: Buffer.from(bytes).toString("base64"),
+    });
     const saved = await fetch(objectUrl(key), {
       method: "POST",
       headers: {
         ...Object.fromEntries(headers),
-        "Content-Type": request.headers.get("Content-Type") || "application/octet-stream",
+        "Content-Type": "application/json",
         "x-upsert": "false",
       },
-      body: bytes,
+      body,
     });
-    if (!saved.ok && saved.status !== 409) return reply(502, "تعذّر حفظ الملف في قاعدة بيانات Supabase.");
-    return Response.json({ key, name: filename, duplicate: saved.status === 409, size: bytes.byteLength },
+    let duplicate = saved.status === 409;
+    if (!saved.ok && saved.status === 400) {
+      const detail = await saved.text();
+      duplicate = /already exists|resourcealreadyexists|asset already exists/i.test(detail);
+    }
+    if (!saved.ok && !duplicate) return reply(502, "تعذّر حفظ الملف في قاعدة بيانات Supabase.");
+    return Response.json({ key, name: filename, duplicate, size: bytes.byteLength },
       { headers: privateHeaders });
   } catch {
     return reply(502, "تعذّر الاتصال بأرشيف Supabase أو قراءة الملف.");
