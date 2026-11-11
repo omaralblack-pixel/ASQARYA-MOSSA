@@ -23,7 +23,8 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
   const summary=(draft as Draft&{summary?:{status?:string}}).summary;
   // The owner's approved MATCH is authoritative for the old group. Only PAGE ownership
   // is exempted. This does NOT assert that a group transfer belongs to a specific invoice.
-  const acceptedOldGroup=multi&&!!savedDate&&savedDate<LEGACY_PAGE_CUTOFF&&summary?.status==='match';
+  const acceptedOldGroup=multi&&!!savedDate&&savedDate<LEGACY_PAGE_CUTOFF&&
+    (summary?.status==='match'||(!summary?.status&&saved.record.status==='match'));
   for(const transfer of draft.transfers||[]){
     const numbers=transferNumbers(transfer.number||'');
     if(numbers.length!==1||!/^\d{4,20}$/.test(numbers[0])){
@@ -134,6 +135,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     const transfers=linked.assigned, unassignedTransfers=linked.unassigned;
     if(!transfers.length&&!unassignedTransfers.length)blockers.push('فاتورة '+number+': لم يتم التحقق من أي ترحيل مرتبط بها.');
     const payloadSummary=(saved.draft as Draft & {summary?:{status?:string}}).summary;
+    const approvedStatus=payloadSummary?.status||saved.record.status;
     const rowBase={...base,transfers,unassignedTransfers,branch:saved.record.branch||''};
     if(amount===null||confirmed===null){
       blockers.push('فاتورة '+number+': مبلغ غير صالح أو مفقود في ملف سجى أو سجل المشروع.');
@@ -141,7 +143,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     }
     if(amount!==confirmed)return {...rowBase,state:'review',reason:'فرق مبلغ: سجى '+row.amount+' / السجل '+saved.invoice.amount};
     if(saved.invoice.complete!==true)return {...rowBase,state:'pending',reason:'الفاتورة محفوظة لكن الورق غير مؤكد'};
-    if(payloadSummary?.status&&payloadSummary.status!=='match')return {...rowBase,state:'review',reason:'المطابقة المحفوظة غير معتمدة: '+payloadSummary.status};
+    if(approvedStatus&&approvedStatus!=='match')return {...rowBase,state:'review',reason:'المطابقة المحفوظة غير معتمدة: '+approvedStatus};
     return {...rowBase,state:'received',reason:'رقم الفاتورة والمبلغ مؤكدان'};
   });
   const count={received:0,pending:0,missing:0,review:0};

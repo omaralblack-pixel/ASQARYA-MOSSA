@@ -44,13 +44,13 @@ export default function InstitutionAudit({onOpenInvoice}:{
   function exportExcel(){
     if(!report?.rows.length)return;
     const rows:(string|number)[][]=[
-      ['رقم الفاتورة','الفرع','التاريخ','الترحيلات المرتبطة','المبلغ (د.أ)','ترحيلات غير محددة الصفحات'],
+      ['رقم الفاتورة','الفرع','التاريخ','الترحيلات المرتبطة','المبلغ (د.أ)','ترحيلات المجموعة المعتمدة','ترحيلات تحتاج مراجعة'],
       ...report.rows.map(row=>[
         row.number,row.branch,row.date,row.transferNumbers.join('، '),row.amount,
-        row.unresolvedTransferNumbers.join('، ')
+        (row.groupConfirmedTransfers||[]).join('، '),row.unresolvedTransferNumbers.join('، ')
       ]),
     ];
-    const workbook=tableWorkbook(rows,'فواتير المؤسسة',[23,28,17,44,20,44]);
+    const workbook=tableWorkbook(rows,'فواتير المؤسسة',[23,28,17,44,20,44,44]);
     const url=URL.createObjectURL(workbook),anchor=document.createElement('a');
     anchor.href=url;
     anchor.download='institution-invoices-'+report.from+'-to-'+report.to+'.xlsx';
@@ -98,8 +98,11 @@ export default function InstitutionAudit({onOpenInvoice}:{
                 <td>{row.branch||'غير محدد'}</td>
                 <td dir="ltr">{row.date}</td>
                 <td>{row.transferNumbers.join('، ')||'غير محددة'}
+                  {(row.groupConfirmedTransfers||[]).length>0&&<p className="hint">
+                    ترحيلات المجموعة المعتمدة: {row.groupConfirmedTransfers.join('، ')}
+                  </p>}
                   {row.unresolvedTransferNumbers.length>0&&<p className="amber">
-                    ترحيلات المجموعة غير محددة الصفحات: {row.unresolvedTransferNumbers.join('، ')}
+                    ترحيلات تحتاج مراجعة مستقلة: {row.unresolvedTransferNumbers.join('، ')}
                   </p>}</td>
                 <td dir="ltr">{row.amount||'غير مدخل'}</td>
                 <td><button type="button" className="button secondary small" disabled={!!opening}
@@ -109,7 +112,7 @@ export default function InstitutionAudit({onOpenInvoice}:{
             })}</tbody>
           </table></div>}
         {openError&&<p role="alert" className="banner danger">{openError}</p>}
-        <p className="hint">ملف Excel يحتوي الفواتير الخمس خانات المطلوبة، ومعها عمود مستقل للترحيلات التي لم تُحدَّد صفحاتها بعد. لن ينسب الجندي ترحيلًا لفاتورة دون دليل محفوظ.</p>
+        <p className="hint">ملف Excel يحتوي بيانات الفواتير المطلوبة، وترحيلات المجموعات القديمة المعتمدة تظهر كترحيلات مجموعة دون اشتراط أرقام الصفحات؛ ولا تُنسب كأنها تخص فاتورة منفردة.</p>
       </div>}
     </section>
   </div>;

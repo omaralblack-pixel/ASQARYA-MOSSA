@@ -61,6 +61,16 @@ assert.deepEqual(result.rows.map(r=>r.unassignedTransfers.map(t=>t.number)),
  'Group-certified transfers must not be falsely assigned to individual invoice pages');
 assert.equal(result.rows.every(r=>r.reason.includes('مؤكدان')),true);
 assert.equal(result.legacyWarnings.length,4);
+const fallbackApproved=record('fallback',[
+ {...invoice('2624002303','186.400'),date:'2026-11-09'},
+ {...invoice('2624002304','591.160'),date:'2026-11-09'}
+],[transfer('2612001','DAR00001','001','011')],{summary:undefined});
+fallbackApproved.status='match';
+const fallbackReport=evaluateSerial([row(5,'2624002303','186.400')],[fallbackApproved]);
+assert.deepEqual(fallbackReport.blockers,[],
+ 'Old records with a MATCH database status but no embedded summary are still approved');
+assert.equal(fallbackReport.rows[0].state,'received');
+
 const oldNov10=record('g-10',[
  {...invoice('2624002303','186.400'),date:'2026-11-10'},
  {...invoice('2624002304','591.160'),date:'2026-11-10'}
