@@ -170,7 +170,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
    for(let c=18;c<=last;c++){
     const cell=ensureCell(d,row,c,h.row);
     if(origin?.getAttribute('s'))cell.setAttribute('s',origin.getAttribute('s')!);
-    editCell(d,cell,c===legacyColumn?(h.row===3?'ترحيلات المجموعة غير الموزعة':'ليست منسوبة لفاتورة'):(h.row===3?'تعديل '+(c-12):'تحويل رقم'),pkg.shared);
+    editCell(d,cell,c===legacyColumn?(h.row===3?'ترحيلات المجموعة المعتمدة':'ارتباط معتمد بالمجموعة'):(h.row===3?'تعديل '+(c-12):'تحويل رقم'),pkg.shared);
    }
   }
   const cols=find(d,'cols');
