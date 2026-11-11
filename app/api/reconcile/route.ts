@@ -24,7 +24,13 @@ async function currentPageSortingCatalog():Promise<AuditCatalog>{
  if(!validateAuditCatalog(saved.catalog))throw Error('مرجع فرز الصفحات المحفوظ غير صالح.');
  return saved.catalog;
 }
-export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('pageSortingCatalog')){
+export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('lieutenant')){
+ const [records,queue]=await Promise.all([
+  db().prepare('SELECT id,branch,status,payload FROM reconciliations ORDER BY updated DESC').all(),
+  db().prepare('SELECT transfer_no,doc_date,payload,source_file,created FROM lieutenant_queue ORDER BY doc_date,transfer_no').all(),
+ ]);
+ return json({records:records.results,queue:queue.results});
+}if(u.searchParams.has('pageSortingCatalog')){
  return json({catalog:await currentPageSortingCatalog()});
 }if(u.searchParams.has('invoiceListFrom')||u.searchParams.has('invoiceListTo')){
  const from=u.searchParams.get('invoiceListFrom')||'';
@@ -342,5 +348,67 @@ const write=before
  :db().prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING').bind('reconciliationReference',value);
 if(!(await write.run()).meta.changes)return json({error:'تغيّر مرجع الأصناف أثناء الحفظ. أعد المحاولة.'},409);
 return json({ok:true,reference:items})}
-if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources);
+if (b.action === 'lieutenantImport') {
+ const input=b.transfers as unknown;
+ const sourceFile=String(b.sourceFile||'');
+ if(!/^lieutenant\/[a-z]+__[a-f0-9]{32}__[^/]{1,120}$/.test(sourceFile)||
+   !Array.isArray(input)||!input.length||input.length>50)
+   return json({error:'احفظ ملف SAP على Supabase أولًا، ثم أرسل دفعة من 1 إلى 50 ترحيلًا.'},400);
+ const incoming:{number:string;date:string;paste:string;branch:string;remarks:string;reverse:boolean;cancellationMentioned:boolean;invoiceNumbers:string[]}[]=[];
+ const seen=new Set<string>();
+ for(const row of input){
+   const item=row as Record<string,any>;
+   const number=String(item?.number||'').trim();
+   const date=dateValue(String(item?.date||''));
+   const paste=String(item?.paste||'');
+   const branch=String(item?.branch||'');
+   const remarks=String(item?.remarks||'');
+   if(!/^\d{4,20}$/.test(number)||seen.has(number)||!date||!paste||paste.length>100000||
+      branch.length>120||remarks.length>2000)
+     return json({error:'ترحيل غير صالح أو مكرر داخل الدفعة: '+number},400);
+   seen.add(number);
+   const lines=paste.replace(/\r/g,'').trim().split('\n');
+   if(lines.length<2||lines.length>2000||
+     lines[0].replace(/\s/g,'').toLowerCase()!=='itemno.itemdescriptionquantityuomcodefromwarehousetowarehouse')
+     return json({error:'أعمدة أصناف SAP غير صالحة في الترحيل '+number},400);
+   for(const [i,line] of lines.slice(1).entries()){
+     const cells=line.split('\t');
+     const qty=Number(String(cells[2]||'').replace(/,/g,''));
+     if(cells.length!==6||!/^[A-Z]{2,6}\d{3,10}$/.test(cells[0])||
+       !Number.isFinite(qty)||qty<0||qty>100000000||
+       !['piece','carton','kg'].includes(String(cells[3]).toLowerCase())||
+       !/^\d{3}$/.test(cells[4])||!/^\d{3}$/.test(cells[5])||
+       (cells[4]!=='011'&&cells[5]!=='011')||cells[4]===cells[5])
+       return json({error:'سطر SAP غير صالح في الترحيل '+number+'، السطر '+(i+2)},400);
+   }
+   incoming.push({number,date,paste,branch,remarks,reverse:item?.reverse===true,
+     cancellationMentioned:item?.cancellationMentioned===true,
+     invoiceNumbers:Array.isArray(item?.invoiceNumbers)?
+       item.invoiceNumbers.filter((n:unknown)=>typeof n==='string'&&/^\d{10}$/.test(n)).slice(0,30):[]});
+ }
+ // Scan current reconciliations, not only transfer_keys: old groups can contain several numbers.
+ const [groups,queued]=await Promise.all([
+   db().prepare('SELECT payload FROM reconciliations').all<{payload:string}>(),
+   db().prepare('SELECT transfer_no FROM lieutenant_queue').all<{transfer_no:string}>(),
+ ]);
+ const existing=new Set<string>(queued.results.map(x=>x.transfer_no));
+ for(const row of groups.results){
+   let saved:Draft;
+   try{saved=JSON.parse(row.payload) as Draft}catch{continue}
+   for(const transfer of saved.transfers||[])
+     for(const number of transferNumbers(transfer.number||''))existing.add(number);
+ }
+ const pending=incoming.filter(item=>!existing.has(item.number));
+ const queries=pending.map(item=>db().prepare(
+   'INSERT OR IGNORE INTO lieutenant_queue (transfer_no,doc_date,payload,source_file,created) VALUES (?,?,?,?,?)'
+ ).bind(item.number,item.date,JSON.stringify({
+     transfer:{id:'lieutenant-'+item.number,number:item.number,date:item.date,paste:item.paste},
+     branch:item.branch,remarks:item.remarks,reverse:item.reverse,
+     cancellationMentioned:item.cancellationMentioned,invoiceNumbers:item.invoiceNumbers,
+   }),sourceFile,new Date().toISOString()));
+ const results=queries.length?await db().batch(queries):[];
+ const added=results.reduce((count,result)=>count+(result.meta.changes||0),0);
+ return json({added,existing:incoming.length-added,total:incoming.length});
+ }
+ if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources);
 return json({error:'طلب غير معروف'},400)}catch{return json({error:'تعذّر الحفظ. أعد المحاولة.'},500)}}
