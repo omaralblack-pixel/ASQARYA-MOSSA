@@ -6,7 +6,7 @@ const compile=source=>ts.transpileModule(source,{compilerOptions:{target:ts.Scri
 const url=source=>'data:text/javascript;base64,'+Buffer.from(source).toString('base64');
 const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
 const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'");
-const {evaluateSerial,serialColumns,serialReviewNote}=await import(url(compile(source)));
+const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns}=await import(url(compile(source)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from,to)=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
 const invoice=(number,amount,complete=true)=>({number,amount,complete});
@@ -61,6 +61,19 @@ assert.deepEqual(result.rows.map(r=>r.unassignedTransfers.map(t=>t.number)),
  'Group-certified transfers must not be falsely assigned to individual invoice pages');
 assert.equal(result.rows.every(r=>r.reason.includes('مؤكدان')),true);
 assert.equal(result.legacyWarnings.length,4);
+// Regression: Gardenz invoices 2624002303/04 were previously blank in Saja K:Q
+// because approved historical group transfers were retained separately.
+assert.deepEqual(result.rows.map(r=>serialInvoiceColumns(r)),
+ [['2612001','2612002'],['2612001','2612002']],
+ 'Both Saja invoice rows must list approved historical group transfer numbers');
+assert.deepEqual(result.rows.map(r=>r.transfers),[[],[]],
+ 'The export must not fabricate saved invoice-page ownership');
+// If a transfer is independently allocated and a different approved transfer is
+// group-level, show both once with their correct main/dry warehouse columns.
+assert.deepEqual(serialInvoiceColumns({
+ transfers:[{number:'2615908',kind:'main'}],
+ unassignedTransfers:[{number:'2615908',kind:'main'},{number:'2615826',kind:'dry'}],
+}),['2615908','2615826'],'Keep existing main and shared dry numbers without duplicating them');
 const fallbackApproved=record('fallback',[
  {...invoice('2624002303','186.400'),date:'2026-11-09'},
  {...invoice('2624002304','591.160'),date:'2026-11-09'}
