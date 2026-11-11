@@ -1,6 +1,6 @@
 import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
-import {previewHistoricalFinancialSort,proposeHistoricalFinancialSort,learnHistoricalPageHints,type FinancialRecord,type FinancialDraft} from '../../lib/historical-financial-sort';
+import {previewHistoricalFinancialSort,proposeHistoricalFinancialSort,learnHistoricalPageHints,isVerifiedFinancialSort,type FinancialRecord,type FinancialDraft} from '../../lib/historical-financial-sort';
 import {sortSoldierInvoicePages} from '../../lib/soldier-page-sort';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
@@ -267,11 +267,21 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   const nonce = crypto.randomUUID();
   const now = new Date().toISOString();
   const currentCatalog=await currentPageSortingCatalog();
-  const sorted=sortSoldierInvoicePages(withInvoiceDates({
+  const forSorting=withInvoiceDates({
     ...d, id, version, referenceSnapshot: previous?.referenceSnapshot,
     transfers: d.transfers.map((transfer, index) => ({...transfer, number: ts[index]})),
     invoices: d.invoices.map((invoice, index) => ({...invoice, number: ns[index]})),
-  }),currentCatalog);
+  });
+  // A saved historical financial distribution must stay intact on ordinary saves;
+  // stale allocations must not be accepted under a different amount or SAP source.
+  const financial=(forSorting as FinancialDraft).financialPageSort;
+  if(financial&&!isVerifiedFinancialSort(forSorting as FinancialDraft))
+    return json({error:'تغيّرت مبالغ أو أصناف الكشف القديم بعد تنظيمه ماليًا. لا يجوز اعتماد توزيع الصفحات القديم؛ راجع السجل قبل تعديله.'},409);
+  const sorted=financial
+    ?{draft:forSorting,assigned:Object.keys(forSorting.soldierLineAllocations||{}).length,
+        split:Object.values(forSorting.soldierLineAllocations||{}).filter(parts=>Object.keys(parts).length>1).length,
+        unresolved:[]}
+    :sortSoldierInvoicePages(forSorting,currentCatalog);
   const prepared = prepareReconciliation(sorted.draft, await refs());
   const reference = prepared.reference;
   const clean = {...prepared.draft, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
