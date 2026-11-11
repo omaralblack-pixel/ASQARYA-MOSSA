@@ -171,13 +171,31 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     if(amount!==confirmed)return {...rowBase,state:'review',reason:'فرق مبلغ: عمر '+omarAmount+' / سجى '+row.amount};
     if(saved.invoice.complete!==true)return {...rowBase,state:'pending',reason:'الفاتورة محفوظة لكن الورق غير مؤكد'};
     if(approvedStatus&&approvedStatus!=='match')return {...rowBase,state:'review',reason:'المطابقة المحفوظة غير معتمدة: '+approvedStatus};
-    if(transferHasErrors)return {...rowBase,state:'review',reason:'يوجد خطأ في ربط أو تصنيف الترحيلات؛ راجع شيت مراجعة عمر'};
+    if(transferHasErrors)return {...rowBase,state:'review',reason:'يوجد خطأ في ربط أو تصنيف الترحيلات؛ راجع أرقام الترحيلات'};
     if(!transfers.length&&!unassignedTransfers.length)return {...rowBase,state:'review',reason:'لم يتم التحقق من أي ترحيل مرتبط بالفاتورة'};
     return {...rowBase,state:'received',reason:'رقم الفاتورة والمبلغ مؤكدان'};
   });
   const count={received:0,pending:0,missing:0,review:0};
   for(const row of result)count[row.state]++;
   return {rows:result,blockers:[...new Set(blockers)],legacyWarnings:[...new Set(legacyWarnings)],count};
+}
+/** Only describe exceptions; approved rows should never receive repeated Omar/Saja values. */
+export function serialReviewNote(row:SerialRow):string {
+ if(row.state==='received')return '';
+ const parts:string[]=[];
+ if(row.omarNumber&&row.number&&row.omarNumber!==row.number)
+   parts.push('فرق رقم الفاتورة: عمر '+row.omarNumber+'، سجى '+row.number);
+ if(row.omarAmount&&row.amount){
+   const omar=fils(row.omarAmount),saja=fils(row.amount);
+   if(omar!==null&&saja!==null&&omar!==saja)
+     parts.push('فرق المبلغ: عمر '+(omar/1000).toFixed(3)+' د.أ، سجى '+(saja/1000).toFixed(3)+' د.أ');
+ }
+ if(!parts.length){
+   if(row.state==='missing')parts.push('غير موجودة في سجل عمر؛ وصول الورق غير مؤكد');
+   else if(row.state==='pending')parts.push('ورق الفاتورة غير مؤكد في سجل عمر');
+   else if(row.reason)parts.push(row.reason);
+ }
+ return parts.join(' | ');
 }
 export function serialColumns(transfers:SerialTransfer[]):string[] {
   const seen=new Set<string>();
