@@ -3,9 +3,6 @@ import {useEffect,useMemo,useRef,useState} from 'react';
 import SapImport from './SapImport';
 import InstantMatch from './InstantMatch';
 import InstitutionAudit from './InstitutionAudit';
-import SoldierPageSorter from './SoldierPageSorter';
-import {isHistoricalSoldierRecord} from '../lib/soldier-start';
-import {sharedInstitutionOptions,type AuditCatalog} from '../lib/audit-catalog';
 import CatalogReplacement from './CatalogReplacement';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -41,8 +38,6 @@ function Badge({state,label}:{state:string;label?:string}){return <span classNam
 function TransferCard({transfer,index,onChange,onRemove,onLookup}:{transfer:any,index:number,onChange:(t:any)=>void,onRemove:()=>void,onLookup:(number:string)=>void}){const parsed=useMemo(()=>parseTransfer(transfer.paste,{allowReverse:true}),[transfer.paste]);return <section className="transfer-card"><div className="card-title"><span className="number">{index+1}</span><b>الترحيل {index+1}</b>{index>0&&<button className="icon-button danger" aria-label={'حذف الترحيل '+(index+1)} onClick={onRemove}><Trash2 size={16}/></button>}</div><div className="two-fields"><label>رقم الترحيل<input value={transfer.number} onChange={e=>onChange({...transfer,number:e.target.value})} onBlur={e=>{if(e.target.value.trim()&&!transfer.paste.trim())onLookup(e.target.value.trim())}} placeholder="مثال: 2615835"/></label><label>تاريخ الترحيل<input type="date" value={transfer.date} onChange={e=>onChange({...transfer,date:e.target.value})}/></label></div><label className="paste-label">جدول SAP<textarea aria-label={'جدول SAP '+(index+1)} value={transfer.paste} onChange={e=>onChange({...transfer,paste:e.target.value})} placeholder={'الصق جدول الترحيل مع العناوين هنا…\nItem No.    Quantity    UoM Name    From Warehouse    To Warehouse'} dir="ltr"/></label><div className="paste-summary">{transfer.paste?<><span><CheckCircle2 size={14}/>{parsed.lines.length} بند صالح</span>{parsed.lines.some(line=>line.from==='011')&&<span>ترحيل عكسي · يُخصم من الصافي</span>}{parsed.issues.length>0&&<span className="red">{parsed.issues.length} ملاحظات قراءة</span>}{parsed.excluded.length>0&&<span className="amber">{parsed.excluded.length} خارج مسارات المؤسسة</span>}</>:<span>نسخ من SAP ← لصق هنا. تُقرأ Quantity فقط.</span>}</div>{parsed.issues.length>0&&<details><summary>ملاحظات قراءة الترحيل</summary>{parsed.issues.map((p,i)=><p className="red" key={i}>{p}</p>)}</details>}{parsed.excluded.length>0&&<details><summary>بنود خارج نطاق المؤسسة</summary>{parsed.excluded.map((p,i)=><p key={i}>{p}</p>)}</details>}</section>}
 export default function Home(){const [reference,REF]=useState<Item[]>([]),[branches,BR]=useState<string[]>([]),[drivers,DR]=useState<string[]>([]),[draft,D]=useState<OrderedDraft|null>(null),[tab,T]=useState('work'),[loading,L]=useState(true),[busy,B]=useState(false),[error,E]=useState(''),[notice,N]=useState(''),[records,REC]=useState<any[]>([]),[query,Q]=useState(''),[onlyDiff,DIFF]=useState(false),[sort,SORT]=useState('entry'),[pageFilter,PAGE]=useState('all'),[pick,PICK]=useState(''),[edit,EDIT]=useState<Item|null>(null),[linkSap,LINK]=useState(''),[importTexts,IT]=useState<Record<string,string>>({}),[month,M]=useState(today().slice(0,7)),[serial,SERIAL]=useState(''),[columns,COLS]=useState({number:-1,date:-1,branch:-1}),[filtered,FILTERED]=useState(false),[dateFormat,DF]=useState('dmy'),[monthTab,MT]=useState('missing'),[monthReady,MR]=useState(false);
 const [editOriginal,setEditOriginal]=useState<Item|null>(null);
-const [historicalSoldierRecordId,HSR]=useState('');
-const [auditCatalog,SETAUDITCAT]=useState<AuditCatalog|null>(null);
 const focusOpenedTransfers=useRef(false);
 const [editAlias,setEditAlias]=useState('');
 const [sapPreview,setSapPreview]=useState<{groups:SapImportGroup[];records:{id:string;payload:string}[]}>({groups:[],records:[]});
@@ -59,16 +54,10 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
   return stored.transfers.flatMap(transfer=>transferNumbers(transfer.number).map(number=>[number,record.id] as const));
 })),[sapPreview.records]);
 useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','audit','replace','stock','serial-soldier'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
-useEffect(()=>{let active=true;fetch('/api/reconcile?pageSortingCatalog=1',{cache:'no-store'})
- .then(async response=>{if(!response.ok)throw Error('مرجع الجندي غير متاح.');return await response.json() as {catalog:AuditCatalog}})
- .then(data=>{if(active)SETAUDITCAT(data.catalog as AuditCatalog)})
- .catch(()=>{if(active)SETAUDITCAT(null)});
- return ()=>{active=false};
-},[]);
+
 const prepared=useMemo(()=>draft?prepareReconciliation(draft,reference):null,[draft,reference]);
 const baseResult=prepared?.result??null;
 const result=baseResult;
-const sharedCodes=useMemo(()=>auditCatalog?sharedInstitutionOptions(auditCatalog):[],[auditCatalog]);
 useEffect(()=>{
  if(prepared&&prepared.draft!==draft)D(current=>current===draft?prepared.draft:current);
 },[draft,prepared]);
@@ -331,8 +320,7 @@ async function openRecord(id:string,invoiceId?:string){
   }
   const next=withInvoiceDates({...saved,mode:'manual',checks:saved.checks||{},id:data.record.id,version:data.record.version,useCurrentReference:false});
   REF(settings.reference);
-  HSR(isHistoricalSoldierRecord(data.record.created)?data.record.id:'');
-  setTransferSources({});
+    setTransferSources({});
   focusOpenedTransfers.current=invoiceId!==undefined;
   D(next);PAGE(page);Q('');T('work');
 }
@@ -513,7 +501,7 @@ async function save() {
           soldierLineTotals:saved.soldierLineTotals,soldierManualLineKeys:saved.soldierManualLineKeys}
       : current);
     N(draft.invoices.some(invoice => invoiceDocumentNo(invoice.number))
-? 'تم حفظ الفاتورة وترحيلاتها. تدقيقها اليدوي مستقل عن فرز الجندي.'
+? 'تم حفظ الفاتورة وترحيلاتها.'
 : 'تم حفظ الترحيل في السجل.');
     if(sapPreview.groups.length){
       try{
@@ -536,33 +524,11 @@ return <div className="recon-app"><header className="topbar"><a className="brand
   if((draft.id||draft.transfers.some(transfer=>transfer.paste.trim()))&&!confirm('فتح كشف الاستيراد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;
   setTransferSources({});D(imported);PAGE('all');Q('');E('');
   document.getElementById('reconciliation-group')?.scrollIntoView({block:'start'});
-}}/><section id="reconciliation-group" className="panel"><div className="section-title"><span className="step">01</span><div><h2>بيانات المطابقة</h2><p>حدّد فرع الفاتورة الزرقاء.</p></div></div><div className="form-grid"><GroupLookup label="فرع المؤسسة" required placeholder="اكتب اسم الفرع أو رقمه" items={branches} value={draft.branch} onChange={branch=>change({branch})}/><GroupLookup label="الشوفير" placeholder="اكتب اسم الشوفير أو رقمه (اختياري)" items={drivers} value={draft.driver} onChange={driver=>change({driver})}/><label>تاريخ الكشف<input type="date" value={draft.date} onChange={e=>change({date:e.target.value})}/></label></div></section><section className="panel"><div className="section-title"><span className="step">02</span><div><h2 id="reconciliation-transfers-heading" tabIndex={-1}>ترحيلات SAP</h2><p>أضف الترحيل برقم SAP. تُخصم الكميات العكسية من الصافي.</p>{selectedInvoice&&<p>الفاتورة المفتوحة <b>{selectedInvoice.number||"بلا رقم"}</b> · صفحة {selectedPage} · <a href="#soldier-page-sort">فرز الأصناف</a> · <a href="#invoice-sheet">عرض كشف الفاتورة</a></p>}</div><button type="button" className="button secondary" aria-haspopup="dialog" disabled={busy} onClick={()=>{setSearchTransferNumber('');setSearchTransferError('');setSearchTransferMissing(false);setSearchTransferOpen(true)}}><Plus size={16}/>إضافة ترحيل بالرقم</button></div>
+}}/><section id="reconciliation-group" className="panel"><div className="section-title"><span className="step">01</span><div><h2>بيانات المطابقة</h2><p>حدّد فرع الفاتورة الزرقاء.</p></div></div><div className="form-grid"><GroupLookup label="فرع المؤسسة" required placeholder="اكتب اسم الفرع أو رقمه" items={branches} value={draft.branch} onChange={branch=>change({branch})}/><GroupLookup label="الشوفير" placeholder="اكتب اسم الشوفير أو رقمه (اختياري)" items={drivers} value={draft.driver} onChange={driver=>change({driver})}/><label>تاريخ الكشف<input type="date" value={draft.date} onChange={e=>change({date:e.target.value})}/></label></div></section><section className="panel"><div className="section-title"><span className="step">02</span><div><h2 id="reconciliation-transfers-heading" tabIndex={-1}>ترحيلات SAP</h2><p>أضف الترحيل برقم SAP. تُخصم الكميات العكسية من الصافي.</p>{selectedInvoice&&<p>الفاتورة المفتوحة <b>{selectedInvoice.number||"بلا رقم"}</b> · صفحة {selectedPage} · <a href="#invoice-sheet">عرض كشف الفاتورة</a></p>}</div><button type="button" className="button secondary" aria-haspopup="dialog" disabled={busy} onClick={()=>{setSearchTransferNumber('');setSearchTransferError('');setSearchTransferMissing(false);setSearchTransferOpen(true)}}><Plus size={16}/>إضافة ترحيل بالرقم</button></div>
 <div className="cards-grid">{draft.transfers.map((t,i)=><TransferCard key={t.id} transfer={t} index={i} onChange={v=>editTransfer(i,v)} onRemove={()=>change({transfers:draft.transfers.filter((_,j)=>j!==i)})} onLookup={number=>lookupTransfer(t.id,number)}/>)}</div></section><section className="panel invoice-entry"><div className="section-title"><span className="step">03</span><div><h2>الفواتير الورقية المرتبطة</h2><p>الفاتورة 1 للأصناف التي وضعت لها 1، والفاتورة 2 للأصناف التي وضعت لها 2، وهكذا. اكتب رقم الفاتورة الورقية الحقيقي في الحقل المقابل.</p></div><button className="button secondary" disabled={draft.invoices.length>=30} onClick={()=>change({invoices:[...draft.invoices,newInvoice()]})}><Plus size={16}/>إضافة فاتورة</button></div><div className="invoice-grid">{draft.invoices.map((inv,i)=><article className="invoice-card" key={inv.id}><div className="card-title"><FileText size={18}/><input className="invoice-title-input" aria-label={'عنوان الفاتورة الزرقاء '+(i+1)} title="اضغط لتعديل عنوان الفاتورة" maxLength={80} value={inv.title??'الفاتورة الزرقاء '+(i+1)} onChange={e=>invoiceChange(i,{title:e.target.value})} onBlur={()=>{const title=inv.title?.trim()||undefined;if(title!==inv.title)invoiceChange(i,{title})}}/><button type="button" className="text-button" onClick={()=>{PAGE(String(i+1));Q('');document.getElementById('invoice-sheet')?.scrollIntoView({block:'start'})}}>عرض كشف الفاتورة {i+1}</button>{i>0&&<button className="icon-button danger" aria-label={'حذف الفاتورة '+(i+1)} onClick={()=>removeInvoice(i)}><Trash2 size={15}/></button>}</div><div className="invoice-fields"><label>رقم الفاتورة الورقية الحقيقي<input value={inv.number} onChange={e=>invoiceChange(i,{number:e.target.value,manualNumber:true})}/></label><label>مبلغ الفاتورة (د.أ)<input inputMode="decimal" value={inv.amount} onChange={e=>invoiceChange(i,{amount:e.target.value})} placeholder="0.000"/></label><div className="invoice-date-field"><label>{inv.manualDate?'تاريخ الفاتورة · تعديل يدوي':'تاريخ الفاتورة · قبل الترحيل بيوم'}<input type="date" value={inv.date} onChange={e=>change({invoices:editInvoiceDate(draft.invoices,inv.id,e.target.value)})}/></label>{inv.manualDate&&<button type="button" className="text-button" onClick={()=>invoiceChange(i,{date:'',manualDate:false})}>رجوع للتاريخ التلقائي</button>}</div></div><label className="check-label"><input type="checkbox" checked={inv.complete} onChange={e=>invoiceChange(i,{complete:e.target.checked})}/>الفاتورة الورقية موجودة لدي</label>
- <details className="no-print" id={'page-sort-paper-lines-'+inv.id}><summary>بنود الفاتورة للمساعدة في فرز الصفحات</summary>
- <p className="hint">الصق رقم المادة وكمية الحبات من هذه الفاتورة لتحديد الصفحة الصحيحة لكل سطر SAP. هذه بيانات للفرز وليست تدقيقًا أو اعتمادًا للمطابقة.</p>
- <textarea dir="ltr" rows={5} maxLength={30000} aria-label={'بنود فاتورة الفرز '+(i+1)}
- value={inv.auditLines||''} onChange={e=>invoiceChange(i,{auditLines:e.target.value})}
- placeholder={'رقم المادة\tالكمية\n11371486\t24'}/>
- </details>
- {sharedCodes.filter(choice=>(inv.auditLines||'').split(/\r?\n/).some(line=>
-choice.codes.some(option=>digits(line.split('\t')[0]||'').trim()===option.code))).map(choice=><div key={choice.sapCode}
-className="review-list no-print" role="alert">
-<p><AlertTriangle size={16}/> <b>الصنف معروف برقمين لدى المؤسسة</b> · SAP {choice.sapCode} — {choice.sapName}</p>
-<label>اختر رقم الصنف المطبوع على هذه الفاتورة للفرز الصحيح
-<select aria-label={'رقم المؤسسة للصنف '+choice.sapCode+' في الفاتورة '+(i+1)}
-value={inv.sapInstitutionChoices?.[choice.sapCode]||''}
-onChange={e=>invoiceChange(i,{sapInstitutionChoices:{
-...(inv.sapInstitutionChoices||{}),[choice.sapCode]:e.target.value,
-}})}>
-<option value="">اختر رقم الصنف الظاهر على الورق</option>
-{choice.codes.map(option=><option key={option.code} value={option.code}>{option.code} — {option.name}</option>)}
-</select>
-</label>
-{inv.sapInstitutionChoices?.[choice.sapCode]&&<p className="hint">رقم الصنف المختار لهذه الفاتورة: <b>{inv.sapInstitutionChoices[choice.sapCode]}</b>.</p>}
-</div>)}
+
+
 </article>)}</div></section>
-<SoldierPageSorter draft={draft} catalog={auditCatalog}
-  exemptHistorical={!!draft.id&&historicalSoldierRecordId===draft.id} onChange={next=>D(next)}/>
 <section id="invoice-sheet" className="panel results-panel blue-invoice"><div className="section-title no-print"><span className="step">04</span><div><h2>كشف المؤسسة للمطابقة اليدوية</h2><p>حدد رقم الفاتورة الزرقاء لكل صنف. اضغط على الكمية لتعليمها كمُشيّكة، واضغط مرة ثانية لإلغاء العلامة.</p></div><button type="button" className="button secondary" disabled={!remainingCount} onClick={finishCurrentPage}><Check size={16}/>خلصت من صفحة {finishedPage} — انقل الباقي إلى {nextPage}</button><button className="button secondary" onClick={exportText}><ArrowUpRight size={16}/>تصدير الكشف</button><button className="icon-button" aria-label="طباعة كشف المؤسسة" onClick={()=>window.print()}><Printer size={18}/></button></div>{result.problems.length>0&&<details className="review-list no-print"><summary>{result.problems.length} نقاط يلزم إكمالها قبل اعتماد المطابقة</summary>{result.problems.map((p,i)=><p key={i}>{p}</p>)}</details>}<div className="table-controls no-print"><div className="search"><Search size={16}/><input value={query} onChange={e=>Q(e.target.value)} aria-label="البحث في أصناف الفاتورة" placeholder="ابحث بآخر 4 أرقام من رقم المادة أو بالاسم…"/></div><select aria-label="ترتيب الأصناف" value={sort} onChange={e=>SORT(e.target.value)}><option value="entry">حسب ترتيب إدخال رقم الصفحة</option><option value="asc">رقم المادة تصاعدي</option><option value="desc">رقم المادة تنازلي</option></select><select aria-label="رقم الصفحة" value={pageFilter} onChange={e=>PAGE(e.target.value)}><option value="all">كل الصفحات</option>{pageOptions.map(page=><option key={page} value={page}>{page===0?'صفحة 0 · أصناف بلا رقم':'صفحة '+page+(draft.invoices[page-1]?.number?' · فاتورة '+draft.invoices[page-1].number:'')}</option>)}</select></div>
 {selectedPage===0&&<p className="hint no-print">صفحة 0 تجمع الأصناف اللي ما حددت إلها رقم صفحة. اكتب 2 بجانب أصناف الفاتورة الثانية ثم اختر صفحة 2 لمقارنة مبلغها.</p>}
 {'excludedRows' in result&&(result.excludedRows as typeof result.rows).length>0&&<details className="no-print" open><summary>أصناف مستبعدة من المطابقة ({(result.excludedRows as typeof result.rows).length})</summary><p>الاستبعاد لهذه المجموعة فقط؛ حركة SAP الأصلية محفوظة. عند تغيّر بنود الترحيل يعود الصنف للمراجعة.</p>{(result.excludedRows as typeof result.rows).map(row=><p key={row.key}><b>{row.sapCode} · {row.name}</b> <button type="button" className="text-button" onClick={()=>restoreItem(row.key)}>إرجاع للمطابقة</button></p>)}</details>}
