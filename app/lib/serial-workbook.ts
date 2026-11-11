@@ -1,6 +1,6 @@
 import {strFromU8,strToU8,unzipSync,zipSync} from 'fflate';
 import {digits} from './reconcile';
-import {serialColumns, type SerialInput, type SerialReport, type SerialState} from './serial-soldier';
+import {serialColumns, serialReviewNote, type SerialInput, type SerialReport, type SerialState} from './serial-soldier';
 
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -150,186 +150,135 @@ function editCell(doc:Document,cell:Element,expected:string,shared:string[]){
  const is=element(doc,'is'),t=element(doc,'t');
  t.setAttribute('xml:space','preserve');setText(doc,t,expected);is.appendChild(t);cell.appendChild(is);
 }
-// A separate, non-authoritative audit sheet retains every warning for manual review.
-function appendAuditSheet(pkg:Package,report:SerialReport){
- const workbook=readXml(pkg.files['xl/workbook.xml']);
- const sheets=find(workbook,'sheets');
- if(!sheets)throw Error('قائمة شيتات Excel الأصلية مفقودة.');
- const relationships=readXml(pkg.files['xl/_rels/workbook.xml.rels']);
- const contentTypes=readXml(pkg.files['[Content_Types].xml']);
- const sheetIds=Array.from(workbook.getElementsByTagNameNS(NS,'sheet')).map(el=>Number(el.getAttribute('sheetId'))||0);
- const sheetId=Math.max(0,...sheetIds)+1;
- const usedIds=new Set(Array.from(relationships.documentElement.children).map(el=>el.getAttribute('Id')));
- let relNumber=1;while(usedIds.has('rId'+relNumber))relNumber++;
- const relId='rId'+relNumber;
- let path='xl/worksheets/omar-audit.xml',suffix=2;
- while(pkg.files[path])path='xl/worksheets/omar-audit-'+suffix+++'.xml';
- const doc=new DOMParser().parseFromString('<worksheet xmlns="'+NS+'"><sheetData/></worksheet>','application/xml');
- const data=find(doc,'sheetData')!;
- let index=0;
- function put(values:string[]){
-  index++;
-  const row=element(doc,'row');
-  row.setAttribute('r',String(index));
-  data.appendChild(row);
-  values.forEach((value,c)=>{
-   if(!value)return;
-   const cell=ensureCell(doc,row,c+1,index);
-   editCell(doc,cell,String(value),[]);
-  });
+// Keep Saja's original worksheet, numbers, amounts, sheets and print layout intact.
+// Reuse the existing remarks column when present; otherwise add only ONE remarks column.
+function notesColumn(rows:Map<number,Element>,pkg:Package,report:SerialReport):{column:number;added:boolean}{
+ const candidates=[rows.get(4),rows.get(3)].filter((row):row is Element=>!!row)
+   .flatMap(row=>children(row,'c')).filter(cell=>/ملاحظات?|remarks?|notes?/i.test(text(cell,pkg.shared)));
+ for(const cell of candidates){
+  const col=cellColumn(cell.getAttribute('r')||'');
+  if(col&&report.rows.every(item=>!find(getCell(rows.get(item.row)!,columnName(col)+item.row)??cell,'f')))
+    return {column:col,added:false};
  }
- put(['تقرير مراجعة عمر — نسخة للمراجعة فقط، لا تغيّر قاعدة المشروع']);
- put(['عدد فواتير سجى',String(report.rows.length),'واصل',String(report.count.received),'غير واصل',String(report.count.missing),'غير مؤكد',String(report.count.pending),'مراجعة',String(report.count.review)]);
- put(['صف سجى','حالة المطابقة','رقم الفاتورة — عمر','المبلغ — عمر','رقم الفاتورة — سجى','المبلغ — سجى','ترحيلات عمر المرتبطة','ترحيلات المجموعة المعتمدة','الملاحظات']);
- for(const row of report.rows)put([
-  String(row.row),({received:'واصل ومطابق',pending:'ورق غير مؤكد',missing:'غير واصل',review:'تحتاج مراجعة'} as Record<SerialState,string>)[row.state],row.omarNumber,row.omarAmount,row.number,row.amount,
-  serialColumns(row.transfers).filter(Boolean).join('، '),
-  [...new Set((row.unassignedTransfers||[]).map(t=>t.number))].join('، '),row.reason,
- ]);
- index++; // blank line separating invoice data from critical validation findings
- put(['جميع أخطاء الفحص — لا تعني إيقاف تنزيل نسخة المراجعة']);
- for(const issue of report.blockers)put([issue]);
- if(report.legacyWarnings.length){
-  index++;
-  put(['تنبيهات المجموعات القديمة']);
-  for(const warning of report.legacyWarnings)put([warning]);
- }
- const sheet=element(workbook,'sheet');
- const usedNames=new Set(Array.from(workbook.getElementsByTagNameNS(NS,'sheet')).map(el=>el.getAttribute('name')));
- let title='مراجعة عمر',n=2;
- while(usedNames.has(title))title='مراجعة عمر '+n++;
- sheet.setAttribute('name',title);sheet.setAttribute('sheetId',String(sheetId));
- sheet.setAttributeNS(REL,'r:id',relId);sheets.appendChild(sheet);
- const relNS='http://schemas.openxmlformats.org/package/2006/relationships';
- const rel=relationships.createElementNS(relNS,'Relationship');
- rel.setAttribute('Id',relId);
- rel.setAttribute('Type','http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet');
- rel.setAttribute('Target',path.slice(3));
- relationships.documentElement.appendChild(rel);
- const ctNS='http://schemas.openxmlformats.org/package/2006/content-types';
- const override=contentTypes.createElementNS(ctNS,'Override');
- override.setAttribute('PartName','/'+path);
- override.setAttribute('ContentType','application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
- contentTypes.documentElement.appendChild(override);
- pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(workbook));
- pkg.files['xl/_rels/workbook.xml.rels']=strToU8(new XMLSerializer().serializeToString(relationships));
- pkg.files['[Content_Types].xml']=strToU8(new XMLSerializer().serializeToString(contentTypes));
- pkg.files[path]=strToU8(new XMLSerializer().serializeToString(doc));
+ const existing=[rows.get(3),rows.get(4),...report.rows.map(item=>rows.get(item.row))]
+   .filter((row):row is Element=>!!row).flatMap(row=>children(row,'c'))
+   .map(cell=>cellColumn(cell.getAttribute('r')||''));
+ return {column:Math.max(17,...existing)+1,added:true};
+}
+function overwriteText(doc:Document,cell:Element,value:string){
+ if(find(cell,'f'))throw Error('توجد معادلة في خلية الملاحظات '+cell.getAttribute('r')+'؛ لا يجوز استبدالها.');
+ for(const part of [...cell.children])if(['v','is'].includes(part.localName))cell.removeChild(part);
+ cell.setAttribute('t','inlineStr');
+ const inline=element(doc,'is'),textNode=element(doc,'t');
+ textNode.setAttribute('xml:space','preserve');
+ setText(doc,textNode,value);inline.appendChild(textNode);cell.appendChild(inline);
 }
 export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob {
  const pkg=load(new Uint8Array(input));
  const actual=rowsFrom(pkg);
  if(actual.rows.length!==report.rows.length||actual.rows.some((r,i)=>r.row!==report.rows[i].row||r.number!==report.rows[i].number||r.amount!==report.rows[i].amount))
-  throw Error('تغيّر محتوى الملف منذ المطابقة. ارفع ملف سجى من جديد.');
+  throw Error('تغيّر محتوى ملف سجى منذ المطابقة. ارفع الملف الأصلي من جديد.');
  const styles=ensureStyles(pkg.files);
  const d=pkg.doc,data=find(d,'sheetData')!;
  const rowElements=new Map(children(data,'row').map(row=>[Number(row.getAttribute('r')),row]));
- // Keep the original D/F and existing transfer values. Append Omar's values in new columns
- // beyond all populated template cells, so Saja's guessed values are always visible.
- let originalEnd=17;
- for(const row of rowElements.values()){
-  const no=Number(row.getAttribute('r'));
-  if(no!==3&&no!==4&&!report.rows.some(r=>r.row===no))continue;
-  for(const cell of children(row,'c')){
-   if(value(cell,pkg.shared).trim()||find(cell,'f'))
-    originalEnd=Math.max(originalEnd,cellColumn(cell.getAttribute('r')||''));
-  }
- }
- const labels=[
-  ['بيانات عمر','رقم الفاتورة — عمر'],
-  ['بيانات عمر','المبلغ — عمر'],
-  ['بيانات سجى الأصلية','رقم الفاتورة — سجى'],
-  ['بيانات سجى الأصلية','المبلغ — سجى'],
-  ['ترحيلات عمر','ترحيلات مرتبطة بالفاتورة'],
-  ['ترحيلات المجموعة المعتمدة','غير منسوبة لصفحة منفردة'],
-  ['نتيجة المراجعة','الملاحظات والفروقات'],
- ];
- const start=originalEnd+1,last=start+labels.length-1;
- for(const rowNo of [3,4]){
-  const row=rowElements.get(rowNo);
-  if(!row)throw Error('صف عنوان سجى '+rowNo+' مفقود.');
-  const template=getCell(row,'Q'+rowNo)||getCell(row,'K'+rowNo);
-  for(let i=0;i<labels.length;i++){
-   const cell=ensureCell(d,row,start+i,rowNo);
+ const notes=notesColumn(rowElements,pkg,report);
+ const last=Math.max(17,notes.column);
+ if(notes.added){
+  for(const rowNo of [3,4]){
+   const row=rowElements.get(rowNo);
+   if(!row)throw Error('عناوين الشيت الأصلي ناقصة.');
+   const cell=ensureCell(d,row,notes.column,rowNo);
+   const template=getCell(row,'Q'+rowNo)||getCell(row,'K'+rowNo);
    if(template?.getAttribute('s')&&!cell.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
-   editCell(d,cell,labels[i][rowNo===3?0:1],pkg.shared);
+   overwriteText(d,cell,rowNo===3?'ملاحظات المطابقة':'الفروقات فقط');
+  }
+  const cols=find(d,'cols');
+  if(cols){
+   const col=element(d,'col');
+   col.setAttribute('min',String(notes.column));
+   col.setAttribute('max',String(notes.column));
+   col.setAttribute('width','66');
+   col.setAttribute('customWidth','1');cols.appendChild(col);
+  }
+  // Do not expand the print area. Saja's original printed pages remain unchanged.
+  const dim=find(d,'dimension');
+  if(dim){
+   const ref=dim.getAttribute('ref')||'A1:Q1';
+   dim.setAttribute('ref',ref.replace(/:[A-Z]+(\\d+)$/,':'+columnName(notes.column)+'$1'));
   }
  }
- const cols=find(d,'cols');
- if(cols){
-  for(let c=start;c<=last;c++){
-   const node=element(d,'col');
-   node.setAttribute('min',String(c));node.setAttribute('max',String(c));
-   node.setAttribute('width',c===last?'60':'23');node.setAttribute('customWidth','1');cols.appendChild(node);
-  }
+ // Use one shared wrapping style per fill, instead of creating a style for every row.
+ const wrapStyles=new Map<string,string>();
+ const xfList=find(styles.doc,'cellXfs')!;
+ function wrapped(style:string):string{
+  if(wrapStyles.has(style))return wrapStyles.get(style)!;
+  const base=children(xfList,'xf')[Number(style)];
+  if(!base)throw Error('نمط ملاحظات Excel غير صالح.');
+  const copy=base.cloneNode(true) as Element;
+  let alignment=children(copy,'alignment')[0];
+  if(!alignment){alignment=element(styles.doc,'alignment');copy.appendChild(alignment);}
+  alignment.setAttribute('wrapText','1');
+  alignment.setAttribute('vertical','center');
+  alignment.setAttribute('horizontal','right');
+  copy.setAttribute('applyAlignment','1');
+  const index=children(xfList,'xf').length;
+  xfList.appendChild(copy);xfList.setAttribute('count',String(index+1));
+  wrapStyles.set(style,String(index));
+  return String(index);
  }
- const dim=find(d,'dimension');
- if(dim){
-  const ref=dim.getAttribute('ref')||'A1:Q1';
-  dim.setAttribute('ref',ref.replace(/:[A-Z]+(\d+)$/,':'+columnName(last)+'$1'));
- }
- const book=readXml(pkg.files['xl/workbook.xml']);
- const originalName=columnName(originalEnd);
- for(const defined of book.getElementsByTagNameNS(NS,'definedName')){
-  if(defined.getAttribute('name')==='_xlnm.Print_Area'&&defined.textContent){
-   const expr=new RegExp('\\$'+originalName+'(?=\\$\\d+)','g');
-   defined.textContent=defined.textContent.replace(expr,'$'+columnName(last));
-  }
- }
- pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(book));
  for(const item of report.rows){
   const row=rowElements.get(item.row);
-  if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في Excel.');
+  if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في ملف سجى.');
   const transfers=serialColumns(item.transfers);
-  const conflicts:string[]=[];
-  // Only fill blank K:Q positions. A differing original value remains untouched;
-  // the full authoritative transfer list is always written into Omar's own column.
-  for(let c=11;c<=17;c++){
-   const expected=transfers[c-11]||'';
-   if(!expected)continue;
-   const cell=ensureCell(d,row,c,item.row);
-   const existing=value(cell,pkg.shared).trim();
-   if(find(cell,'f')||(existing&&existing!==expected)){
-    conflicts.push(columnName(c)+': سجى '+(existing||'معادلة')+' / عمر '+expected);
-    continue;
-   }
-   if(existing===expected)continue; // preserve original Excel cell type and value
+  const original=new Set((item.originalTransfers||[]).filter(Boolean));
+  const missingTransfers:string[]=[];
+  // Fill ONLY empty slots in K:Q. Never replace a transfer already entered by Saja,
+  // and never assign a group-level transfer to an individual invoice.
+  for(const [index,transferNo] of transfers.entries()){
+   if(!transferNo||original.has(transferNo))continue;
+   const preferred=11+index;
+   const alternatives=Array.from({length:Math.max(0,18-preferred)},(_,i)=>preferred+i);
+   const target=alternatives.find(col=>{
+    const cell=getCell(row,columnName(col)+item.row);
+    return !cell||(!find(cell,'f')&&!value(cell,pkg.shared).trim());
+   });
+   if(target===undefined){missingTransfers.push(transferNo);continue;}
+   const cell=ensureCell(d,row,target,item.row);
+   const template=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row)||getCell(row,'D'+item.row);
+   if(!cell.getAttribute('s')&&template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
+   editCell(d,cell,transferNo,pkg.shared);
+   original.add(transferNo);
+  }
+  const discrepancy=serialReviewNote(item);
+  const transferWarning=missingTransfers.length?
+    'ترحيلات عمر لم تتسع لها خانات سجى: '+missingTransfers.join('، '):'';
+  const note=[discrepancy,transferWarning].filter(Boolean).join(' | ');
+  const effectiveState=transferWarning?'review':item.state;
+  if(note){
+   const cell=ensureCell(d,row,notes.column,item.row);
    if(!cell.getAttribute('s')){
-    const template=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row)||getCell(row,'D'+item.row);
+    const template=getCell(row,'J'+item.row)||getCell(row,'D'+item.row);
     if(template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
    }
-   editCell(d,cell,expected,pkg.shared);
+   const originalNote=value(cell,pkg.shared).trim();
+   const combined=originalNote?(originalNote.includes(note)?originalNote:originalNote+' | '+note):note;
+   overwriteText(d,cell,combined);
+   // Expand only the exceptional row to make the remark readable at a glance.
+   const height=Number(row.getAttribute('ht')||'0');
+   if(height<33){row.setAttribute('ht','33');row.setAttribute('customHeight','1');}
   }
-  const transferNumbers=[...item.transfers,...item.unassignedTransfers,...(item.originalTransfers||[]).map(number=>({number,kind:'adjustment' as const}))].map(t=>t.number);
-  const related=report.blockers.filter(issue=>
-    issue.startsWith('صف '+item.row+':')||
-    [item.number,item.omarNumber].filter(Boolean).some(no=>issue.includes('فاتورة '+no))||
-    transferNumbers.some(no=>issue.includes('الترحيل '+no)));
-  const notes=[item.reason,...related,...conflicts.map(v=>'اختلاف الترحيل '+v)].filter(Boolean).filter((n,i,a)=>a.indexOf(n)===i).join(' | ');
-  const values=[
-    item.omarNumber,item.omarAmount,item.number,item.amount,
-    transfers.filter(Boolean).join('، '),
-    [...new Set(item.unassignedTransfers.map(t=>t.number))].join('، '),
-    notes
-  ];
-  for(let i=0;i<values.length;i++){
-   const cell=ensureCell(d,row,start+i,item.row);
-   const template=getCell(row,'Q'+item.row)||getCell(row,'D'+item.row);
-   if(!cell.getAttribute('s')&&template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
-   editCell(d,cell,values[i],pkg.shared);
-  }
-  for(let c=2;c<=last;c++){
-   const cell=ensureCell(d,row,c,item.row);
+  for(let col=2;col<=last;col++){
+   const cell=ensureCell(d,row,col,item.row);
    if(!cell.getAttribute('s')){
     const template=getCell(row,'D'+item.row);
     if(template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
    }
-   cell.setAttribute('s',styles.apply(cell.getAttribute('s'),item.state));
+   const colored=styles.apply(cell.getAttribute('s'),effectiveState);
+   cell.setAttribute('s',col===notes.column&&note?wrapped(colored):colored);
   }
  }
  pkg.files[pkg.name]=strToU8(new XMLSerializer().serializeToString(d));
  pkg.files['xl/styles.xml']=strToU8(new XMLSerializer().serializeToString(styles.doc));
- appendAuditSheet(pkg,report);
  const output=zipSync(pkg.files,{level:6});
  return new Blob([new Uint8Array(output)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
 }
