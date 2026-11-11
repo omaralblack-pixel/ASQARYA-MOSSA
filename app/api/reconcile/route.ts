@@ -354,7 +354,7 @@ if (b.action === 'lieutenantImport') {
  if(!/^lieutenant\/[a-z]+__[a-f0-9]{32}__[^/]{1,120}$/.test(sourceFile)||
    !Array.isArray(input)||!input.length||input.length>50)
    return json({error:'احفظ ملف SAP على Supabase أولًا، ثم أرسل دفعة من 1 إلى 50 ترحيلًا.'},400);
- const incoming:{number:string;date:string;paste:string;branch:string;remarks:string;reverse:boolean;cancellationMentioned:boolean;invoiceNumbers:string[]}[]=[];
+ const incoming:{number:string;date:string;paste:string;branch:string;remarks:string;reverse:boolean;cancellationState:string;cancellationMentioned:boolean;invoiceNumbers:string[]}[]=[];
  const seen=new Set<string>();
  for(const row of input){
    const item=row as Record<string,any>;
@@ -382,6 +382,7 @@ if (b.action === 'lieutenantImport') {
        return json({error:'سطر SAP غير صالح في الترحيل '+number+'، السطر '+(i+2)},400);
    }
    incoming.push({number,date,paste,branch,remarks,reverse:item?.reverse===true,
+     cancellationState:['active','canceled','cancellation','unknown'].includes(item?.cancellationState)?item.cancellationState:'unknown',
      cancellationMentioned:item?.cancellationMentioned===true,
      invoiceNumbers:Array.isArray(item?.invoiceNumbers)?
        item.invoiceNumbers.filter((n:unknown)=>typeof n==='string'&&/^\d{10}$/.test(n)).slice(0,30):[]});
@@ -403,7 +404,7 @@ if (b.action === 'lieutenantImport') {
    'INSERT OR IGNORE INTO lieutenant_queue (transfer_no,doc_date,payload,source_file,created) VALUES (?,?,?,?,?)'
  ).bind(item.number,item.date,JSON.stringify({
      transfer:{id:'lieutenant-'+item.number,number:item.number,date:item.date,paste:item.paste},
-     branch:item.branch,remarks:item.remarks,reverse:item.reverse,
+     branch:item.branch,remarks:item.remarks,reverse:item.reverse,cancellationState:item.cancellationState,
      cancellationMentioned:item.cancellationMentioned,invoiceNumbers:item.invoiceNumbers,
    }),sourceFile,new Date().toISOString()));
  const results=queries.length?await db().batch(queries):[];
