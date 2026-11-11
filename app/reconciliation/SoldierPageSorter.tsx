@@ -8,12 +8,22 @@ import type {AuditCatalog} from '../lib/audit-catalog';
 const equal=(a:number,b:number)=>Math.abs(a-b)<0.000001;
 
 /** Page sorter only: it never audits the accuracy or value of blue invoices. */
-export default function SoldierPageSorter({draft,catalog,onChange}:{
-  draft:Draft;catalog:AuditCatalog|null;onChange:(draft:Draft)=>void;
+export default function SoldierPageSorter({draft,catalog,onChange,exemptHistorical=false}:{
+  draft:Draft;catalog:AuditCatalog|null;onChange:(draft:Draft)=>void;exemptHistorical?:boolean;
 }){
   const [inputs,setInputs]=useState<Record<string,Record<string,string>>>({});
   const [error,setError]=useState('');
-  const proposed=useMemo(()=>catalog?sortSoldierInvoicePages(draft,catalog):null,[draft,catalog]);
+  const proposed=useMemo(()=>!exemptHistorical&&catalog?sortSoldierInvoicePages(draft,catalog):null,
+    [draft,catalog,exemptHistorical]);
+  if(exemptHistorical)return <section className="panel no-print" id="soldier-page-sort">
+    <div className="section-title"><div>
+      <h2>الجندي — فرز الأصناف إلى صفحات الفواتير الزرقاء</h2>
+      <p>السجل محفوظ قبل 11-11-2026، ولذلك هو مستثنى من فرز الجندي الجديد.</p>
+    </div></div>
+    <p className="hint">السجلات القديمة معتمدة وفق تشييكك السابق. أرقام الصفحات والتقسيمات المحفوظة
+      تبقى كما هي، ولا يُعاد فحصها أو تحويلها إلى سطور تحتاج تحديد. يمكنك فتح السجل وطباعته
+      وحفظ تعديلاتك المعتادة دون تشغيل جندي الصفحات. السجلات المنشأة من اليوم تخضع للفرز.</p>
+  </section>;
   if(!catalog||!proposed)return <section className="panel no-print">
     <h2>الجندي — فرز الأصناف على صفحات الفواتير</h2>
     <p className="amber">مرجع الأصناف المطلوب للفرز غير متاح. لا يمكن تحديد الصفحات تلقائيًا.</p>
