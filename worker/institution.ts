@@ -157,10 +157,7 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
   const { SUPABASE_URL, SUPABASE_STORAGE_SECRET } = env;
   if (!SUPABASE_URL || !SUPABASE_STORAGE_SECRET) return reply(503, "أرشيف الملازم أول غير متاح: ربط Supabase غير مفعّل.");
   const base = new URL(storagePath, SUPABASE_URL).href;
-  const headers = new Headers({
-    apikey: SUPABASE_STORAGE_SECRET,
-    Authorization: "Bearer " + SUPABASE_STORAGE_SECRET,
-  });
+  const headers = new Headers({ apikey: SUPABASE_STORAGE_SECRET });
   const url = new URL(request.url);
   const safeKey = (value: string) => value.startsWith("lieutenant/") &&
     !value.includes("..") && !value.includes("\\") && value.length <= 240;
