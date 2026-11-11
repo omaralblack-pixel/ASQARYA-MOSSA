@@ -181,8 +181,8 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   async function enqueue(source:LieutenantTransfer[],key:string){
     const valid=source.filter(row=>!row.issues.length);
     let added=0,existing=0;
-    for(let start=0;start<valid.length;start+=50){
-      const batch=valid.slice(start,start+50).map(row=>({
+    for(let start=0;start<valid.length;start+=10){
+      const batch=valid.slice(start,start+10).map(row=>({
         number:row.transfer.number,date:row.transfer.date,paste:row.transfer.paste,
         branch:row.branch,remarks:row.remarks,reverse:row.reverse,
         cancellationMentioned:row.cancellationMentioned,cancellationState:row.cancellationState,invoiceNumbers:row.invoiceNumbers,
