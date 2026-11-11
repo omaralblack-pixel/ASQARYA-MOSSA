@@ -19,7 +19,8 @@ export default function SoldierPageSorter({draft,catalog,onChange}:{
     <p className="amber">مرجع الأصناف المطلوب للفرز غير متاح. لا يمكن تحديد الصفحات تلقائيًا.</p>
   </section>;
 
-  const confirmed=draft.soldierLineAllocations!==undefined;
+  const confirmed=Object.keys(draft.soldierLineAllocations||{}).length>0;
+  const hasManualPages=Object.values(draft.pages||{}).some(value=>Number(value)>0);
   function approve(issue:PageSortIssue){
     if(!proposed)return;
     const parsed=Object.entries(inputs[issue.key]||{})
@@ -49,8 +50,10 @@ export default function SoldierPageSorter({draft,catalog,onChange}:{
       onChange(proposed.draft);setError('');
     }}>فرز الأصناف وتطبيق الصفحات</button></div>
     <p className="hint">{confirmed?
-      'يوجد توزيع محفوظ في المسودة. يُحفظ أي تعديل جديد مع حفظ المجموعة.':
-      'هذه معاينة؛ اضغط تطبيق الصفحات أو احفظ المجموعة لتثبيت الفرز.'}</p>
+      'يوجد توزيع سطور SAP محفوظ في المسودة، ويظهر ضمن عدد السطور الموزعة.':
+      hasManualPages?
+      'قرأ الجندي أرقام الصفحات 1 و2 وغيرها التي أدخلتها في كشف المطابقة اليدوية. يعرض توزيعها هنا دون مطالبتك بإدخال الأصناف مرة ثانية.':
+      'لا توجد أرقام صفحات يدوية محفوظة أو بنود فواتير كافية للفرز. يمكنك تحديد الصفحات في كشف المطابقة اليدوية.'}</p>
     <p className="hint">سطور موزعة: <b>{proposed.assigned}</b> · سطور مقسّمة بين صفحات: <b>{proposed.split}</b>
       {' '}· سطور بحاجة لتحديد: <b>{proposed.unresolved.length}</b></p>
     {draft.invoices.map((invoice,index)=>{
