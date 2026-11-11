@@ -142,6 +142,21 @@ assert.equal(linked.rows[0].dateSource,'transfer');
 assert.equal(linked.rows[0].date,'2026-11-02');
 assert.equal(linked.undatedInvoices,0);
 
+const missingLinkedSource={...explicitlyLinked,
+  invoices:[{...explicitlyLinked.invoices[0],dateTransferNos:['2615774','2615999']},draft.invoices[1]]};
+const missingLinked=collectInvoicesByDate([{id:'missing-link',branch:draft.branch,
+  payload:JSON.stringify(missingLinkedSource)}], '2026-11-01','2026-11-03');
+assert.equal(missingLinked.undatedInvoices,1,
+  'A missing explicitly linked SAP transfer must block date inference');
+assert.match(missingLinked.undatedDetails[0].reason,/بعض الترحيلات/);
+
+const malformedTransfer={...missingDateDraft,
+  transfers:[first,{...second,paste:'not a valid SAP table'}]};
+const malformed=collectInvoicesByDate([{id:'bad-sap',branch:draft.branch,
+  payload:JSON.stringify(malformedTransfer)}], '2026-11-01','2026-11-02');
+assert.equal(malformed.undatedInvoices,1,
+  'Incomplete historical SAP sources must not be used to infer invoice dates');
+
 const manuallyInvalid={...missingDateDraft,
   invoices:[{...missingDateDraft.invoices[0],manualDate:true},missingDateDraft.invoices[1]]};
 const manual=collectInvoicesByDate([{id:'manual',branch:draft.branch,payload:JSON.stringify(manuallyInvalid)}],
