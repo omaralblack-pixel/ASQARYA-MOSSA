@@ -2,6 +2,9 @@ import {dateValue,digits,invoiceDocumentNo,numeric,parseTransfer,withInvoiceDate
 
 const headers=['رقم الترحيل','تاريخ الترحيل','كود الفرع','اسم الفرع','Remarks','Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'];
 const normalize=(value:string)=>value.trim().toLowerCase();
+const branchCodeKey=(value:string)=>digits(value).trim().replace(/^0+(?=\d)/,'');
+const branchNameKey=(value:string)=>normalize(value).replace(/[أإآٱ]/g,'ا').replace(/ى/g,'ي')
+  .replace(/[\u064B-\u065F\u0670ـ]/g,'').replace(/\s+/g,' ');
 const transferHeader=headers.slice(5).join('\t');
 
 type SapTransfer={
@@ -18,6 +21,13 @@ type SapTransfer={
 };
 
 export type SapImportGroup={draft:Draft; members:SapTransfer[]; issues:string[]; reversal:boolean};
+
+// A selected institution branch can resolve a missing SAP branch only when
+// every other SAP validation succeeded. Never bypass canceled/reverse records.
+export function canUseSelectedBranchForSapMember(member:SapTransfer,selectedBranch:string):boolean{
+  return !!selectedBranch && !member.branch && !member.reversal && !member.reverseMovement &&
+    member.issues.length===1 && member.issues[0]==='الفرع غير معروف';
+}
 
 function readInvoices(remarks:string){
   const prefix=digits(remarks).split(/based on inventory transfer request/i)[0].split('||')[0].trim();
@@ -51,8 +61,10 @@ export function readSapImportRows(paste:string):{rows:string[][];issues:string[]
 
 export function parseSapImport(paste:string,branches:string[]):{groups:SapImportGroup[]; issues:string[]}{
   const {rows,issues}=readSapImportRows(paste);
-  const branchesByCode=new Map(branches.map(branch=>[branch.split(' — ')[0].trim(),branch]));
-  const branchesByName=new Map(branches.map(branch=>[branch.split(' — ').slice(1).join(' — ').trim(),branch]));
+  const branchesByCode=new Map(branches.map(branch=>[branchCodeKey(branch.split(' — ')[0]),branch]));
+  const branchesByName=new Map(branches.map(branch=>[branchNameKey(branch.split(' — ').slice(1).join(' — ')),branch]));
+  const resolveBranch=(code:string,name:string)=>
+    branchesByCode.get(branchCodeKey(code))||branchesByName.get(branchNameKey(name))||'';
   const transfers=new Map<string,{meta:string[]; lines:string[]; reversal:boolean; conflict:boolean}>();
   for(const values of rows){
     const number=values[0];
@@ -65,13 +77,30 @@ export function parseSapImport(paste:string,branches:string[]):{groups:SapImport
     transfers.set(number,entry);
   }
 
+  // If SAP omitted a branch on one transfer, use a known branch from another
+  // transfer carrying the same invoice number only when the inference is unique.
+  const invoiceBranches=new Map<string,Set<string>>();
+  for(const entry of transfers.values()){
+    if(entry.reversal||entry.conflict)continue;
+    const [,code,name,remarks]=entry.meta;
+    const known=resolveBranch(code,name);
+    if(!known)continue;
+    for(const invoice of readInvoices(remarks)){
+      const owners=invoiceBranches.get(invoice)||new Set<string>();
+      owners.add(known);
+      invoiceBranches.set(invoice,owners);
+    }
+  }
   const groups:SapImportGroup[]=[];
   const invoiceGroups=new Map<string,SapTransfer[]>();
   const memberGroups=new Set<SapTransfer[]>();
   for(const [number,entry] of transfers){
     const [dateText,branchCode,branchName,remarks]=entry.meta;
     const date=dateValue(dateText.replace(/\./g,'/'))||'';
-    const branch=branchesByCode.get(digits(branchCode))||(!branchCode&&branchName?branchesByName.get(branchName):'')||'';
+    const associatedInvoices=readInvoices(remarks);
+    const knownBranches=new Set(associatedInvoices.flatMap(invoice=>[...(invoiceBranches.get(invoice)||[])]));
+    const inferred=associatedInvoices.length>0&&knownBranches.size===1?[...knownBranches][0]:'';
+    const branch=resolveBranch(branchCode,branchName)||inferred;
     const transfer={id:'sap-'+number,number,date,paste:[transferHeader,...entry.lines].join('\n')};
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     const reverseMovement=parsed.lines.some(line=>line.from==='011');
@@ -81,7 +110,7 @@ export function parseSapImport(paste:string,branches:string[]):{groups:SapImport
     if(!branch&&!reverseMovement)itemIssues.push('الفرع غير معروف');
     if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length)itemIssues.push('راجع بنود الترحيل أو وحداته أو مستودعاته');
     const canceledTransferNo=digits(remarks).match(/\binventory transfer no\.?\s*(\d+)\s+has been canceled\b/i)?.[1];
-    const member={transfer,reverseMovement,canceledTransferNo,branch,branchLabel:branchName||branchCode,remarks,invoices:entry.reversal?[]:readInvoices(remarks),lineCount:entry.lines.length,reversal:entry.reversal,issues:itemIssues};
+    const member={transfer,reverseMovement,canceledTransferNo,branch,branchLabel:branchName||branchCode,remarks,invoices:entry.reversal?[]:associatedInvoices,lineCount:entry.lines.length,reversal:entry.reversal,issues:itemIssues};
     const keys=branch&&!entry.reversal&&!entry.conflict&&!reverseMovement?member.invoices.map(invoice=>branch+'|'+invoice):[];
     const connected=[...new Set(keys.flatMap(key=>invoiceGroups.has(key)?[invoiceGroups.get(key)!]:[]))];
     const members=connected[0]||[];

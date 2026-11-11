@@ -54,7 +54,7 @@ function loadTs(file) {
 
 const {GET, POST} = loadTs(resolve('app/api/reconcile/route.ts'));
 const {addTransferToDraft, checkSignature, reconcile, withInvoiceDates} = loadTs(resolve('app/lib/reconcile.ts'));
-const {parseSapImport} = loadTs(resolve('app/lib/sap-import.ts'));
+const {parseSapImport, canUseSelectedBranchForSapMember} = loadTs(resolve('app/lib/sap-import.ts'));
 const reference = [{code: '11366443', sapCode: 'FVL00302', name: 'peas', price: 350, cartonPieces: 20, invoicePack: null, sapUnit: 'Carton', kgPerPiece: null, active: true}];
 const branch = '1 — Test';
 const origin = 'http://localhost';
@@ -170,6 +170,49 @@ const sapRow = (number, remarks) => [number, '02/11/2026', '1', 'Test', remarks,
 const parsed = parseSapImport([sapHeader, sapRow('2615845', '0000000000'), sapRow('2615846', '2623014035')].join('\n'), [branch]);
 assert.deepEqual(parsed.groups.flatMap(group => group.members.map(member => member.invoices)), [[], ['2623014035']]);
 assert.equal((await save(addTransferToDraft(draft(transfer('2615844', 1)), parsed.groups[0].members[0].transfer, branch))).status, 400);
+
+
+// SAP sometimes includes a wrong/blank branch code but a valid branch name.
+// An invoice shared by two transfers must still resolve to the same branch.
+const institution = '41 — الحارث بن عمير الازدي';
+const namedSource = (number, code, name, remarks, date = '02/11/2026') =>
+  [number, date, code, name, remarks, 'FVL00302', 'peas', '1', 'Carton', '001', '011'].join('\t');
+const institutionRows = [
+  sapHeader,
+  namedSource('2616175', '41', '', '2641604703 2641604702'),
+  namedSource('2616176', '999', '', '2641604702 2641604703'),
+  namedSource('2616308', '', '', ''),
+  namedSource('2616149', '999', '', ''),
+  namedSource('2616401', '999', 'الحارث بن عمير الأزدي', ''),
+].join('\n');
+const institutionParsed = parseSapImport(institutionRows, [institution]);
+const memberByNo = new Map(institutionParsed.groups.flatMap(group =>
+  group.members.map(member => [member.transfer.number, member])));
+assert.equal(memberByNo.get('2616176').branch, institution, 'shared invoices recover branch unambiguously');
+assert.deepEqual(memberByNo.get('2616176').issues, [], 'shared invoice removes false missing branch issue');
+assert.equal(memberByNo.get('2616401').branch, institution, 'name fallback applies even if SAP branch code is invalid');
+assert.equal(memberByNo.get('2616175').branch, institution);
+assert.equal(institutionParsed.groups.find(group=>group.members.some(member=>member.transfer.number==='2616175')).members.length,2,
+  'transfers 2616175 and 2616176 sharing both invoices remain in one group');
+assert.equal(canUseSelectedBranchForSapMember(memberByNo.get('2616308'),institution),true,
+  'an otherwise valid transfer with no branch can use the branch selected by the operator');
+assert.equal(canUseSelectedBranchForSapMember(memberByNo.get('2616149'),institution),true);
+assert.equal(canUseSelectedBranchForSapMember(memberByNo.get('2616308'),''),false,
+  'never guess a branch when the operator has not selected one');
+assert.equal(canUseSelectedBranchForSapMember(memberByNo.get('2616175'),institution),false,
+  'a recognized branch cannot be overwritten');
+assert.equal(canUseSelectedBranchForSapMember({...memberByNo.get('2616308'),issues:['الفرع غير معروف','تاريخ الترحيل غير صالح']},institution),false,
+  'other SAP parsing errors must continue blocking additions');
+assert.equal(canUseSelectedBranchForSapMember({...memberByNo.get('2616308'),reversal:true},institution),false,
+  'canceled SAP documents cannot use the selected branch fallback');
+const conflicting = parseSapImport([
+  sapHeader,
+  namedSource('2616500', '41', '', '2641604703'),
+  namedSource('2616501', '42', '', '2641604703'),
+  namedSource('2616502', '999', '', '2641604703'),
+].join('\n'),[institution,'42 — اربد الشمالي']);
+const ambiguous = conflicting.groups.flatMap(group=>group.members).find(member=>member.transfer.number==='2616502');
+assert.ok(ambiguous.issues.includes('الفرع غير معروف'),'conflicting invoice branches must not be guessed');
 
 const reverse = transfer('2615847', 0.5, '2026-11-01', '011', '001');
 const reverseResult = reconcile(addTransferToDraft(retained, reverse, branch), reference);
