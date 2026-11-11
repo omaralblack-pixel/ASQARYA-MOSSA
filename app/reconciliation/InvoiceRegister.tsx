@@ -1,8 +1,10 @@
 'use client';
 
-import {useMemo, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import {Download, RefreshCw, Search} from 'lucide-react';
 import {dateValue, digits, fils, invoiceDocumentNo, money, transferNumbers, type Draft} from '../lib/reconcile';
+import {readSavedSapImport} from '../lib/saved-sap-import';
+import {sapInvoicesFromSavedFile,compareSapWithSavedInvoices,type SapRegisterSource} from '../lib/sap-invoice-register';
 
 type RecordSummary = {id: string; branch: string; doc_date: string; payload: string};
 const institution = 'المؤسسة الاستهلاكية العسكرية';
@@ -50,8 +52,13 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
   const [query, setQuery] = useState('');
   const [month, setMonth] = useState('');
   const [invoiceDate, setInvoiceDate] = useState('');
-  const [pastedInvoices, setPastedInvoices] = useState('');
-  const [comparisonText, setComparisonText] = useState('');
+  const [sapSource, setSapSource] = useState<SapRegisterSource | null>(null);
+  const [sapName, setSapName] = useState('');
+  const [sapError, setSapError] = useState('');
+  const [sapBusy, setSapBusy] = useState(true);
+  const [sapCheckedAt, setSapCheckedAt] = useState('');
+  const [sapReload, setSapReload] = useState(0);
+  const [sapFilter, setSapFilter] = useState<'all'|'notReceived'|'received'|'review'>('notReceived');
   const [status, setStatus] = useState<'received' | 'pending'>('received');
   const received = useMemo(() => registerRows(records, 'received'), [records]);
   const pending = useMemo(() => registerRows(records, 'pending'), [records]);
@@ -60,33 +67,52 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
   const visible = rows.filter(row => (!month || row.date.startsWith(month)) && (!invoiceDate.trim() || (selectedDate !== null && row.values[5] === selectedDate)) && digits(row.values.join(' ')).includes(digits(query.trim())));
   const branchCount = new Set(visible.map(row => row.record.branch.trim()).filter(Boolean)).size;
 
-  const comparison = useMemo(() => {
-    const parsed: {line: number; number: string; raw: string; date: string; amount: string}[] = [];
-    const unread: {line: number; raw: string}[] = [];
-    comparisonText.split(/\r?\n/).forEach((raw, index) => {
-      const text = digits(raw).trim();
-      if (!text || /^[|\s:-]+$/.test(text)) return;
-      const numbers = [...text.matchAll(/(?:^|[^\d])(\d{8,20})(?!\d)/g)].map(match => match[1]);
-      if (numbers.length !== 1) {
-        if (numbers.length || /\d/.test(text)) unread.push({line: index + 1, raw});
+  // Re-open the stored SAP source whenever this screen mounts or the user requests a refresh.
+  // Nothing is posted back to either SAP storage or the reconciliation database.
+  useEffect(() => {
+    let active = true;
+    setSapBusy(true);
+    setSapError('');
+    readSavedSapImport().then(file => {
+      if (!active) return;
+      if (!file?.text?.trim()) {
+        setSapSource(null);
+        setSapName('');
+        setSapError('لا يوجد كشف SAP محفوظ. ارفع كشف SAP من شاشة الاستيراد أولًا.');
         return;
       }
-      const dateMatch = text.match(/\b\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}\b/);
-      const amountMatch = text.slice(text.indexOf(numbers[0]) + numbers[0].length).match(/(?:^|[^\d])(\d[\d,]*\.\d{3})(?!\d)/);
-      parsed.push({line: index + 1, number: numbers[0], raw, date: dateMatch ? dateValue(dateMatch[0]) || '' : '', amount: amountMatch?.[1] || ''});
-    });
-    const counts = new Map<string, number>();
-    parsed.forEach(row => counts.set(row.number, (counts.get(row.number) || 0) + 1));
-    const all = [...received.map(row => ({...row, received: true})), ...pending.map(row => ({...row, received: false}))];
-    return {unread, rows: parsed.map(row => {
-      const matches = all.filter(item => digits(item.values[0].trim()) === row.number);
-      const saved = matches[0];
-      const differentDate = !!(row.date && saved?.values[5] && row.date !== saved.values[5]);
-      const differentAmount = !!(row.amount && saved?.values[7] && fils(row.amount) !== fils(saved.values[7]));
-      const state = matches.length > 1 || (counts.get(row.number) || 0) > 1 || differentDate || differentAmount ? 'review' : !saved ? 'missing' : saved.received ? 'received' : 'pending';
-      return {...row, state, saved, differentDate, differentAmount};
-    })};
-  }, [comparisonText, received, pending]);
+      const parsed = sapInvoicesFromSavedFile(file.text);
+      setSapSource(parsed);
+      setSapName(file.name || 'كشف SAP المحفوظ');
+      setSapCheckedAt(new Date().toLocaleString('ar-JO'));
+    }).catch(error => {
+      if (active) {
+        setSapSource(null);
+        setSapError(error instanceof Error ? error.message : 'تعذّر قراءة كشف SAP المحفوظ.');
+      }
+    }).finally(() => {if (active) setSapBusy(false);});
+    return () => {active = false;};
+  }, [sapReload]);
+
+  const comparison = useMemo(() => sapSource ? compareSapWithSavedInvoices(sapSource, records) : [], [sapSource,records]);
+  const notReceived = comparison.filter(row=>row.state==='missing'||row.state==='pending');
+  const questionable = comparison.filter(row=>row.state==='review');
+  const visibleComparison = comparison.filter(row=>sapFilter==='all'||(sapFilter==='notReceived'&&(row.state==='missing'||row.state==='pending'))||row.state===sapFilter);
+  async function exportSapPending(){
+    const {invoiceWorkbook} = await import('../lib/invoice-workbook');
+    const data = [
+      ['رقم الفاتورة','حالة الورق','تاريخ SAP','الفرع في SAP','أرقام ترحيلات SAP','الفرع المحفوظ','مبلغ عمر','ملاحظة'],
+      ...comparison.filter(row=>row.state!=='received').map(row=>[
+        row.number,
+        row.state==='pending'?'مسجلة والورق غير مؤكد':row.state==='missing'?'غير مسجلة — ورق غير مؤكد':'تحتاج مراجعة',
+        row.dates.join('، '),row.branches.join('، '),row.transfers.join(' + '),
+        row.record?.branch||'',row.savedAmount,row.reason,
+      ]),
+    ];
+    const url=URL.createObjectURL(invoiceWorkbook(data));
+    const link=document.createElement('a');link.href=url;link.download='sap-invoices-unconfirmed.xlsx';link.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
 
   async function exportRegister() {
     const {invoiceWorkbook} = await import('../lib/invoice-workbook');
@@ -105,17 +131,48 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
       <button className="button secondary" disabled={busy} onClick={refresh}><RefreshCw size={16}/>تحديث</button>
     </div>
     <section className="panel no-print">
-      <h2>مقارنة كشف الفواتير الواصلة</h2>
-      <p className="hint">ألصق الجدول من Excel أو النص؛ يفحص النظام رقم كل فاتورة مقابل جميع المجموعات المحفوظة، بغض النظر عن الفلاتر أدناه. حدّث السجل قبل المقارنة.</p>
-      <label>كشف الفواتير<textarea aria-label="كشف الفواتير للمقارنة" rows={6} style={{width:'100%'}} value={pastedInvoices} onChange={e => setPastedInvoices(e.target.value)} placeholder={'1\t01-11-2026\t2624002303\tمجمع الجاردنز التجاري\t186.400'}/></label>
-      <div><button type="button" className="button primary" disabled={busy || !pastedInvoices.trim()} onClick={() => setComparisonText(pastedInvoices)}>فحص الفواتير</button>{' '}<button type="button" className="button secondary" onClick={() => {setPastedInvoices(''); setComparisonText('')}}>مسح الكشف</button></div>
-      {comparisonText && <>
-        <p><strong>{comparison.rows.length} فاتورة مقروءة</strong> · واصلة: {comparison.rows.filter(row=>row.state==='received').length} · مسجلة وورقها غير مؤكد: {comparison.rows.filter(row=>row.state==='pending').length} · غير موجودة في السجل: {comparison.rows.filter(row=>row.state==='missing').length} · تحتاج مراجعة: {comparison.rows.filter(row=>row.state==='review').length}</p>
-        <p className="hint">المطابقة برقم الفاتورة؛ قارن اسم الفرع في الكشف مع الفرع المحفوظ. اختلاف التاريخ أو المبلغ أو تكرار الرقم يظهر للمراجعة، ولا يغيّر أي بيانات.</p>
-        {!!comparison.unread.length && <div role="alert"><strong>سطور لم تُقرأ، راجعها ({comparison.unread.length}):</strong>{comparison.unread.map(row=><p key={row.line}>سطر {row.line}: {row.raw}</p>)}</div>}
-        <div className="table-scroll"><table><thead><tr><th>رقم الفاتورة</th><th>بيانات السطر الملصق</th><th>الحالة</th><th>الفرع المحفوظ</th><th>المجموعة</th></tr></thead><tbody>
-          {comparison.rows.map(row=><tr key={row.line}><td dir="ltr">{row.number}</td><td>{row.raw}</td><td>{row.state==='received'?'واصلة':row.state==='pending'?'مسجلة وورقها غير مؤكد':row.state==='missing'?'غير موجودة في السجل':'تحتاج مراجعة'}{row.differentDate?' · التاريخ مختلف':''}{row.differentAmount?' · المبلغ مختلف':''}</td><td>{row.saved?.record.branch||'—'}</td><td>{row.saved && <button type="button" className="button secondary small" onClick={()=>open(row.saved!.record)}>فتح المجموعة</button>}</td></tr>)}
-        </tbody></table></div>
+      <h2>مقارنة فواتير كشف SAP المحفوظ مع الورق الواصل</h2>
+      <p className="hint">هذه ميزة ثابتة: تُقرأ أرقام الفواتير من Remarks لنفس ملف SAP المحفوظ في شاشة الاستيراد، وتُقارن مع جميع المجموعات المحفوظة دون التقيد بفلاتر السجل. لا حاجة للصق كشف جديد، ولا تُغيّر علامة وصول الورق تلقائيًا.</p>
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+        <button type="button" className="button primary" disabled={busy||sapBusy} onClick={()=>{refresh();setSapReload(value=>value+1);}}><RefreshCw size={16}/>فحص الفواتير من SAP المحفوظ</button>
+        <button type="button" className="button secondary" disabled={!comparison.some(row=>row.state!=='received')||sapBusy} onClick={()=>void exportSapPending()}><Download size={16}/>Excel للفواتير غير المؤكدة والمراجعة</button>
+      </div>
+      {sapBusy&&<p role="status">جارٍ قراءة كشف SAP المحفوظ ومقارنته بالسجل…</p>}
+      {sapError&&<p role="alert" className="amber">{sapError}</p>}
+      {sapSource&&!sapBusy&&<>
+        <p className="hint">المصدر: <strong>{sapName}</strong> · آخر فحص: {sapCheckedAt} · {sapSource.sourceRows} سطر SAP · {sapSource.transferCount} ترحيل يحمل رقم فاتورة مقروءًا · {sapSource.ignoredCount} ترحيل خارج مسار الفواتير أو ملغى.</p>
+        <div className="stats">
+          <div className="stat"><span>فواتير SAP المقروءة</span><strong>{comparison.length}</strong></div>
+          <div className="stat"><span>ورقها مؤكد عندك</span><strong>{comparison.filter(row=>row.state==='received').length}</strong></div>
+          <div className="stat"><span>لسه مش مؤكدة الوصول</span><strong>{notReceived.length}</strong></div>
+          <div className="stat"><span>بحاجة مراجعة</span><strong>{questionable.length}</strong></div>
+        </div>
+        <p className="hint">«لسه مش مؤكدة الوصول» تشمل الفواتير الموجودة في SAP وغير المسجلة في المجموعات، والمسجلة دون علامة «الفاتورة الورقية موجودة لدي». لا يُستنتج وصول الورق من SAP وحده. البيانات المسجلة يدويًا عندك هي المرجع.</p>
+        {(sapSource.issues.length>0||sapSource.withoutInvoice.length>0)&&<details className="review-list" style={{marginTop:12}}>
+          <summary>ملاحظات قراءة SAP — {sapSource.issues.length} تنبيه، {sapSource.withoutInvoice.length} ترحيل دون رقم فاتورة واضح</summary>
+          <div style={{maxHeight:200,overflowY:'auto'}}>
+            {sapSource.issues.map((issue,i)=><p key={'issue-'+i}>{issue}</p>)}
+            {sapSource.withoutInvoice.map(number=><p key={'unread-'+number}>الترحيل {number}: لم يُستخرج رقم فاتورة من Remarks، فلا يجوز اعتباره ورقه واصلًا أو غير واصل.</p>)}
+          </div>
+        </details>}
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:16}}>
+          <button type="button" className={'button '+(sapFilter==='notReceived'?'primary':'secondary')} onClick={()=>setSapFilter('notReceived')}>لسه مش مؤكدة ({notReceived.length})</button>
+          <button type="button" className={'button '+(sapFilter==='received'?'primary':'secondary')} onClick={()=>setSapFilter('received')}>ورقها واصل ({comparison.filter(row=>row.state==='received').length})</button>
+          <button type="button" className={'button '+(sapFilter==='review'?'primary':'secondary')} onClick={()=>setSapFilter('review')}>مراجعة ({questionable.length})</button>
+          <button type="button" className={'button '+(sapFilter==='all'?'primary':'secondary')} onClick={()=>setSapFilter('all')}>كل فواتير SAP ({comparison.length})</button>
+        </div>
+        <div className="table-scroll"><table>
+          <thead><tr><th>رقم الفاتورة</th><th>تاريخ SAP</th><th>الفرع SAP</th><th>ترحيلات SAP</th><th>حالة الورق</th><th>الملاحظة</th><th>المجموعة المحفوظة</th></tr></thead>
+          <tbody>{visibleComparison.map(row=><tr key={row.number} style={{backgroundColor:row.state==='received'?'#d8f3dc':row.state==='review'?'#fff0bf':'#fad5e5'}}>
+            <td dir="ltr">{row.number}</td>
+            <td dir="ltr">{row.dates.join('، ')||'—'}</td>
+            <td>{row.branches.join('، ')||'—'}</td>
+            <td dir="ltr">{row.transfers.join('، ')}</td>
+            <td>{row.state==='received'?'واصل ومؤكد':row.state==='pending'?'مسجلة — ورق غير مؤكد':row.state==='missing'?'غير مسجلة — ورق غير مؤكد':'تحتاج مراجعة'}</td>
+            <td>{row.reason}</td>
+            <td>{row.record?<button type="button" className="button secondary small" onClick={()=>open(row.record!)}>فتح المجموعة</button>:'—'}</td>
+          </tr>)}</tbody>
+        </table>{!visibleComparison.length&&<p className="hint">لا توجد فواتير ضمن حالة العرض هذه.</p>}</div>
       </>}
     </section>
     <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 210px",gap:16,alignItems:"start"}}>
