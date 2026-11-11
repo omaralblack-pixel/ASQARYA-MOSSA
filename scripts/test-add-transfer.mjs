@@ -55,6 +55,7 @@ function loadTs(file) {
 const {GET, POST} = loadTs(resolve('app/api/reconcile/route.ts'));
 const {addTransferToDraft, checkSignature, reconcile, withInvoiceDates} = loadTs(resolve('app/lib/reconcile.ts'));
 const {parseSapImport, canUseSelectedBranchForSapMember} = loadTs(resolve('app/lib/sap-import.ts'));
+const {stockReport}=loadTs(resolve('app/lib/stock-report.ts'));
 const reference = [{code: '11366443', sapCode: 'FVL00302', name: 'peas', price: 350, cartonPieces: 20, invoicePack: null, sapUnit: 'Carton', kgPerPiece: null, active: true}];
 const branch = '1 — Test';
 const origin = 'http://localhost';
@@ -217,4 +218,49 @@ assert.ok(ambiguous.issues.includes('الفرع غير معروف'),'conflicting
 const reverse = transfer('2615847', 0.5, '2026-11-01', '011', '001');
 const reverseResult = reconcile(addTransferToDraft(retained, reverse, branch), reference);
 assert.equal(reverseResult.rows[0].transfer, 50);
-console.log('PASS: direct transfer addition, zero placeholders, protected invoices, retained edits, atomic rollback, legacy records and reverse quantities');
+
+const stockEntry=(number,date,quantity,from,to,code='FVL00302',unit='Carton')=>
+  [number,date,'1','Test','',code,'peas',quantity,unit,from,to].join('\t');
+const stockText=[
+  sapHeader,
+  stockEntry('2619000','01/11/2026','10','001','011'),
+  stockEntry('2619001','02/11/2026','3','011','001'),
+  stockEntry('2619002','02/11/2026','-2','001','011'),
+  stockEntry('2619003','03/11/2026','-1','011','001'),
+  stockEntry('2619004','04/11/2026','6','002','011'),
+  stockEntry('2619004','04/11/2026','2','002','011','FVL00302','Piece'),
+  stockEntry('2619005','05/11/2026','90','005','008'),
+].join('\n');
+const stockFull=stockReport(stockText);
+assert.deepEqual([stockFull.from,stockFull.to],['2026-11-01','2026-11-04'],
+  'Source period is taken from warehouse transfer document dates involving 011 only');
+assert.equal(stockFull.documents,5);
+assert.equal(stockFull.codes,1);
+assert.equal(stockFull.items.length,2,'Different SAP units must not be combined');
+const cartons=stockFull.items.find(row=>row.unit==='كرتونة');
+assert.deepEqual([cartons.incoming,cartons.reverse,cartons.cancellation,cartons.net],
+  [16,3,-1,12],'Full report keeps incoming - reverse + signed cancellation');
+const partial=stockReport(stockText,{from:'2026-11-02',to:'2026-11-03'});
+assert.deepEqual([partial.from,partial.to,partial.documents,partial.codes],
+  ['2026-11-01','2026-11-04',3,1],
+  'Changing selected dates must not alter original file metadata');
+assert.deepEqual([partial.items[0].incoming,partial.items[0].reverse,
+  partial.items[0].cancellation,partial.items[0].net],[0,3,-1,-4],
+  'All directions and both signs of cancellation obey the selected transfer date');
+assert.equal(stockReport(stockText,{from:'2026-11-02',to:'2026-11-02'}).items[0].net,-5,
+  'Selected starting and ending dates are both inclusive');
+assert.equal(stockReport(stockText,{from:'2026-11-03',to:'2026-11-03'}).items[0].net,1);
+const april=stockReport(stockText,{from:'2026-11-04',to:'2026-11-04'});
+assert.equal(april.documents,1,'Document count is unique across multiple item lines and SAP units');
+assert.equal(april.items.length,2);
+assert.equal(stockReport(stockText,{from:'2026-11-06',to:'2026-11-11'}).documents,0);
+assert.equal(stockReport(stockText,{from:'2026-11-06',to:'2026-11-11'}).items.length,0,
+  'Outside-range stock must never be mixed into the selected subtotal');
+const stockUI=readFileSync(resolve('app/reconciliation/StockReport.tsx'),'utf8');
+assert.ok(stockUI.includes('stockReport(file.text,{from:selectedFrom,to:selectedTo})'),
+  'The selected transfer date range must drive the displayed report');
+assert.ok(stockUI.includes('report.items.map(row=>[row.sapCode'),
+  'Excel export must include the date-filtered report instead of all movements');
+assert.ok(stockUI.includes('invalidRange'),'Invalid from/to dates must block report export');
+
+console.log('PASS: direct transfer addition, SAP branch recovery, date-filtered stock, cancellation, duplicate guards and atomic rollback');

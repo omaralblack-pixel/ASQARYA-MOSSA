@@ -14,8 +14,17 @@ export default function StockReport(){
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
   const [search,setSearch]=useState('');
-  const report=useMemo(()=>file?stockReport(file.text):null,[file]);
-  const period=report?.from&&report.to?report.from+' — '+report.to:'';
+  const [from,setFrom]=useState('');
+  const [to,setTo]=useState('');
+  const fileReport=useMemo(()=>file?stockReport(file.text):null,[file]);
+  const selectedFrom=from||fileReport?.from||'';
+  const selectedTo=to||fileReport?.to||'';
+  const invalidRange=!!selectedFrom&&!!selectedTo&&selectedFrom>selectedTo;
+  const report=useMemo(()=>file&&!invalidRange
+    ?stockReport(file.text,{from:selectedFrom,to:selectedTo}):null,
+    [file,selectedFrom,selectedTo,invalidRange]);
+  const period=fileReport?.from&&fileReport.to?fileReport.from+' — '+fileReport.to:'';
+  const selectedPeriod=selectedFrom&&selectedTo?selectedFrom+' — '+selectedTo:'';
   const query=searchable(search);
   const visible=report?.items.filter(row=>searchable(row.sapCode+' '+row.name).includes(query))??[];
 
@@ -24,6 +33,8 @@ export default function StockReport(){
     setError('');
     try{
       setFile(await readSavedSapImport());
+      setFrom('');
+      setTo('');
     }catch(err){
       setFile(undefined);
       setError(err instanceof Error?err.message:'تعذّر تحميل كشف SAP المحفوظ.');
@@ -34,21 +45,23 @@ export default function StockReport(){
   useEffect(()=>{void reload()},[]);
 
   async function download(){
-    if(!file||!report?.items.length||report.issues.length)return;
+    if(!file||invalidRange||!report?.items.length||report.issues.length)return;
     try{
       const {tableWorkbook}=await import('../lib/invoice-workbook');
       const rows=[
         ['صافي الترحيلات إلى مستودع 011'],
-        ['الفترة في كشف SAP',period],
+        ['الفترة المختارة حسب تاريخ الترحيل',selectedPeriod],
+        ['الفترة في ملف SAP الأصلي',period],
         ['المصدر',file.name],
+        ['مستندات الترحيل في الفترة',report.documents],
         ['الصافي = الوارد − العكسي + أثر الإلغاء الموقّع'],
         stockHeaders,
         ...report.items.map(row=>[row.sapCode,row.name,row.unit,row.incoming,row.reverse,row.cancellation,row.net]),
       ];
-      const url=URL.createObjectURL(tableWorkbook(rows,'صافي الترحيل 011',[24,68,14,19,19,17,19],5));
+      const url=URL.createObjectURL(tableWorkbook(rows,'صافي الترحيل 011',[24,68,14,19,19,17,19],7));
       const link=document.createElement('a');
       link.href=url;
-      link.download='SAP_011_Net_Transfers.xlsx';
+      link.download='SAP_011_Net_Transfers_'+selectedFrom+'_to_'+selectedTo+'.xlsx';
       link.click();
       setTimeout(()=>URL.revokeObjectURL(url),1000);
     }catch{
@@ -65,16 +78,30 @@ export default function StockReport(){
       {loading&&<p role="status">جاري تحميل كشف SAP…</p>}
       {error&&<p className="banner error" role="alert">{error}</p>}
       {!loading&&!error&&!file&&<p>احفظ كشف TXT من «استيراد ترحيلات SAP دفعة واحدة» في شاشة مطابقة فواتير المؤسسة.</p>}
-      {!loading&&report&&<>
-        {period&&<p>الفترة في الملف <b dir="ltr">{period}</b> · {report.codes} كود SAP · {report.documents} مستند ترحيل</p>}
+      {!loading&&fileReport&&<>
+        {period&&<p>الفترة في الملف <b dir="ltr">{period}</b> · {fileReport.codes} كود SAP · {fileReport.documents} مستند ترحيل</p>}
+        <div className="form-grid">
+          <label>من تاريخ الترحيل
+            <input type="date" value={selectedFrom} onChange={e=>setFrom(e.target.value)}/>
+          </label>
+          <label>إلى تاريخ الترحيل
+            <input type="date" value={selectedTo} onChange={e=>setTo(e.target.value)}/>
+          </label>
+          <div className="save-actions">
+            <button type="button" className="button secondary" onClick={()=>{setFrom('');setTo('')}} disabled={!from&&!to}>إظهار كامل فترة الملف</button>
+          </div>
+        </div>
+        <p className="hint">التصفية حسب تاريخ مستند الترحيل في SAP، وليس تاريخ رفع الملف. تشمل حركات الوارد والعكسي والإلغاء من المستودعات وإليها، وتُحتسب بداية الفترة ونهايتها.</p>
+        {invalidRange&&<p className="banner error" role="alert">تاريخ البداية بعد تاريخ النهاية. عدّل الفترة حتى يظهر صافي الترحيلات الصحيح.</p>}
+        {report&&<p>الفترة المختارة <b dir="ltr">{selectedPeriod}</b> · {report.codes} كود SAP · {report.documents} مستند ترحيل</p>}
         <p className="hint">الصافي = الوارد − العكسي + أثر الإلغاء. الرقم السالب في أثر الإلغاء يخصم من الصافي، والموجب يضيف إليه.</p>
-        {!!report.issues.length&&<details className="banner error">
+        {!!report?.issues.length&&<details className="banner error">
           <summary>الكشف غير مكتمل. راجع {report.issues.length} ملاحظة قبل تنزيله.</summary>
           {report.issues.map((issue,index)=><p key={index}>{issue}</p>)}
         </details>}
         <div className="table-controls">
           <div className="search"><input type="search" aria-label="البحث في كشف الترحيلات" placeholder="ابحث بكود SAP أو اسم الصنف" value={search} onChange={e=>setSearch(e.target.value)}/></div>
-          <button type="button" className="button primary" disabled={!report.items.length||!!report.issues.length} onClick={()=>void download()}><Download size={16}/>تنزيل الكشف الكامل Excel</button>
+          <button type="button" className="button primary" disabled={!report?.items.length||!!report?.issues.length||invalidRange} onClick={()=>void download()}><Download size={16}/>تنزيل كشف الفترة Excel</button>
         </div>
         {visible.length>0?<div className="table-scroll"><table>
           <thead><tr>{stockHeaders.map(title=><th key={title} scope="col">{title}</th>)}</tr></thead>
@@ -83,7 +110,7 @@ export default function StockReport(){
             <td dir="ltr">{formatQuantity.format(row.incoming)}</td><td dir="ltr">{formatQuantity.format(row.reverse)}</td>
             <td dir="ltr">{formatQuantity.format(row.cancellation)}</td><td dir="ltr"><b>{formatQuantity.format(row.net)}</b></td>
           </tr>)}</tbody>
-        </table></div>:<p>{query?'ما في أصناف تطابق البحث.':'ما في حركات إلى مستودع 011 أو منه في هذا الملف.'}</p>}
+        </table></div>:<p>{invalidRange?'اختر فترة تاريخ صحيحة.':query?'ما في أصناف تطابق البحث.':'ما في حركات من مستودع 011 أو إليه في الفترة المختارة.'}</p>}
       </>}
     </section>
   </>;
