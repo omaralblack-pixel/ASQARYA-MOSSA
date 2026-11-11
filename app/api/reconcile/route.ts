@@ -1,5 +1,6 @@
 import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
+import {previewHistoricalFinancialSort,proposeHistoricalFinancialSort,learnHistoricalPageHints,type FinancialRecord,type FinancialDraft} from '../../lib/historical-financial-sort';
 import {sortSoldierInvoicePages} from '../../lib/soldier-page-sort';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
@@ -23,7 +24,55 @@ async function currentPageSortingCatalog():Promise<AuditCatalog>{
  if(!validateAuditCatalog(saved.catalog))throw Error('مرجع فرز الصفحات المحفوظ غير صالح.');
  return saved.catalog;
 }
-export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('pageSortingCatalog')){
+async function allFinancialRecords():Promise<FinancialRecord[]>{
+ const result=await db().prepare('SELECT id,branch,version,payload FROM reconciliations ORDER BY updated DESC').all<FinancialRecord>();
+ return result.results;
+}
+async function applyHistoricalSort(request:{from?:unknown;to?:unknown;targets?:unknown}){
+ const from=dateValue(String(request.from||'')),to=dateValue(String(request.to||''));
+ if(!from||!to||from>to||Date.parse(to)-Date.parse(from)>366*86400000)
+   return json({error:'فترة الإصلاح غير صالحة (الحد الأقصى 366 يومًا).'},400);
+ const targets=request.targets;
+ if(!Array.isArray(targets)||!targets.length||targets.length>100||
+   targets.some(entry=>!entry||typeof entry.id!=='string'||entry.id.length>128||
+     !Number.isSafeInteger(entry.version)||entry.version<1)||
+   new Set(targets.map(entry=>entry.id)).size!==targets.length)
+   return json({error:'اختر حتى 100 سجل من نتائج المعاينة المعتمدة.'},400);
+ const records=await allFinancialRecords();
+ const current=new Map(records.map(row=>[row.id,row]));
+ const learned=learnHistoricalPageHints(records);
+ const result:{id:string;state:'saved'|'skipped';reason:string}[]=[];
+ for(const target of targets as {id:string;version:number}[]){
+   const record=current.get(target.id);
+   if(!record||record.version!==target.version){
+     result.push({id:target.id,state:'skipped',reason:'السجل تغيّر منذ المعاينة؛ أعد فحص الفترة.'});continue;
+   }
+   let draft:FinancialDraft;
+   try{draft=JSON.parse(record.payload) as FinancialDraft}catch{
+     result.push({id:record.id,state:'skipped',reason:'السجل غير قابل للقراءة.'});continue;
+   }
+   if(!draft.invoices?.some(inv=>{const date=dateValue(inv.date||'');return date&&date>=from&&date<=to;})){
+     result.push({id:record.id,state:'skipped',reason:'سجل خارج نطاق التاريخ المحدد.'});continue;
+   }
+   const plan=proposeHistoricalFinancialSort(draft,record.branch,learned);
+   if(plan.state!=='ready'||!plan.draft){
+     result.push({id:record.id,state:'skipped',reason:plan.reason});continue;
+   }
+   const updatedPayload=JSON.stringify({...plan.draft,version:record.version+1});
+   const now=new Date().toISOString();
+   const saved=await db().prepare('UPDATE reconciliations SET payload=?,updated=?,version=?,revision_token=? WHERE id=? AND version=? AND payload=?')
+     .bind(updatedPayload,now,record.version+1,crypto.randomUUID(),record.id,record.version,record.payload).run();
+   result.push(saved.meta.changes
+     ?{id:record.id,state:'saved',reason:'تنظيم مالي محفوظ دون تغيير الفواتير أو مبالغها أو ترحيلاتها.'}
+     :{id:record.id,state:'skipped',reason:'تغيّر السجل أثناء الحفظ؛ لم يتم استبدال بياناته.'});
+ }
+ return json({saved:result.filter(row=>row.state==='saved').length,skipped:result.filter(row=>row.state==='skipped').length,results:result});
+}
+export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('financialSortFrom')||u.searchParams.has('financialSortTo')){
+ const from=u.searchParams.get('financialSortFrom')||'',to=u.searchParams.get('financialSortTo')||'';
+ try{return json(previewHistoricalFinancialSort(await allFinancialRecords(),from,to))}
+ catch(error){return json({error:error instanceof Error?error.message:'الفترة غير صالحة.'},400)}
+}if(u.searchParams.has('pageSortingCatalog')){
  return json({catalog:await currentPageSortingCatalog()});
 }if(u.searchParams.has('invoiceListFrom')||u.searchParams.has('invoiceListTo')){
  const from=u.searchParams.get('invoiceListFrom')||'';
@@ -288,7 +337,8 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
     soldierLineTotals:prepared.draft.soldierLineTotals,soldierManualLineKeys:prepared.draft.soldierManualLineKeys});
 }
 
-export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
+export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='applyHistoricalFinancialSort')return await applyHistoricalSort(b);
+if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
 const before=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();
 const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
 let items=b.items;
