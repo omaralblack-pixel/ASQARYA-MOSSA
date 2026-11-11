@@ -364,8 +364,8 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
   const {number,date,branch,remarks,cancelFlag,from,to,isReverse,isCancellationDoc,originalNo}=document;
   const entry=saved.get(number);
   const row={number,date,branch,remarks,group:entry?.group};
-  const flaggedCanceled=['Y','YES','TRUE','CANCELED','CANCELLED','ملغي'].includes(cancelFlag);
-  const canceledDocument=isCancellationDoc;
+  const flaggedCanceled=['Y','YES','TRUE','CANCELED','CANCELLED','ملغي','ملغى'].includes(cancelFlag);
+  const canceledDocument=isCancellationDoc||['مستند إلغاء','مستند الغاء'].includes(cancelFlag);
   const officialCancel=canceledBy.get(number);
   const canceled=flaggedCanceled||Boolean(officialCancel);
   if(canceledDocument||canceled){
@@ -377,7 +377,7 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
    const reversal=reverseByOriginal.get(number);
    const counterpart=officialCancel||reversal?.number||'';
    const cancellationStatus=canceled?'تم الإلغاء':
-    ['N','NO','FALSE'].includes(cancelFlag)?'غير ملغي':'لم يثبت الإلغاء';
+    ['N','NO','FALSE','غير ملغي','غير ملغى'].includes(cancelFlag)?'غير ملغي':'لم يثبت الإلغاء';
    result.toCancel.push({...row,posted:'مرحل',cancellationStatus,
     counterpart,counterpartKind:officialCancel?'حركة إلغاء رسمية':reversal?.kind||'',
     reason:canceled?'كاش فان — أُلغي رسميًا':reversal?'كاش فان — يوجد ترحيل عكسي، لكنه ليس إلغاءً على SAP':'كاش فان — مطلوب مراجعة الإلغاء على SAP'});
