@@ -26,16 +26,29 @@ function invoiceDate(
   const saved=dateValue(invoice.date||'');
   if(saved)return {date:saved,source:'invoice',reason:''};
   if(invoice.manualDate===true)return {date:null,source:'invoice',reason:'التاريخ عدّل يدويًا لكنه مفقود أو غير صالح.'};
+  let incompleteSource=false;
   const outgoing=transfers.flatMap(transfer=>{
-    if(!transfer||typeof transfer.paste!=='string')return [];
+    if(!transfer||typeof transfer.paste!=='string'){incompleteSource=true;return []}
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
-    // Ignore reversals and transfers without an actual 001/002/009 -> 011 route.
+    if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length){
+      incompleteSource=true;return [];
+    }
+    // Ignore valid reverse-only transfers; they do not determine invoice date.
     if(!parsed.lines.some(line=>line.to==='011'&&['001','002','009'].includes(line.from)))return [];
-    return [{numbers:transferNumbers(transfer.number||''),date:dateValue(transfer.date||'')}];
+    const numbers=transferNumbers(transfer.number||'');
+    if(numbers.length!==1||!/^\d{4,20}$/.test(numbers[0])){
+      incompleteSource=true;return [];
+    }
+    return [{numbers,date:dateValue(transfer.date||'')}];
   });
+  if(incompleteSource)return {date:null,source:'invoice',
+    reason:'هناك ترحيل SAP غير مكتمل؛ لا يمكن اشتقاق تاريخ الفاتورة بأمان.'};
   const linked=Array.isArray(invoice.dateTransferNos)&&invoice.dateTransferNos.length>0;
   const wanted=new Set(linked?invoice.dateTransferNos!.flatMap(n=>transferNumbers(String(n))):[]);
   const sources=linked?outgoing.filter(row=>row.numbers.some(n=>wanted.has(n))):outgoing;
+  const found=new Set(sources.flatMap(row=>row.numbers));
+  if(linked&&[...wanted].some(number=>!found.has(number)))
+    return {date:null,source:'invoice',reason:'بعض الترحيلات المحددة لتاريخ الفاتورة غير موجودة أو غير صالحة.'};
   if(!sources.length)
     return {date:null,source:'invoice',reason:linked?'الترحيل المحدد لتاريخ الفاتورة غير موجود أو ليس حركة توريد صالحة.':'لا يوجد ترحيل توريد يمكن استخراج التاريخ منه.'};
   const unique=new Set(sources.map(row=>row.date));
