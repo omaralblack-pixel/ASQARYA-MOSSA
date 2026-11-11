@@ -70,14 +70,14 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
         linked.add(pg-1);
       }
       if(ambiguous||!linked.size){
+        // The number definitely belongs to the saved GROUP. Show it in every
+        // member invoice's export, but never claim specific page ownership.
+        unassigned.push({number,kind});
         if(acceptedOldGroup){
-          // The transfer is CONFIRMED on the approved saved group, not on an individual
-          // invoice page. Keep it in a distinct group-level output field for accuracy.
-          unassigned.push({number,kind});
           warnings.push('الترحيل '+number+' معتمد ضمن مجموعة الفواتير القديمة التي تشمل '+saved.invoice.number+
             '؛ تم استثناء شرط أرقام الصفحات فقط.');
         }else{
-          blockers.push('الترحيل '+number+': مجموعة متعددة الفواتير، ولا يمكن ربط جميع بنوده بصفحات فواتير محددة.');
+          blockers.push('الترحيل '+number+': مرتبط بالمجموعة المحفوظة، لكن توزيع بنوده على صفحات الفواتير لم يُحسم بعد.');
         }
         continue;
       }
