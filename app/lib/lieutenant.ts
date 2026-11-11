@@ -44,6 +44,15 @@ const unit=(x:string)=>{
   const value=x.trim().toLowerCase();
   return value==='piece'||value==='pieces'?'Piece':value==='carton'||value==='cartons'?'Carton':value==='kg'?'KG':null;
 };
+const postingDate=(raw:string):string=>{
+  const formatted=dateValue(raw.replace(/\\./g,'/'));
+  if(formatted)return formatted;
+  // Excel can store SAP posting dates as numeric serial values, not formatted strings.
+  if(!/^\\d{5}(?:\\.\\d+)?$/.test(raw))return '';
+  const serial=Math.floor(Number(raw));
+  if(serial<30000||serial>80000)return '';
+  return new Date(Date.UTC(1899,11,30)+serial*86400000).toISOString().slice(0,10);
+};
 const cancellation=(raw:string):CancellationState=>{
   const value=raw.trim().toUpperCase();
   if(value==='N'||value==='NO'||value==='غير ملغى')return 'active';
@@ -81,7 +90,7 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
     if(from!=='011'&&to!=='011')continue;
     const rawDate=read(cells,'date');
     const meta={
-      date:dateValue(rawDate.replace(/\./g,'/'))||'',
+      date:postingDate(rawDate),
       branchCode:read(cells,'branchCode'),branchName:read(cells,'branchName'),
       remarks:read(cells,'remarks'),state:cancellation(read(cells,'canceled')),
     };
