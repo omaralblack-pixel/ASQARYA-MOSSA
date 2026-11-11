@@ -53,6 +53,39 @@ const draft={
     inv('i2','2610013338','2026-11-02','9.600','11064245\t12'),
   ],
 };
+// A saved manually entered page (the visible 1 / 2 in the invoice sheet)
+// must be honored even when optional invoice item paste is empty.
+const manualOnly={...draft,
+  invoices:draft.invoices.map(invoice=>({...invoice,auditLines:'',quantities:{}})),
+  pages:{'i:11371486':'1','i:11064245':'2'},
+  soldierLineAllocations:{}, // Older saves may have an empty soldier-specific distribution.
+};
+const manualSorted=sortSoldierInvoicePages(manualOnly,catalog);
+assert.equal(manualSorted.assigned,2,'Manual page numbers must assign both SAP lines');
+assert.equal(manualSorted.unresolved.length,0,'Manual pages must avoid redundant soldier review requests');
+assert.deepEqual(manualSorted.pageCounts,[1,1]);
+assert.deepEqual(manualSorted.lines.map(line=>[line.page,line.sapCode]),
+  [[1,'DAR00005'],[2,'CHS00033']]);
+assert.deepEqual(manualOnly.soldierLineAllocations,{},'Sorting must not mutate the supplied draft');
+assert.deepEqual(manualSorted.draft.pages,manualOnly.pages,'Manual page numbers must be preserved');
+const sortedAgain=sortSoldierInvoicePages(manualSorted.draft,catalog);
+assert.equal(sortedAgain.unresolved.length,0,'Manual pages remain valid after a subsequent save');
+assert.equal(sortedAgain.assigned,2);
+
+const noPaperNoPages=sortSoldierInvoicePages({...manualOnly,pages:{}},catalog);
+assert.equal(noPaperNoPages.assigned,0);
+assert.equal(noPaperNoPages.unresolved.length,2,'Truly unassigned rows must still be disclosed');
+
+const manualKey='l:'+first.id+':2:DAR00005';
+const approvedSplit=sortSoldierInvoicePages({...manualOnly,
+  soldierLineAllocations:{[manualKey]:{'1':20,'2':20}},
+  soldierLineTotals:{[manualKey]:40},
+  soldierManualLineKeys:[manualKey],
+},catalog);
+assert.deepEqual(approvedSplit.draft.soldierLineAllocations[manualKey],{'1':20,'2':20},
+  'Explicit manual per-line split must not be replaced by the code-level page number');
+assert.equal(approvedSplit.unresolved.length,0);
+
 const sorted=sortSoldierInvoicePages(draft,catalog);
 assert.equal(sorted.unresolved.length,0);
 assert.equal(sorted.assigned,2);

@@ -83,12 +83,22 @@ export function sortSoldierInvoicePages(draft:Draft,catalog:AuditCatalog):PageSo
      try{pieces=convert(line,item)}catch{continue}
      if(!Number.isFinite(pieces)||Math.abs(pieces)<epsilon)continue;
      const alias=shared.get(sapCode);
-     const candidates=draft.invoices.length===1?[1]:papers.flatMap((paper,i)=>{
-       const chosen=draft.invoices[i].sapInstitutionChoices?.[sapCode];
-       const code=alias?chosen:item.code;
-       if(alias&&(!chosen||!alias.codes.some(r=>r.code===chosen)))return [];
-       return code&&paper.has(code)?[i+1]:[];
-     });
+     // The user's already-entered page numbers in the manual invoice sheet are
+     // the authoritative page selection. They must not disappear merely because
+     // the optional blue-invoice item paste has not been supplied to this soldier.
+     // Explicitly confirmed per-SAP-row splits take precedence over code-level pages.
+     const approvedParts=originalManual.has(key)?draft.soldierLineAllocations?.[key]:undefined;
+     const approvedPages=approvedParts?Object.keys(approvedParts).map(Number):[];
+     const enteredPage=Number(draft.pages?.['i:'+item.code]||draft.pages?.['s:'+sapCode]||0);
+     const manualPage=Number.isSafeInteger(enteredPage)&&
+       enteredPage>=1&&enteredPage<=draft.invoices.length?enteredPage:0;
+     const candidates=draft.invoices.length===1?[1]:approvedPages.length?approvedPages:
+       manualPage?[manualPage]:papers.flatMap((paper,i)=>{
+         const chosen=draft.invoices[i].sapInstitutionChoices?.[sapCode];
+         const code=alias?chosen:item.code;
+         if(alias&&(!chosen||!alias.codes.some(r=>r.code===chosen)))return [];
+         return code&&paper.has(code)?[i+1]:[];
+       });
      const row:Row={key,sapCode,transfer:transfer.number,line,code:item.code,
        absPieces:Math.abs(pieces),candidates};
      items.push(row);
