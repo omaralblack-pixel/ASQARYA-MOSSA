@@ -34,6 +34,8 @@ jobs:
           for test in scripts/test-reconcile.mjs scripts/test-add-transfer.mjs scripts/test-exchange.mjs scripts/test-history-export.mjs scripts/test-reverse-lookup.mjs scripts/test-serial-soldier.mjs scripts/test-sap-invoice-register.mjs; do
             node "$test"
           done
+      - name: First lieutenant 011 regression tests
+        run: node scripts/test-lieutenant.mjs
       - name: Storage, invoice registry and uniqueness checks
         run: |
           python3 scripts/test-storage.py
