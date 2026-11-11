@@ -10,7 +10,8 @@ type FileKind='transfers'|'opening'|'balance'|'other';
 type StoredFile={key:string;name:string;kind:FileKind;size:number;created:string};
 type SavedRecord={id:string;branch:string;status:string;payload:string};
 type QueueRecord={transfer_no:string;doc_date:string;payload:string;source_file:string;created:string};
-type RecordSnapshot={records:SavedRecord[];queue:QueueRecord[]};
+type OpeningStock={snapshot_date:string;warehouse:string;sap_code:string;item_name:string;unit:string;quantity:number;source:string;approved_at:string};
+type RecordSnapshot={records:SavedRecord[];queue:QueueRecord[];openingStock:OpeningStock[]};
 type ReviewStatus='approved'|'paper'|'linked'|'unlinked'|'queued'|'missing'|'review';
 type ReviewRow={source:LieutenantTransfer;status:ReviewStatus;recordId?:string;note:string};
 
@@ -29,7 +30,7 @@ const statusText:Record<ReviewStatus,string>={
   missing:'غير مستورد — يحتاج معالجة',
   review:'يحتاج مراجعة بيانات SAP',
 };
-const empty:RecordSnapshot={records:[],queue:[]};
+const empty:RecordSnapshot={records:[],queue:[],openingStock:[]};
 const fileLimit=16*1024*1024;
 async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
   const response=await fetch(url,{cache:'no-store',...init});
@@ -256,6 +257,21 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       <h1>الملازم أول — مراقبة الترحيلات والفواتير</h1>
       <p>كل ملفات SAP محفوظة في أرشيف Supabase؛ يرسل الترحيلات غير المسجلة للجندي دون إنشاء فاتورة أو اعتمادها.</p></div>
       <ShieldCheck size={32}/></div>
+    <section className="panel" aria-label="الأرصدة الافتتاحية المعتمدة">
+      <div className="section-title"><div><h2>الأرصدة الافتتاحية المعتمدة — المستودع 011</h2>
+        <p>الرصيد المسجل قبل أول حركة في تاريخ البداية. يُحتسب في التدقيق ولا يُسجل كترحيل أو فاتورة.</p></div></div>
+      {snapshot.openingStock.length>0?
+        <div className="table-scroll"><table><thead><tr>
+          <th>تاريخ الرصيد</th><th>كود الصنف</th><th>اسم الصنف</th><th>المستودع</th><th>الوحدة</th><th>الرصيد الافتتاحي</th><th>الاعتماد</th>
+        </tr></thead><tbody>{snapshot.openingStock.map(row=><tr key={row.snapshot_date+'|'+row.warehouse+'|'+row.sap_code+'|'+row.unit}>
+          <td dir="ltr">{row.snapshot_date}</td><td dir="ltr"><b>{row.sap_code}</b></td><td>{row.item_name}</td>
+          <td dir="ltr">{row.warehouse}</td><td>{row.unit==='Piece'?'حبة':row.unit}</td>
+          <td><strong dir="ltr">{Number(row.quantity).toFixed(3)}</strong></td>
+          <td><span className="badge match"><CheckCircle2 size={13}/>معتمد</span></td>
+        </tr>)}</tbody></table></div>:
+        <p className="hint">لم تظهر أرصدة افتتاحية معتمدة من قاعدة البيانات بعد.</p>}
+      <p className="hint">الرصيد الافتتاحي وحده لا يثبت مطابقة SAP؛ يجب إضافة جميع حركات الفترة والرصيد الفعلي بنهايتها.</p>
+    </section>
     <section className="panel">
       <div className="section-title"><div><h2>أرشيف ملفات الملازم أول</h2>
         <p>ترفع الملف مرة واحدة، وتستعيده في أي وقت. الملف الأصلي لا يُستبدل عند رفع ملف جديد.</p></div></div>

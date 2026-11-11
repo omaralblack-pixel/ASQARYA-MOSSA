@@ -59,4 +59,13 @@ const englishScan=parseLieutenantTransfers([englishHeader,
 ].join('\n'),['21 — السرو']);
 assert.equal(englishScan.issues.length,0,'Repeated English headers must be ignored');
 assert.equal(englishScan.transfers.length,2,'Both English-header transfers must survive');
+const schema=JSON.parse(fs.readFileSync('app/lib/reconciliation-schema.json','utf8'));
+assert.ok(schema.some(sql=>sql.includes('CREATE TABLE IF NOT EXISTS lieutenant_opening_stock')&&
+  sql.includes('PRIMARY KEY (snapshot_date, warehouse, sap_code, unit)')),'Opening balances have a durable unique key');
+const initial=schema.find(sql=>sql.startsWith('INSERT OR IGNORE INTO lieutenant_opening_stock'));
+assert.ok(initial&&initial.includes("'2026-11-01','011','FVL00368'")&&
+  initial.includes("'Piece',5.000,"),'Approved rice opening stock is five pieces, not five thousand');
+assert.ok(fs.readFileSync('app/api/reconcile/route.ts','utf8').includes('openingStock:openingStock.results'));
+assert.ok(fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8').includes('snapshot.openingStock.map'));
+
 console.log('Lieutenant parser regressions passed');

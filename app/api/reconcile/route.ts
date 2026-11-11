@@ -24,11 +24,12 @@ async function currentPageSortingCatalog():Promise<AuditCatalog>{
  return saved.catalog;
 }
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('lieutenant')){
- const [records,queue]=await Promise.all([
+ const [records,queue,openingStock]=await Promise.all([
   db().prepare('SELECT id,branch,status,payload FROM reconciliations ORDER BY updated DESC').all(),
   db().prepare('SELECT transfer_no,doc_date,payload,source_file,created FROM lieutenant_queue ORDER BY doc_date,transfer_no').all(),
+  db().prepare('SELECT snapshot_date,warehouse,sap_code,item_name,unit,quantity,source,approved_at FROM lieutenant_opening_stock ORDER BY snapshot_date,sap_code,unit').all(),
  ]);
- return json({records:records.results,queue:queue.results});
+ return json({records:records.results,queue:queue.results,openingStock:openingStock.results});
 }if(u.searchParams.has('pageSortingCatalog')){
  return json({catalog:await currentPageSortingCatalog()});
 }if(u.searchParams.has('invoiceListFrom')||u.searchParams.has('invoiceListTo')){
