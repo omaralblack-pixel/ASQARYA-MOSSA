@@ -31,7 +31,7 @@ jobs:
         run: pnpm run test:institution
       - name: Core reconciliation and transfer regression tests
         run: |
-          for test in scripts/test-reconcile.mjs scripts/test-add-transfer.mjs scripts/test-exchange.mjs scripts/test-history-export.mjs scripts/test-reverse-lookup.mjs scripts/test-serial-soldier.mjs; do
+          for test in scripts/test-reconcile.mjs scripts/test-add-transfer.mjs scripts/test-exchange.mjs scripts/test-history-export.mjs scripts/test-reverse-lookup.mjs scripts/test-serial-soldier.mjs scripts/test-sap-invoice-register.mjs; do
             node "$test"
           done
       - name: Storage, invoice registry and uniqueness checks
