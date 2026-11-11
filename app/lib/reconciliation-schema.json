@@ -5,5 +5,7 @@
   "CREATE TABLE IF NOT EXISTS transfer_keys (key text PRIMARY KEY NOT NULL, group_id text NOT NULL)",
   "CREATE TABLE IF NOT EXISTS invoice_keys (key text PRIMARY KEY NOT NULL, group_id text NOT NULL)",
   "CREATE TABLE IF NOT EXISTS reconciliation_transfer_archive (id text PRIMARY KEY NOT NULL, created text NOT NULL, destination_id text NOT NULL, source_record text NOT NULL)",
-  "CREATE TABLE IF NOT EXISTS lieutenant_queue (transfer_no text PRIMARY KEY NOT NULL, doc_date text NOT NULL, payload text NOT NULL, source_file text NOT NULL, created text NOT NULL)"
+  "CREATE TABLE IF NOT EXISTS lieutenant_queue (transfer_no text PRIMARY KEY NOT NULL, doc_date text NOT NULL, payload text NOT NULL, source_file text NOT NULL, created text NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS lieutenant_opening_stock (snapshot_date text NOT NULL, warehouse text NOT NULL, sap_code text NOT NULL, item_name text NOT NULL, unit text NOT NULL, quantity real NOT NULL CHECK(quantity >= 0), source text NOT NULL, approved_at text NOT NULL, PRIMARY KEY (snapshot_date, warehouse, sap_code, unit))",
+  "INSERT OR IGNORE INTO lieutenant_opening_stock (snapshot_date,warehouse,sap_code,item_name,unit,quantity,source,approved_at) VALUES ('2026-11-01','011','FVL00368','SHORT GRAIN RICE ارز الكيلاني حبة مصريه','Piece',5.000,'SAP 011 opening balance query; manually approved','2026-11-11')"
 ]
