@@ -25,6 +25,20 @@ function loadTs(file){
 
 const {collectInvoicesByDate}=loadTs('app/lib/invoice-collector.ts');
 const {sortSoldierInvoicePages}=loadTs('app/lib/soldier-page-sort.ts');
+const {SOLDIER_START_DATE,isHistoricalSoldierRecord}=loadTs('app/lib/soldier-start.ts');
+assert.equal(SOLDIER_START_DATE,'2026-11-11');
+assert.equal(isHistoricalSoldierRecord('2026-11-10T20:59:59.999Z'),true,
+  'A record created just before midnight on Nov 11 in Amman is historical');
+assert.equal(isHistoricalSoldierRecord('2026-11-10T21:00:00.000Z'),false,
+  'An exact-midnight Nov 11 record must be checked by the soldier');
+assert.equal(isHistoricalSoldierRecord('2026-11-11T05:30:00.000Z'),false,
+  'New work created on Nov 11 must be checked regardless of SAP/invoice dates');
+assert.equal(isHistoricalSoldierRecord('2026-11-09T10:10:00Z'),true);
+assert.equal(isHistoricalSoldierRecord(''),false);
+assert.equal(isHistoricalSoldierRecord(null),false);
+assert.equal(isHistoricalSoldierRecord('invalid'),false,
+  'Unknown creation dates are not automatically exempted');
+
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const transfer=(number,rows)=>({
   id:'t-'+number,number,date:'2026-11-02',
