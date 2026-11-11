@@ -42,6 +42,7 @@ export function analyzeLieutenantMovements(
   const resolved=new Map<string,LieutenantMovement>();
   const pairs=new Map<string,string>();
   const usedReverse=new Set<string>();
+  const ambiguousReferences=new Set<string>();
 
   // Official SAP cancellation documents are not ordinary outbound transfers.
   // Match by explicit document number and, if both are available, all opposite line signatures.
@@ -80,6 +81,13 @@ export function analyzeLieutenantMovements(
     if(!originalNo)continue;
     const original=byNumber.get(originalNo);
     if(!original||!active(original)||resolved.has(originalNo)||!compare(original,reverse))continue;
+    if(ambiguousReferences.has(originalNo))continue;
+    if(pairs.has(originalNo)){
+      ambiguousReferences.add(originalNo);
+      usedReverse.delete(pairs.get(originalNo)!);
+      pairs.delete(originalNo);
+      continue;
+    }
     pairs.set(originalNo,reverse.transfer.number);
     usedReverse.add(reverse.transfer.number);
   }
@@ -91,7 +99,7 @@ export function analyzeLieutenantMovements(
   for(const reverse of transfers){
     if(!reverse.reverse||!active(reverse)||resolved.has(reverse.transfer.number)||usedReverse.has(reverse.transfer.number))continue;
     for(const original of transfers){
-      if(original.reverse||!active(original)||resolved.has(original.transfer.number)||pairs.has(original.transfer.number))continue;
+      if(original.reverse||!active(original)||resolved.has(original.transfer.number)||pairs.has(original.transfer.number)||ambiguousReferences.has(original.transfer.number))continue;
       if(!compare(original,reverse))continue;
       const ids=candidates.get(original.transfer.number)||[];
       ids.push(reverse.transfer.number);
