@@ -67,7 +67,7 @@ assert.deepEqual(manualSorted.pageCounts,[1,1]);
 assert.deepEqual(manualSorted.lines.map(line=>[line.page,line.sapCode]),
   [[1,'DAR00005'],[2,'CHS00033']]);
 assert.deepEqual(manualOnly.soldierLineAllocations,{},'Sorting must not mutate the supplied draft');
-assert.deepEqual(manualSorted.draft.pages,manualOnly.pages,'The user's page numbers are preserved');
+assert.deepEqual(manualSorted.draft.pages,manualOnly.pages,'Manual page numbers must be preserved');
 const sortedAgain=sortSoldierInvoicePages(manualSorted.draft,catalog);
 assert.equal(sortedAgain.unresolved.length,0,'Manual pages remain valid after a subsequent save');
 assert.equal(sortedAgain.assigned,2);
