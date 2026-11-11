@@ -1,7 +1,7 @@
 import {dateValue, invoiceDocumentNo, pageNumber, parseTransfer, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
 
 export type CollectedInvoice = {
-  recordId: string; invoiceId: string; number: string; branch: string; date: string; dateSource: 'invoice'|'transfer';
+  recordId: string; invoiceId: string; number: string; branch: string; date: string; dateSource: 'manual'|'invoice'|'transfer';
   transferNumbers: string[]; unresolvedTransferNumbers: string[]; groupConfirmedTransfers: string[]; amount: string;
 };
 export type UndatedInvoice = {
@@ -22,10 +22,18 @@ const close=(a:number,b:number)=>Math.abs(a-b)<0.000001;
  */
 function invoiceDate(
   invoice:Draft['invoices'][number],transfers:Draft['transfers'],
-):{date:string|null;source:'invoice'|'transfer';reason:string}{
+):{date:string|null;source:'manual'|'invoice'|'transfer';reason:string}{
   const saved=dateValue(invoice.date||'');
+  // An explicitly saved manual date is authoritative, even if the posting
+  // date implies another day. A missing/invalid manual date must NEVER fall
+  // back to SAP or the document date.
+  if(invoice.manualDate===true){
+    return saved?{date:saved,source:'manual',reason:''}:
+      {date:null,source:'manual',reason:'التاريخ اليدوي مفقود أو غير صالح؛ يلزم تصحيحه يدويًا.'};
+  }
+  // Old records might predate the manualDate flag. Their stored date is still
+  // authoritative; SAP is consulted ONLY when this field is unusable.
   if(saved)return {date:saved,source:'invoice',reason:''};
-  if(invoice.manualDate===true)return {date:null,source:'invoice',reason:'التاريخ عدّل يدويًا لكنه مفقود أو غير صالح.'};
   let incompleteSource=false;
   const outgoing=transfers.flatMap(transfer=>{
     if(!transfer||typeof transfer.paste!=='string'){incompleteSource=true;return []}
