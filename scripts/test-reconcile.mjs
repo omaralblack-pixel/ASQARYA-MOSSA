@@ -14,6 +14,44 @@ const piece={...ref.find(i=>i.sapCode==='PFS00003'),kgPerPiece:1};assert.equal(c
 assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']])).lines[0].quantity,1);assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']]).replace('\t11\t','\t12\t')).excluded.length,1);assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']])+'\n\t\t\t\t1\t11').issues.length,1);
 const groups=[{id:'g',branch:'branch',payload:JSON.stringify(d)}];const serial='Document Number\tDocument Date\tBranch\n100\t01/11/2026\tbranch\n101\t02/11/2026\tbranch\n102\t03/11/2026\tbranch\n102\t03/11/2026\tbranch\n999\t31/10/2026\tbranch';let m=monthly(serial,'2026-11',{number:0,date:1,branch:2},false,'dmy',groups);assert.deepEqual(m.missing.map(r=>r.number),['102']);assert.equal(m.received.length,2);assert.equal(m.duplicates.length,1);assert.equal(m.outside.length,1);assert.equal(m.extra.length,0);
 changed=structuredClone(d);changed.invoices[0].complete=false;m=monthly(serial,'2026-11',{number:0,date:1,branch:2},false,'dmy',[{id:'g',branch:'branch',payload:JSON.stringify(changed)}]);assert.equal(m.pending.length,2);assert.equal(m.received.length,0);assert.equal(dateValue('31/02/2026'),null);assert.equal(monthly('No\n100','2026-11',{number:0,date:-1,branch:-1},false,'dmy',groups).problems.length,1);
+// Cash-van regressions: branch may be absent; Remarks is authoritative for its label.
+const cashHeaders=['Document Number','Document Date','Branch','Journal Remarks','CANCELED','Item No.','Quantity','UoM Code','From Warehouse','To Warehouse'];
+const cashDocs=[
+ ['2615767','02/11/2026','','كاش فان عجلون','N','DAR00005','12','Piece','001','011'],
+ ['2615768','02/11/2026','','كاش فان عجلون','N','DAR00027','6','Piece','002','011'],
+ ['2616359','10/11/2026','','Cash Van - route','N','DAR00003','2','Piece','001','011'],
+ ['2616360','10/11/2026','','cashvan','N','DAR00004','1','Piece','002','011'],
+ ['2616422','11/11/2026','','كاش ڤان','N','DAR00004','3','Piece','001','011'],
+ ...Array.from({length:7},(_,i)=>[String(2616450+i),'11/11/2026','','كاشفان','N','DAR00005',String(i+1),'Piece','001','011']),
+ ['2616500','11/11/2026','','عكس ترحيل 2615767','N','DAR00005','12','Piece','011','001'],
+ ['2616501','11/11/2026','','ترحيل عكسي عجلون','N','DAR00027','6','Piece','011','002'],
+ ['2616599','11/11/2026','','Inventory transfer no. 2616359 has been canceled','C','DAR00003','2','Piece','011','001'],
+];
+const cashTable=[cashHeaders.join('\t'),...cashDocs.map(row=>row.join('\t'))].join('\n');
+const cashReview=monthly(cashTable,'2026-11',{number:0,date:1,branch:2},false,'dmy',[],['7 — عجلون']);
+assert.equal(cashReview.problems.length,0,'Cash-van rows should be parseable');
+assert.equal(cashReview.toCancel.length,12,'Do not drop cash-van transfers that have no branch in the branch field');
+assert.equal(cashReview.toCancel.find(row=>row.number==='2615767').branch,'عجلون','Infer known branch from Remarks');
+assert.equal(cashReview.toCancel.find(row=>row.number==='2615767').counterpart,'2616500','Link explicitly referenced reverse transfer');
+assert.equal(cashReview.toCancel.find(row=>row.number==='2615768').counterpart,'2616501','Link only a unique exact inverse transfer by SAP item, quantity and warehouse');
+assert.equal(cashReview.toCancel.find(row=>row.number==='2615768').cancellationStatus,'غير ملغي','A reverse transfer must not be treated as SAP cancellation');
+assert.equal(cashReview.toCancel.find(row=>row.number==='2616359').cancellationStatus,'تم الإلغاء','A matching SAP cancellation document proves cancellation');
+assert.equal(cashReview.toCancel.find(row=>row.number==='2616359').counterpart,'2616599','Identify the cancellation document');
+assert.equal(cashReview.reverse.length,2);
+assert.equal(cashReview.canceled.length,2);
+assert.equal(cashReview.warnings.length,0,'CANCELED and Remarks are supplied');
+const cashNoStatus=cashTable.split('\n').map(line=>line.split('\t').filter((_,i)=>i!==4).join('\t')).join('\n');
+const unknownReview=monthly(cashNoStatus,'2026-11',{number:0,date:1,branch:2},false,'dmy',[],['7 — عجلون']);
+assert.equal(unknownReview.toCancel.find(row=>row.number==='2615768').cancellationStatus,'لم يثبت الإلغاء','Do not invent SAP cancellation status without the column');
+assert.ok(unknownReview.warnings.some(text=>text.includes('CANCELED')));
+const blankBranchReview=monthly(
+ 'Document Number\tDocument Date\tComments\n2617100\t11/11/2026\tCASH-VAN at عجلون',
+ '2026-11',{number:0,date:1,branch:-1},false,'dmy',[],['7 — عجلون']);
+assert.equal(blankBranchReview.toCancel.length,1);
+assert.equal(blankBranchReview.toCancel[0].branch,'عجلون');
+assert.equal(blankBranchReview.toCancel[0].cancellationStatus,'لم يثبت الإلغاء');
+console.log('PASS: 12 cash-van transfers from Remarks, no branch column, official cancellations, exact reverse counterpart, and no false cancellation.');
+
 const zeroPrice=ref.map(i=>i.sapCode==='FVL00302'?{...i,price:null}:i);assert.equal(reconcile(d,zeroPrice).status,'quantityMatch');
 console.log('PASS: approved institution whitelist; two transfers/two invoices; fractional cartons; 8-pack strawberry; Quantity column isolation; unit-review blocking; duplicate docs; three-decimal prices; monthly missing, pending, duplicate and date boundaries.');
 
