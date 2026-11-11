@@ -68,4 +68,51 @@ assert.ok(initial&&initial.includes("'2026-11-01','011','FVL00368'")&&
 assert.ok(fs.readFileSync('app/api/reconcile/route.ts','utf8').includes('openingStock:openingStock.results'));
 assert.ok(fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8').includes('snapshot.openingStock.map'));
 
+
+const counterpartCode=compile('app/lib/lieutenant-counterparts.ts');
+const {analyzeLieutenantMovements,isCashVanTransfer}=
+  await import('data:text/javascript;base64,'+Buffer.from(counterpartCode).toString('base64'));
+const cashRows=[
+ ['2615767','02/11/2026','','','كاش فان عجلون','DAR00005','كريمة','12','Piece','001','011'],
+ ['2616500','11/11/2026','','','عكس ترحيل 2615767','DAR00005','كريمة','12','Piece','011','001'],
+];
+const cashData=[englishHeader,...cashRows.map(row=>row.join('\t'))].join('\n');
+const cashScan=parseLieutenantTransfers(cashData,['7 — عجلون']);
+assert.equal(cashScan.issues.length,0);
+assert.equal(cashScan.transfers[0].branch,'7 — عجلون','Recognize Cash Van Ajloun from remarks');
+assert.equal(isCashVanTransfer(cashScan.transfers[0]),true);
+const cashResolved=analyzeLieutenantMovements(cashScan.transfers,'2026-11-30');
+assert.equal(cashResolved.get('2615767').kind,'reversed','Cash Van with matching reverse is not an invoice gap');
+assert.equal(cashResolved.get('2615767').counterpart,'2616500');
+assert.equal(cashResolved.get('2616500').kind,'reverse','The reverse is not a second blue-invoice requirement');
+assert.ok(cashResolved.get('2615767').note.includes('ليس إلغاء SAP'),'Reversal is not official SAP cancellation');
+const cutoff=analyzeLieutenantMovements(cashScan.transfers,'2026-11-03');
+assert.equal(cutoff.get('2615767').kind,'cashvan-pending','Reverse posted after audit date cannot settle earlier stock');
+assert.ok(cutoff.get('2615767').note.includes('2026-11-11'));
+const cashWithoutRemark=[...cashRows[1]];cashWithoutRemark[4]='بدون ملاحظات';
+const noRefScan=parseLieutenantTransfers([englishHeader,cashRows[0].join('\t'),cashWithoutRemark.join('\t')].join('\n'),['7 — عجلون']);
+assert.equal(analyzeLieutenantMovements(noRefScan.transfers,'2026-11-30').get('2615767').kind,'reversed',
+  'One unique exact inverse must be recognized even without an explicit reference');
+const secondCash=[...cashRows[0]];secondCash[0]='2615768';
+const ambiguousScan=parseLieutenantTransfers([englishHeader,cashRows[0].join('\t'),secondCash.join('\t'),cashWithoutRemark.join('\t')].join('\n'),['7 — عجلون']);
+assert.equal(analyzeLieutenantMovements(ambiguousScan.transfers,'2026-11-30').get('2615767').kind,'cashvan-pending',
+  'Do not auto-match one reversal to two identical Cash Vans');
+const partialForward=['2617008','02/11/2026','','','كاش فان عجلون','DAR00027','كريمة أخرى','3','Piece','001','011'].join('\t');
+const partialScan=parseLieutenantTransfers([englishHeader,cashRows[0].join('\t'),partialForward,cashWithoutRemark.join('\t')].join('\n'),['7 — عجلون']);
+assert.equal(analyzeLieutenantMovements(partialScan.transfers,'2026-11-30').get('2617008').kind,'cashvan-pending',
+  'A different inventory item cannot be canceled by an unrelated reverse');
+const canceledHeader=ar;
+const originalCancel=['2617010','2026-11-02','DAR00005','كريمة','001','011','12','Piece','Y','كاش فان عجلون'];
+const officialCancel=['2617011','2026-11-03','DAR00005','كريمة','011','001','12','Piece','C','Inventory transfer no. 2617010 has been canceled'];
+const canceledScan=parseLieutenantTransfers([canceledHeader,originalCancel.join('\t'),officialCancel.join('\t')].join('\n'),[]);
+const canceledResolved=analyzeLieutenantMovements(canceledScan.transfers,'2026-11-30');
+assert.equal(canceledResolved.get('2617010').kind,'sap-canceled');
+assert.equal(canceledResolved.get('2617011').kind,'sap-cancel-doc');
+
+const screen=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
+assert.ok(screen.includes("response.headers.get('content-type')"),'HTML responses need a friendly diagnostic');
+assert.ok(screen.includes("movements.get(row.transfer.number)?.kind==='normal'"),'Auto-import must skip reversals and Cash Van');
+assert.ok(screen.includes("soldierEligible(row.status)"),'Settled Cash Van should not be sent to soldier');
+console.log('PASS: Lieutenant Cash Van matching, period cutoff, uniqueness, SAP cancellation, import exclusion and HTML-response diagnosis.');
+
 console.log('Lieutenant parser regressions passed');
