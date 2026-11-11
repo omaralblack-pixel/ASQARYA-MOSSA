@@ -79,8 +79,7 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
   for(let i=first+1;i<raw.length;i++){
     if(!raw[i].trim())continue;
     const cells=raw[i].split('\t');
-    if(header(read(cells,'number'))===header(aliases.number[0])||
-      header(read(cells,'number'))==='docnum')continue;
+    if(aliases.number.some(alias=>header(read(cells,'number'))===header(alias)))continue;
     const number=digits(read(cells,'number'));
     if(!/^\d{4,20}$/.test(number)){
       issues.push('السطر '+(i+1)+' بلا رقم ترحيل صالح.');
