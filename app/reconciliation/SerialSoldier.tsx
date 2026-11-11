@@ -85,7 +85,7 @@ export default function SerialSoldier(){
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
        <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
      </div>
-     <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. لا توجد أعمدة مقارنة مكررة أو شيت مراجعة جديد؛ الملاحظات تظهر فقط في صفوف الاختلاف أو عدم التأكيد. المجموعات القديمة المعتمدة لا تُشترط لها صفحات ولا تُنسب ترحيلاتها عشوائيًا لفاتورة منفردة.</p>
+     <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. لا توجد أعمدة مقارنة مكررة أو شيت مراجعة جديد؛ الملاحظات تظهر فقط في صفوف الاختلاف أو عدم التأكيد. المجموعات القديمة المعتمدة تظهر ترحيلاتها المشتركة في صفوف فواتير المجموعة، دون تغيير توزيع الصفحات المحفوظ.</p>
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
      {error&&<p role="alert" className="red"><AlertTriangle size={16} style={{verticalAlign:'middle'}}/> {error}</p>}
      {issues.length>0&&<div role="alert" className="review-list"><strong>سطور Excel غير سليمة:</strong>{issues.map((issue,i)=><p key={i}>{issue}</p>)}</div>}
@@ -119,8 +119,9 @@ export default function SerialSoldier(){
        <p className="hint">يُعرض أول 200 صف هنا لتسهيل التصفح، بينما يشمل ملف التصدير جميع الفواتير من دون استثناء.</p>
        <div className="table-scroll"><table><thead><tr><th>صف Excel</th><th>رقم الفاتورة</th><th>مبلغ سجى</th><th>الحالة</th><th>رئيسي 001→011</th><th>نواشف 002→011</th><th>تعديلات / عكسي</th><th>ملاحظات</th></tr></thead>
        <tbody>{filtered.slice(0,200).map((item:SerialRow)=>{
-         const cols=[...item.transfers.filter(x=>x.kind==='main'),...item.transfers.filter(x=>x.kind==='dry')];
-         const adjustments=item.transfers.filter(x=>x.kind==='adjustment');
+         const associated=[...item.transfers,...item.unassignedTransfers];
+         const cols=associated.filter(x=>x.kind==='main'||x.kind==='dry');
+         const adjustments=associated.filter(x=>x.kind==='adjustment');
          return <tr key={item.row} style={{backgroundColor:color[item.state]}}>
            <td>{item.row}</td><td dir="ltr">{item.number||'—'}</td><td dir="ltr">{item.amount||'—'}</td><td>{label[item.state]}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='main').map(t=>t.number).join('، ')||'—'}</td>
