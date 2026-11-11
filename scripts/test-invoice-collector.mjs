@@ -78,6 +78,23 @@ assert.deepEqual(unsafe.rows.map(row=>row.transferNumbers),[[],[]]);
 assert.deepEqual(unsafe.rows.map(row=>row.unresolvedTransferNumbers),
   [['2615774','2615773'],['2615774','2615773']]);
 
+// A user-approved old group is confirmed even when per-invoice page keys were never stored.
+const oldApproved={...draft,summary:{status:'match'}};
+const approvedRows=collectInvoicesByDate([{id:'approved',branch:draft.branch,payload:JSON.stringify(oldApproved)}],
+  '2026-11-01','2026-11-02');
+assert.deepEqual(approvedRows.rows.map(row=>row.unresolvedTransferNumbers),[[],[]]);
+assert.deepEqual(approvedRows.rows.map(row=>row.groupConfirmedTransfers),
+  [['2615774','2615773'],['2615774','2615773']]);
+const approvedByStatus=collectInvoicesByDate([{id:'approved2',branch:draft.branch,status:'match',payload:JSON.stringify(draft)}],
+  '2026-11-01','2026-11-02');
+assert.deepEqual(approvedByStatus.rows.map(row=>row.groupConfirmedTransfers),
+  [['2615774','2615773'],['2615774','2615773']]);
+const oldRejected=collectInvoicesByDate([{id:'review',branch:draft.branch,status:'review',payload:JSON.stringify(draft)}],
+  '2026-11-01','2026-11-02');
+assert.deepEqual(oldRejected.rows.map(row=>row.groupConfirmedTransfers),[[],[]]);
+assert.deepEqual(oldRejected.rows.map(row=>row.unresolvedTransferNumbers),
+  [['2615774','2615773'],['2615774','2615773']]);
+
 const oneInvoice={...draft,invoices:[draft.invoices[0]]};
 const single=collectInvoicesByDate([{id:'one',branch:'23 — خالد',payload:JSON.stringify(oneInvoice)}],
   '2026-11-01','2026-11-01');
