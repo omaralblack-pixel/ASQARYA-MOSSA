@@ -109,4 +109,64 @@ assert.equal(damaged.rows.length,2);
 assert.throws(()=>collectInvoicesByDate([], '2026-11-03','2026-11-01'),/البداية/);
 assert.throws(()=>collectInvoicesByDate([], 'not-date','2026-11-01'),/تاريخ/);
 assert.throws(()=>collectInvoicesByDate([], '2025-01-01','2026-02-01'),/366/);
-console.log('PASS: date-range invoice collector, exact amounts, verified transfer links, unknown group transfer safety, and page sorter.');
+
+// Recover only dates that are grounded by dated outgoing SAP transfers.
+const missingDateDraft={...draft,invoices:[{...draft.invoices[0],date:''},draft.invoices[1]]};
+const recovered=collectInvoicesByDate([{id:'recovered',branch:draft.branch,payload:JSON.stringify(missingDateDraft)}],
+  '2026-11-01','2026-11-02');
+assert.equal(recovered.undatedInvoices,0);
+assert.equal(recovered.inferredDates,1);
+assert.equal(recovered.rows[0].date,'2026-11-01');
+assert.equal(recovered.rows[0].dateSource,'transfer');
+assert.equal(missingDateDraft.invoices[0].date,'','Reading the old register must never mutate its invoice dates');
+
+const conflictingTransferDates={...draft,
+  transfers:[{...first,date:'2026-11-03'},second],
+  invoices:[{...draft.invoices[0],date:''},draft.invoices[1]]};
+const unknown=collectInvoicesByDate([{id:'unknown',branch:draft.branch,doc_date:'2026-11-04',
+  payload:JSON.stringify(conflictingTransferDates)}], '2026-11-01','2026-11-03');
+assert.equal(unknown.undatedInvoices,1);
+assert.equal(unknown.undatedDetails[0].number,'2610013337');
+assert.equal(unknown.undatedDetails[0].branch,draft.branch);
+assert.equal(unknown.undatedDetails[0].recordDate,'2026-11-04');
+assert.deepEqual(unknown.undatedDetails[0].transferNumbers,['2615774','2615773']);
+assert.match(unknown.undatedDetails[0].reason,/مختلفة/);
+assert.equal(unknown.rows.length,1,'Unprovable date must stay out of date-scoped results');
+
+const explicitlyLinked={...conflictingTransferDates,
+  invoices:[{...conflictingTransferDates.invoices[0],dateTransferNos:['2615774']},draft.invoices[1]]};
+const linked=collectInvoicesByDate([{id:'linked',branch:draft.branch,payload:JSON.stringify(explicitlyLinked)}],
+  '2026-11-02','2026-11-02');
+assert.equal(linked.rows[0].number,'2610013337');
+assert.equal(linked.rows[0].dateSource,'transfer');
+assert.equal(linked.rows[0].date,'2026-11-02');
+assert.equal(linked.undatedInvoices,0);
+
+const manuallyInvalid={...missingDateDraft,
+  invoices:[{...missingDateDraft.invoices[0],manualDate:true},missingDateDraft.invoices[1]]};
+const manual=collectInvoicesByDate([{id:'manual',branch:draft.branch,payload:JSON.stringify(manuallyInvalid)}],
+  '2026-11-01','2026-11-02');
+assert.equal(manual.undatedInvoices,1,'Do not overwrite a missing manually entered invoice date');
+assert.match(manual.undatedDetails[0].reason,/يدوي/);
+
+const reverse={...first,paste:header+'\nDAR00005\tcream\t2\tCarton\t011\t001'};
+const reverseOnly={...draft,transfers:[reverse],invoices:[{...draft.invoices[0],date:''}]};
+const reversed=collectInvoicesByDate([{id:'reverse',branch:draft.branch,payload:JSON.stringify(reverseOnly)}],
+  '2026-11-01','2026-11-02');
+assert.equal(reversed.undatedInvoices,1,'Never derive invoice date from a reversal transfer');
+assert.equal(reversed.rows.length,0);
+
+const outside=collectInvoicesByDate([{id:'outside',branch:draft.branch,payload:JSON.stringify(manuallyInvalid)}],
+  '2026-12-01','2026-12-02');
+assert.equal(outside.rows.length,0);
+assert.equal(outside.undatedInvoices,1,
+  'Report clearly identifies undated records from the whole register, not just the selected period');
+
+// Approved historic MATCH groups remain recognized when dates are recovered, never edited.
+const approvedMissing={...missingDateDraft,summary:{status:'match'}};
+const approvedRecovered=collectInvoicesByDate([{id:'approved',branch:draft.branch,payload:JSON.stringify(approvedMissing)}],
+  '2026-11-01','2026-11-02');
+assert.deepEqual(approvedRecovered.rows.map(row=>row.groupConfirmedTransfers),
+  [['2615774','2615773'],['2615774','2615773']]);
+
+console.log('PASS: date-range invoice collector, exact amounts, verified transfer links, unknown group transfer safety, page sorter, and safe derived-date diagnostics.');
