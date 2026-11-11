@@ -100,4 +100,23 @@ assert.deepEqual(evaluateSerial([row(5,'2624002303','186.400')],[record('other',
  {...invoice('2624002303','186.400'),date:'2026-11-09'}
 ],[transfer('2611004','DAR00004','011','001')])]).blockers,[],
  'Valid one-invoice historical records remain supported');
+// Omar's saved figures stay authoritative, while Saja's original cells are kept for comparison.
+result=evaluateSerial([row(5,'2624002303','186.401')],[correct]);
+assert.equal(result.rows[0].omarNumber,'2624002303');
+assert.equal(result.rows[0].omarAmount,'186.400');
+assert.equal(result.rows[0].amount,'186.401');
+assert.equal(result.rows[0].state,'review');
+const guessedSaja={...row(5,'2660506908','186.400'),originalTransfers:['2611001']};
+result=evaluateSerial([guessedSaja],[correct]);
+assert.equal(result.rows[0].state,'review','A number discrepancy must never become green');
+assert.equal(result.rows[0].number,'2660506908','Preserve the original Saja guess');
+assert.equal(result.rows[0].omarNumber,'2624002303','Show Omar official invoice number via unique transfer');
+assert.ok(result.rows[0].reason.includes('اختلاف رقم الفاتورة'));
+const second=record('another',[invoice('2629999999','12.000')],[transfer('2611001','DAR00001','001','011')]);
+result=evaluateSerial([guessedSaja],[correct,second]);
+assert.equal(result.rows[0].state,'missing','Ambiguous transfer ownership must not guess Omar invoice');
+assert.equal(result.rows[0].omarNumber,'');
+assert.ok(evaluateSerial([row(5,'2624002303','186.400')],[record('broken',[invoice('2624002303','186.400')],[])])
+ .rows[0].state==='review','No verified transfers must not produce a green invoice');
+console.log('PASS: Omar/Saja numbers and amounts are preserved side by side; uncertain links remain unresolved');
 console.log('PASS: serial soldier retains approved old group matching without page numbers, while enforcing amount, duplicates and new records');
