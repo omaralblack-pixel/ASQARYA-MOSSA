@@ -175,7 +175,7 @@ function outgoingTransferDates(transfers: Transfer[]) {
 export function withInvoiceDates<T extends Draft>(draft:T):T {
  const outgoing = outgoingTransferDates(draft.transfers);
  return {...draft,invoices:draft.invoices.map(invoice=>{
-  if(invoice.manualDate===true&&dateValue(invoice.date))return invoice;
+  if(invoice.manualDate===true)return invoice; // Never overwrite an explicitly manual date, even if it needs correction.
   const linked=Array.isArray(invoice.dateTransferNos)&&outgoing.find(transfer=>invoice.dateTransferNos!.includes(transfer.number));
   const source=linked||outgoing[0];
   if(!source)return invoice;
