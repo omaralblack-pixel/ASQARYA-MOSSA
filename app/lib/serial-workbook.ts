@@ -195,7 +195,10 @@ function appendAuditSheet(pkg:Package,report:SerialReport){
   for(const warning of report.legacyWarnings)put([warning]);
  }
  const sheet=element(workbook,'sheet');
- sheet.setAttribute('name','مراجعة عمر');sheet.setAttribute('sheetId',String(sheetId));
+ const usedNames=new Set(Array.from(workbook.getElementsByTagNameNS(NS,'sheet')).map(el=>el.getAttribute('name')));
+ let title='مراجعة عمر',n=2;
+ while(usedNames.has(title))title='مراجعة عمر '+n++;
+ sheet.setAttribute('name',title);sheet.setAttribute('sheetId',String(sheetId));
  sheet.setAttributeNS(REL,'r:id',relId);sheets.appendChild(sheet);
  const relNS='http://schemas.openxmlformats.org/package/2006/relationships';
  const rel=relationships.createElementNS(relNS,'Relationship');
