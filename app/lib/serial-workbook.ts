@@ -182,7 +182,7 @@ function appendAuditSheet(pkg:Package,report:SerialReport){
  put(['عدد فواتير سجى',String(report.rows.length),'واصل',String(report.count.received),'غير واصل',String(report.count.missing),'غير مؤكد',String(report.count.pending),'مراجعة',String(report.count.review)]);
  put(['صف سجى','حالة المطابقة','رقم الفاتورة — عمر','المبلغ — عمر','رقم الفاتورة — سجى','المبلغ — سجى','ترحيلات عمر المرتبطة','ترحيلات المجموعة المعتمدة','الملاحظات']);
  for(const row of report.rows)put([
-  String(row.row),row.state,row.omarNumber,row.omarAmount,row.number,row.amount,
+  String(row.row),({received:'واصل ومطابق',pending:'ورق غير مؤكد',missing:'غير واصل',review:'تحتاج مراجعة'} as Record<SerialState,string>)[row.state],row.omarNumber,row.omarAmount,row.number,row.amount,
   serialColumns(row.transfers).filter(Boolean).join('، '),
   [...new Set((row.unassignedTransfers||[]).map(t=>t.number))].join('، '),row.reason,
  ]);
@@ -293,6 +293,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
     conflicts.push(columnName(c)+': سجى '+(existing||'معادلة')+' / عمر '+expected);
     continue;
    }
+   if(existing===expected)continue; // preserve original Excel cell type and value
    if(!cell.getAttribute('s')){
     const template=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row)||getCell(row,'D'+item.row);
     if(template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
