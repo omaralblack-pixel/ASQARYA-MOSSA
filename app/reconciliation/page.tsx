@@ -4,7 +4,7 @@ import SapImport from './SapImport';
 import InstantMatch from './InstantMatch';
 import InstitutionAudit from './InstitutionAudit';
 import CatalogReplacement from './CatalogReplacement';
-import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
+import {parseSapImport,canUseSelectedBranchForSapMember,type SapImportGroup} from '../lib/sap-import';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import GroupLookup from './GroupLookup';
 import InvoiceRegister,{InvoiceRegisterPrint} from './InvoiceRegister';
@@ -191,7 +191,17 @@ async function lookupTransfer(id:string,number:string){
   }
   const unreadable=sapPreview.groups.flatMap(group=>group.members).find(member=>digits(member.transfer.number).trim()===normalized);
   if(unreadable){
-    E('الترحيل '+normalized+' موجود في كشف SAP لكنه يحتاج مراجعة: '+(unreadable.issues.join('، ')||'راجع نوع الحركة.'));
+    if(canUseSelectedBranchForSapMember(unreadable,draft.branch)){
+      D(current=>{
+        const row=current?.transfers.find(transfer=>transfer.id===id);
+        return current&&row&&digits(row.number).trim()===normalized&&!row.paste.trim()
+          ?addTransferToDraft(current,unreadable.transfer,current.branch,id):current;
+      });
+      N('تمت تعبئة الترحيل '+normalized+' من SAP باستخدام فرع المؤسسة المحدد في الكشف؛ راجع الفرع قبل الحفظ.');
+      return;
+    }
+    E('الترحيل '+normalized+' موجود في كشف SAP لكنه يحتاج مراجعة: '+(unreadable.issues.join('، ')||'راجع نوع الحركة.')+
+      (unreadable.issues.length===1&&unreadable.issues[0]==='الفرع غير معروف'&&!draft.branch?' حدد فرع المؤسسة أولًا.':''));
     return;
   }
   try{
@@ -233,19 +243,28 @@ async function findTransferForAddition(number: string, saved: StoredTransfer | n
   }
   const parsed = file && parseSapImport(file.text, branches);
   const member = parsed ? parsed.groups.flatMap(group => group.members).find(row => row.transfer.number === number) : undefined;
+  if(saved?.branch && addingTo.branch && saved.branch!==addingTo.branch)
+    throw Error('الترحيل '+number+' محفوظ لفرع '+saved.branch+'، وليس فرع الكشف المفتوح '+addingTo.branch+'.');
+  if(member?.branch && addingTo.branch && member.branch!==addingTo.branch)
+    throw Error('الترحيل '+number+' تابع لفرع '+member.branch+'، وليس فرع الكشف المفتوح '+addingTo.branch+'.');
+  if(saved?.branch && member?.branch && saved.branch!==member.branch)
+    throw Error('الترحيل '+number+' له فرع مختلف بين السجل وSAP. راجع بياناته قبل الإضافة.');
+  const fallbackBranch=member?canUseSelectedBranchForSapMember(member,addingTo.branch):false;
   const addingSecond = addingTo.transfers.some(row => transferNumbers(row.number).some(existing => existing !== number));
   if (addingSecond && member?.invoices.length && (!saved || fromAnotherRecord) && !matchesInvoiceNumbers(addingTo.invoices, member.invoices)) {
     throw Error(invoiceLinkMessage(number, member.invoices) + ' أرقام الفواتير لا تطابق الكشف المفتوح.');
   }
   if (!savedPaste && parsed?.issues.length) throw Error('تعذرت قراءة كشف SAP: ' + parsed.issues[0]);
-  if (!savedPaste && member && (member.issues.length || (member.reversal && !member.reverseMovement))) {
-    throw Error('الترحيل ' + number + ' موجود في الكشف ويحتاج مراجعة: ' + (member.issues.join('، ') || 'راجع نوع الحركة.'));
+  if (!savedPaste && member && ((member.issues.length && !fallbackBranch) || (member.reversal && !member.reverseMovement))) {
+    throw Error('الترحيل ' + number + ' موجود في الكشف ويحتاج مراجعة: ' + (member.issues.join('، ') || 'راجع نوع الحركة.') +
+      (member.issues.length===1&&member.issues[0]==='الفرع غير معروف'&&!addingTo.branch?' حدد فرع المؤسسة في بيانات المطابقة أولًا.':''));
   }
   const transfer = savedPaste ? saved!.transfer : member?.transfer || saved?.transfer;
   if (!transfer) return null;
   return {
     transfer: {...transfer, number},
-    branch: saved?.branch || member?.branch || '',
+    branch: saved?.branch || member?.branch || (fallbackBranch?addingTo.branch:''),
+    branchFromSelection: !savedPaste && fallbackBranch,
     source: fromAnotherRecord ? {number, recordId: saved.recordId, version: saved.version} : undefined,
   };
 }
@@ -288,9 +307,11 @@ async function addTransferFromSavedFile() {
     }
     stageTransfer(candidate.transfer, candidate.branch, candidate.source, blankCard?.id);
     setSearchTransferOpen(false);
-    N(candidate.transfer.paste.trim()
-      ? 'تمت إضافة الترحيل ' + number + ' وأصنافه إلى الكشف. اضغط «حفظ» لتثبيت الإضافة.'
-      : 'تمت إضافة رقم الترحيل ' + number + '. الصق جدول أصنافه قبل الحفظ.');
+    N(candidate.branchFromSelection
+      ? 'تمت إضافة الترحيل '+number+' وأصنافه. فرع SAP غير معروف؛ استُخدم فرع المؤسسة الذي اخترته في الكشف. راجعه قبل الحفظ.'
+      : candidate.transfer.paste.trim()
+        ? 'تمت إضافة الترحيل ' + number + ' وأصنافه إلى الكشف. اضغط «حفظ» لتثبيت الإضافة.'
+        : 'تمت إضافة رقم الترحيل ' + number + '. الصق جدول أصنافه قبل الحفظ.');
   } catch (error) {
     setSearchTransferError(error instanceof Error ? error.message : 'تعذّر البحث عن الترحيل.');
   } finally {
