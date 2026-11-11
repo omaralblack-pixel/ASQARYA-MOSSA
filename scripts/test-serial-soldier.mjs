@@ -97,6 +97,24 @@ const newRecord=record('g-new',[
 assert.ok(evaluateSerial([row(5,'2624002303','186.400')],[newRecord]).blockers
  .some(e=>e.includes('لا يمكن ربط')),
  'New invoices still require their page allocations');
+const newResult=evaluateSerial([row(5,'2624002303','186.400')],[newRecord]);
+assert.deepEqual(serialInvoiceColumns(newResult.rows[0]),['2612001',''],
+ 'Newer groups without invoice-page allocations still display saved group transfer number');
+assert.equal(newResult.rows[0].state,'review',
+ 'Showing a shared group transfer must not falsely approve a new unallocated invoice');
+// Actual Gardenz pattern: two already approved invoices in one group with no
+// individual page allocations still need both of the group's transfer numbers.
+const gardenz=record('garden',[
+ {...invoice('2624002303','186.400'),date:'2026-11-01'},
+ {...invoice('2624002304','591.160'),date:'2026-11-01'},
+],[transfer('2615824','DAR00001','001','011'),transfer('2615907','DAR00002','002','011')]);
+const gardenzReport=evaluateSerial([
+ row(5,'2624002303','186.400'),row(6,'2624002304','591.160'),
+],[gardenz]);
+assert.deepEqual(gardenzReport.rows.map(serialInvoiceColumns),
+ [['2615824','2615907'],['2615824','2615907']],
+ 'Never leave historical Gardenz invoices blank when saved group transfers are known');
+assert.deepEqual(gardenzReport.count,{received:2,pending:0,missing:0,review:0});
 const unapprovedOld=record('g-old-review',[
  {...invoice('2624002303','186.400'),date:'2026-11-09'},
  {...invoice('2624002304','591.160'),date:'2026-11-09'}
