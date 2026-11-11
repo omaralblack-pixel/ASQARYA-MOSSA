@@ -229,11 +229,15 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
  for(const item of report.rows){
   const row=rowElements.get(item.row);
   if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في ملف سجى.');
-  const transfers=serialColumns(item.transfers);
+  // A confirmed historical group belongs to every invoice in that saved group, even
+  // when the old record has no per-invoice page allocation. Place its shared transfer
+  // numbers in Saja's transfer slots as GROUP associations (not claimed page ownership).
+  const transfers=serialColumns([...item.transfers,...item.unassignedTransfers]);
   const original=new Set((item.originalTransfers||[]).filter(Boolean));
   const missingTransfers:string[]=[];
-  // Fill ONLY empty slots in K:Q. Never replace a transfer already entered by Saja,
-  // and never assign a group-level transfer to an individual invoice.
+  // Fill ONLY empty slots in K:Q. Never replace an existing Saja transfer.
+  // Historic shared group transfers are shown on every related invoice row, without
+  // modifying or fabricating invoice-page allocations in the saved database.
   for(const [index,transferNo] of transfers.entries()){
    if(!transferNo||original.has(transferNo))continue;
    const preferred=11+index;
