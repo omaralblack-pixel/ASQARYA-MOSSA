@@ -81,7 +81,8 @@ function summarize(result: ReturnType<typeof reconcile>) {
   };
 }
 
-async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
+async function saveReconciliation(d: Draft, requestedSources: unknown = [], overrideSoldier: unknown = false) {
+  if(typeof overrideSoldier!=='boolean')return json({error:'طلب اعتماد الجندي غير صالح.'},400);
   const branchSetting = await db().prepare('SELECT value FROM settings WHERE key=?').bind('branches').first();
   const allowedBranches = branchSetting ? JSON.parse(String(branchSetting.value)) : branches;
   if (!d || !Array.isArray(d.transfers) || !d.transfers.length || d.transfers.length > 30 ||
@@ -240,7 +241,14 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   const reference = prepared.reference;
   const clean = {...prepared.draft, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
   const summary = summarize(prepared.result);
-   const payload = JSON.stringify({...clean, summary, acceptedDifference: summary.acceptedDifference ? d.acceptedDifference : undefined});
+  // The operator can bypass only soldier page allocation, not price/item/transfer validation.
+  if(overrideSoldier && (prepared.result.status!=='match'||prepared.result.priceDifference!==0))
+    return json({error:'اعتماد تجاوز الجندي متاح فقط بعد تطابق الفواتير والترحيلات ماليًا واكتمال المطابقة الأساسية.'},400);
+  const soldierOverride=overrideSoldier
+    ?{at:now,version,scope:'page-sort-only' as const}
+    :previous?.soldierOverride;
+  const payload = JSON.stringify({...clean, soldierOverride, summary,
+    acceptedDifference: summary.acceptedDifference ? d.acceptedDifference : undefined});
   const revisions = JSON.stringify(sourceRecords.map(({id, version}) => ({id, version})));
   const sourcesUnchanged = `NOT EXISTS (
     SELECT 1 FROM json_each(?) expected
@@ -294,7 +302,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   } catch {
     return json({error: 'تعارض في أرقام الفواتير أو الترحيلات. راجع المستندات وأعد المحاولة.'}, 409);
   }
-  return json({id, version, referenceSnapshot: reference, summary,
+  return json({id, version, referenceSnapshot: reference, summary, soldierOverride,
     pageSorting:{assigned:sorted.assigned,split:sorted.split,exemptedHistorical: soldierExempt,paused:true,
       unresolved:sorted.unresolved.map(row=>({sapCode:row.sapCode,transfer:row.transfer,reason:row.reason}))},
     pages:prepared.draft.pages,soldierLineAllocations:prepared.draft.soldierLineAllocations,
@@ -407,5 +415,5 @@ if (b.action === 'lieutenantImport') {
  const added=results.reduce((count,result)=>count+(result.meta.changes||0),0);
  return json({added,existing:incoming.length-added,total:incoming.length});
  }
- if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources);
+ if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources, b.overrideSoldier);
 return json({error:'طلب غير معروف'},400)}catch{return json({error:'تعذّر الحفظ. أعد المحاولة.'},500)}}
