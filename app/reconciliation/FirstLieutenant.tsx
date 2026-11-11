@@ -11,7 +11,7 @@ type StoredFile={key:string;name:string;kind:FileKind;size:number;created:string
 type SavedRecord={id:string;branch:string;status:string;payload:string};
 type QueueRecord={transfer_no:string;doc_date:string;payload:string;source_file:string;created:string};
 type RecordSnapshot={records:SavedRecord[];queue:QueueRecord[]};
-type ReviewStatus='approved'|'paper'|'linked'|'queued'|'missing'|'review';
+type ReviewStatus='approved'|'paper'|'linked'|'unlinked'|'queued'|'missing'|'review';
 type ReviewRow={source:LieutenantTransfer;status:ReviewStatus;recordId?:string;note:string};
 
 const fileKinds:Record<FileKind,string>={
@@ -24,6 +24,7 @@ const statusText:Record<ReviewStatus,string>={
   approved:'مطابق ومعتمد',
   paper:'الفاتورة مرتبطة، والورق غير مؤكد',
   linked:'مرتبط بفاتورة، المطابقة غير مكتملة',
+  unlinked:'ترحيل محفوظ بلا رقم فاتورة زرقاء',
   queued:'مستورد تلقائيًا — بانتظار الجندي',
   missing:'غير مستورد — يحتاج معالجة',
   review:'يحتاج مراجعة بيانات SAP',
@@ -47,7 +48,7 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot):Review
     const hasPaper=numbers.length>0&&(draft.invoices||[]).filter(inv=>invoiceDocumentNo(inv.number)).every(inv=>inv.complete);
     const matched=record.status==='match'&&hasPaper;
     const status:ReviewStatus=matched?'approved':numbers.length?
-      hasPaper?'linked':'paper':'linked';
+      hasPaper?'linked':'paper':'unlinked';
     const note=numbers.length?'الفواتير: '+numbers.join('، '):'لم يُحدد رقم فاتورة زرقاء.';
     for(const transfer of draft.transfers||[])
       for(const number of transferNumbers(transfer.number||''))
@@ -68,7 +69,7 @@ function MovementSummary({rows}:{rows:ReviewRow[]}){
   const movements=useMemo(()=>{
     const totals=new Map<string,{code:string;unit:string;inward:number;outward:number}>();
     for(const {source} of rows){
-      if(source.issues.length||source.cancellationMentioned)continue;
+      if(source.issues.length||['canceled','cancellation'].includes(source.cancellationState))continue;
       for(const line of source.transfer.paste.split('\n').slice(1)){
         const [code,,quantity,unit,from,to]=line.split('\t');
         const qty=Number(quantity.replace(/,/g,''));
@@ -85,7 +86,7 @@ function MovementSummary({rows}:{rows:ReviewRow[]}){
   if(!movements.length)return null;
   return <details className="panel">
     <summary>صافي الحركة حسب كود SAP ووحدة الترحيل ({movements.length})</summary>
-    <p className="hint">كميات حركة فقط، وليست رصيدًا نهائيًا. لا نجمع KG مع Carton أو Piece، ولا نعتمد حركات إلغائها غير مثبتة. يلزم رصيد افتتاحي لنحسب رصيد نهاية الفترة.</p>
+    <p className="hint">صافي أولي من الملف، وليس رصيد SAP موثّقًا. لم تدخل مستندات الإلغاء Y وC في هذا الجدول. لا نجمع KG مع Carton أو Piece، وتبقى التسويات وحالة الإلغاء وتواريخها بحاجة للتحقق من سجل حركة المخزون.</p>
     <div className="table-scroll"><table><thead><tr><th>كود SAP</th><th>الوحدة</th><th>الوارد</th><th>الصادر</th><th>صافي الحركة</th></tr></thead><tbody>
       {movements.map(row=><tr key={row.code+'|'+row.unit}><td dir="ltr">{row.code}</td><td>{row.unit}</td><td>{row.inward}</td><td>{row.outward}</td><td>{Number((row.inward-row.outward).toFixed(6))}</td></tr>)}
     </tbody></table></div>
@@ -173,7 +174,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   const counts=useMemo(()=>({
     approved:rows.filter(row=>row.status==='approved').length,
     queued:rows.filter(row=>row.status==='queued').length,
-    review:rows.filter(row=>row.status==='review'||row.source.cancellationMentioned).length,
+    review:rows.filter(row=>row.status==='review'||row.source.cancellationState!=='active'||row.source.cancellationMentioned).length,
     pending:pending.length,
   }),[rows,pending.length]);
 
@@ -184,7 +185,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       const batch=valid.slice(start,start+50).map(row=>({
         number:row.transfer.number,date:row.transfer.date,paste:row.transfer.paste,
         branch:row.branch,remarks:row.remarks,reverse:row.reverse,
-        cancellationMentioned:row.cancellationMentioned,invoiceNumbers:row.invoiceNumbers,
+        cancellationMentioned:row.cancellationMentioned,cancellationState:row.cancellationState,invoiceNumbers:row.invoiceNumbers,
       }));
       const result=await checkedJson<{added:number;existing:number}>('/api/reconcile',{
         method:'POST',headers:{'Content-Type':'application/json'},
@@ -322,7 +323,10 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         <td><span className={'badge '+(row.status==='approved'?'match':row.status==='review'||row.status==='missing'?'difference':'review')}>
           {row.status==='approved'?<CheckCircle2 size={13}/>:<AlertTriangle size={13}/>}
           {statusText[row.status]}</span>
-          {row.source.cancellationMentioned&&<small style={{display:'block'}}>ملاحظة إلغاء تحتاج إثبات حالة SAP</small>}</td>
+          {row.source.cancellationState==='canceled'&&<small style={{display:'block'}}>حالة SAP: ترحيل ملغى (Y)</small>}
+          {row.source.cancellationState==='cancellation'&&<small style={{display:'block'}}>حالة SAP: مستند إلغاء (C)</small>}
+          {row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>حالة الإلغاء غير مذكورة</small>}
+          {row.source.cancellationMentioned&&row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>Remarks تذكر إلغاء دون إثبات</small>}</td>
         <td>{row.note}</td>
         <td>{row.recordId?<button type="button" className="button secondary small" onClick={()=>onOpenRecord(row.recordId!)}>فتح الفاتورة</button>:
           <button type="button" className="button secondary small" disabled={!!row.source.issues.length} onClick={()=>onOpenTransfer(row.source.transfer,row.source.branch)}>إرسال للجندي</button>}</td>
