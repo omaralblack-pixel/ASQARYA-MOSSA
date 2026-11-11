@@ -48,7 +48,7 @@ export default function InstitutionAudit({onOpenInvoice}:{
       ...report.rows.map(row=>[
         row.number,row.branch,row.date,row.transferNumbers.join('، '),row.amount,
         (row.groupConfirmedTransfers||[]).join('، '),row.unresolvedTransferNumbers.join('، '),
-        row.dateSource==='transfer'?'تاريخ مشتق من ترحيل SAP':'محفوظ على الفاتورة'
+        row.dateSource==='manual'?'التاريخ اليدوي المعتمد':row.dateSource==='transfer'?'تاريخ مشتق من ترحيل SAP':'محفوظ على الفاتورة'
       ]),
     ];
     const workbook=tableWorkbook(rows,'فواتير المؤسسة',[23,28,17,44,20,44,44,28]);
@@ -97,8 +97,8 @@ export default function InstitutionAudit({onOpenInvoice}:{
             onClick={exportExcel}><Download size={16}/>سحب كشف Excel</button>
         </div>
         {report.inferredDates>0&&<p className="banner info" role="status">
-          استرجعت تاريخ {report.inferredDates} فاتورة في هذه الفترة من تاريخ ترحيل SAP المؤكد (قبل الترحيل بيوم)،
-          دون تغيير تاريخها المحفوظ. ستجد مصدر التاريخ في كشف Excel.
+          استرجعت تاريخ {report.inferredDates} فاتورة لم يكن فيها تاريخ محفوظ صالح، من تاريخ ترحيل SAP المؤكد (قبل الترحيل بيوم)،
+          دون تغيير تاريخها المحفوظ. التاريخ اليدوي، متى كان موجودًا، يظل هو المعتمد دائمًا. ستجد مصدر التاريخ في كشف Excel.
         </p>}
         {report.unreadableRecords>0&&<p className="banner danger" role="alert">
           <AlertTriangle size={16}/> سجلات غير قابلة للقراءة: {report.unreadableRecords}.
@@ -137,7 +137,7 @@ export default function InstitutionAudit({onOpenInvoice}:{
                 <td><b>{row.number||'غير مدخل'}</b></td>
                 <td>{row.branch||'غير محدد'}</td>
                 <td dir="ltr">{row.date}
-                  {row.dateSource==='transfer'&&<p className="hint">من تاريخ الترحيل</p>}
+                  {row.dateSource==='manual'?<p className="hint">التاريخ اليدوي المعتمد</p>:row.dateSource==='transfer'&&<p className="hint">من تاريخ الترحيل</p>}
                 </td>
                 <td>{row.transferNumbers.join('، ')||'غير محددة'}
                   {(row.groupConfirmedTransfers||[]).length>0&&<p className="hint">

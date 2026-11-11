@@ -157,6 +157,35 @@ const malformed=collectInvoicesByDate([{id:'bad-sap',branch:draft.branch,
 assert.equal(malformed.undatedInvoices,1,
   'Incomplete historical SAP sources must not be used to infer invoice dates');
 
+// Manual dates are authoritative even if they conflict with transfer-date minus a day.
+const manualChosen={...draft,invoices:[
+  {...draft.invoices[0],manualDate:true,date:'2026-11-01'},draft.invoices[1],
+],transfers:[{...first,date:'2026-11-05'},second]};
+const manualResult=collectInvoicesByDate([{
+  id:'manual-chosen',branch:draft.branch,payload:JSON.stringify(manualChosen),
+}], '2026-11-01','2026-11-02');
+assert.equal(manualResult.rows[0].number,'2610013337');
+assert.equal(manualResult.rows[0].date,'2026-11-01');
+assert.equal(manualResult.rows[0].dateSource,'manual');
+assert.equal(manualResult.inferredDates,0);
+assert.equal(manualChosen.invoices[0].date,'2026-11-01',
+  'Reading must not edit the manual invoice date');
+
+const oldWithoutFlag={...draft,invoices:[
+  {...draft.invoices[0],date:'2026-11-01'},draft.invoices[1],
+],transfers:[{...first,date:'2026-11-05'},second]};
+const oldResult=collectInvoicesByDate([{
+  id:'old-manual',branch:draft.branch,payload:JSON.stringify(oldWithoutFlag),
+}], '2026-11-01','2026-11-02');
+assert.equal(oldResult.rows[0].date,'2026-11-01',
+  'Stored manual dates in old records take precedence even if manualDate flag is absent');
+assert.equal(oldResult.rows[0].dateSource,'invoice');
+
+const originalDateGuard=loadTs('app/lib/reconcile.ts').withInvoiceDates;
+const invalidManual={...draft,invoices:[{...draft.invoices[0],manualDate:true,date:'غير صالح'},draft.invoices[1]]};
+assert.equal(originalDateGuard(invalidManual).invoices[0].date,'غير صالح',
+ 'Even an invalid explicitly manual date is never silently replaced by a SAP-derived date');
+
 const manuallyInvalid={...missingDateDraft,
   invoices:[{...missingDateDraft.invoices[0],manualDate:true},missingDateDraft.invoices[1]]};
 const manual=collectInvoicesByDate([{id:'manual',branch:draft.branch,payload:JSON.stringify(manuallyInvalid)}],
