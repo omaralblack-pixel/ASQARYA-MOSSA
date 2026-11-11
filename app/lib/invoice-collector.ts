@@ -1,22 +1,71 @@
 import {dateValue, invoiceDocumentNo, pageNumber, parseTransfer, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
 
 export type CollectedInvoice = {
-  recordId: string; invoiceId: string; number: string; branch: string; date: string;
+  recordId: string; invoiceId: string; number: string; branch: string; date: string; dateSource: 'invoice'|'transfer';
   transferNumbers: string[]; unresolvedTransferNumbers: string[]; groupConfirmedTransfers: string[]; amount: string;
+};
+export type UndatedInvoice = {
+  recordId:string; invoiceId:string; number:string; branch:string; amount:string;
+  originalDate:string; recordDate:string; transferNumbers:string[]; reason:string;
 };
 export type CollectedInvoiceResult = {
   from: string; to: string; days: number; rows: CollectedInvoice[];
   unreadableRecords: number; undatedInvoices: number;
+  undatedDetails:UndatedInvoice[]; inferredDates:number;
 };
 
 const close=(a:number,b:number)=>Math.abs(a-b)<0.000001;
+
+/** Date on a saved invoice takes precedence. If missing or invalid, derive the
+ * original system default (outgoing SAP posting date minus one day) ONLY when
+ * one unambiguous posting date can be established. Historical records never change.
+ */
+function invoiceDate(
+  invoice:Draft['invoices'][number],transfers:Draft['transfers'],
+):{date:string|null;source:'invoice'|'transfer';reason:string}{
+  const saved=dateValue(invoice.date||'');
+  if(saved)return {date:saved,source:'invoice',reason:''};
+  if(invoice.manualDate===true)return {date:null,source:'invoice',reason:'التاريخ عدّل يدويًا لكنه مفقود أو غير صالح.'};
+  let incompleteSource=false;
+  const outgoing=transfers.flatMap(transfer=>{
+    if(!transfer||typeof transfer.paste!=='string'){incompleteSource=true;return []}
+    const parsed=parseTransfer(transfer.paste,{allowReverse:true});
+    if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length){
+      incompleteSource=true;return [];
+    }
+    // Ignore valid reverse-only transfers; they do not determine invoice date.
+    if(!parsed.lines.some(line=>line.to==='011'&&['001','002','009'].includes(line.from)))return [];
+    const numbers=transferNumbers(transfer.number||'');
+    if(numbers.length!==1||!/^\d{4,20}$/.test(numbers[0])){
+      incompleteSource=true;return [];
+    }
+    return [{numbers,date:dateValue(transfer.date||'')}];
+  });
+  if(incompleteSource)return {date:null,source:'invoice',
+    reason:'هناك ترحيل SAP غير مكتمل؛ لا يمكن اشتقاق تاريخ الفاتورة بأمان.'};
+  const linked=Array.isArray(invoice.dateTransferNos)&&invoice.dateTransferNos.length>0;
+  const wanted=new Set(linked?invoice.dateTransferNos!.flatMap(n=>transferNumbers(String(n))):[]);
+  const sources=linked?outgoing.filter(row=>row.numbers.some(n=>wanted.has(n))):outgoing;
+  const found=new Set(sources.flatMap(row=>row.numbers));
+  if(linked&&[...wanted].some(number=>!found.has(number)))
+    return {date:null,source:'invoice',reason:'بعض الترحيلات المحددة لتاريخ الفاتورة غير موجودة أو غير صالحة.'};
+  if(!sources.length)
+    return {date:null,source:'invoice',reason:linked?'الترحيل المحدد لتاريخ الفاتورة غير موجود أو ليس حركة توريد صالحة.':'لا يوجد ترحيل توريد يمكن استخراج التاريخ منه.'};
+  const unique=new Set(sources.map(row=>row.date));
+  if(unique.has(null)||unique.size!==1)
+    return {date:null,source:'invoice',reason:'ترحيلات الفاتورة لها تواريخ مختلفة أو ناقصة؛ لا يمكن اختيار تاريخ دون تأكيد.'};
+  const posting=sources[0].date!;
+  const day=new Date(posting+'T00:00:00Z');
+  day.setUTCDate(day.getUTCDate()-1);
+  return {date:day.toISOString().slice(0,10),source:'transfer',reason:''};
+}
 
 /** Read-only invoice registry. The collector does not calculate prices, audit quantities, or modify records.
  * Transfer links in multi-invoice records must be proved by saved row/page allocation.
  * Unknown links are reported separately rather than assigned to every invoice.
  */
 export function collectInvoicesByDate(
-  records:{id:string;branch:string;status?:string;payload:string}[],fromInput:string,toInput:string,
+  records:{id:string;branch:string;status?:string;doc_date?:string;payload:string}[],fromInput:string,toInput:string,
 ):CollectedInvoiceResult{
   const from=dateValue(fromInput),to=dateValue(toInput);
   if(!from||!to)throw Error('اختر تاريخ بداية ونهاية صحيحين.');
@@ -24,8 +73,8 @@ export function collectInvoicesByDate(
   const days=Math.round((Date.parse(to+'T00:00:00Z')-Date.parse(from+'T00:00:00Z'))/86400000)+1;
   if(days>366)throw Error('أقصى مدة للجمع 366 يومًا.');
 
-  const rows:CollectedInvoice[]=[];
-  let unreadableRecords=0,undatedInvoices=0;
+  const rows:CollectedInvoice[]=[],undatedDetails:UndatedInvoice[]=[];
+  let unreadableRecords=0,undatedInvoices=0,inferredDates=0;
   for(const record of records){
     let draft:Draft;
     try{
@@ -36,9 +85,10 @@ export function collectInvoicesByDate(
 
     const invoices=draft.invoices;
     const multi=invoices.length>1;
+    const dates=invoices.map(invoice=>invoiceDate(invoice,draft.transfers));
     const savedStatus=(draft as Draft&{summary?:{status?:string}}).summary?.status||record.status;
     const approvedHistoricalGroup=multi&&savedStatus==='match'&&
-      invoices.every(invoice=>{const dt=dateValue(invoice.date||'');return !!dt&&dt<'2026-11-11';});
+      dates.every(({date})=>!!date&&date<'2026-11-11');
     const exactByPage=new Map<number,Set<string>>();
     const uncertain=new Set<string>();
     const pageUnallocated=new Set<string>();
@@ -90,14 +140,26 @@ export function collectInvoicesByDate(
     }
 
     for(const [index,invoice] of invoices.entries()){
-      const date=dateValue(invoice.date||'');
-      if(!date){undatedInvoices++;continue}
+      const {date,source,reason}=dates[index];
+      if(!date){
+        undatedInvoices++;
+        if(undatedDetails.length<200)undatedDetails.push({
+          recordId:record.id,invoiceId:invoice.id,
+          number:invoiceDocumentNo(invoice.number)||String(invoice.number||''),
+          branch:record.branch||draft.branch||'',amount:String(invoice.amount||''),
+          originalDate:String(invoice.date||''),recordDate:String(record.doc_date||draft.date||''),
+          transferNumbers:[...new Set(draft.transfers.flatMap(transfer=>transferNumbers(transfer?.number||'')))],
+          reason,
+        });
+        continue;
+      }
       if(date<from||date>to)continue;
+      if(source==='transfer')inferredDates++;
       rows.push({
         recordId:record.id,invoiceId:invoice.id,
         number:invoiceDocumentNo(invoice.number)||String(invoice.number||''),
         branch:record.branch||draft.branch||'',
-        date,transferNumbers:[...(exactByPage.get(index+1)||new Set<string>())],
+        date,dateSource:source,transferNumbers:[...(exactByPage.get(index+1)||new Set<string>())],
         unresolvedTransferNumbers:[...new Set([...uncertain,...(approvedHistoricalGroup?[]:[...pageUnallocated])])],
         groupConfirmedTransfers:approvedHistoricalGroup?[...pageUnallocated]:[],
         amount:String(invoice.amount||''),
@@ -105,5 +167,5 @@ export function collectInvoicesByDate(
     }
   }
   rows.sort((a,b)=>a.date.localeCompare(b.date)||a.number.localeCompare(b.number,'en',{numeric:true}));
-  return {from,to,days,rows,unreadableRecords,undatedInvoices};
+  return {from,to,days,rows,unreadableRecords,undatedInvoices,undatedDetails,inferredDates};
 }

@@ -4,7 +4,7 @@ import {useState} from 'react';
 import {CalendarDays,Download,FileSearch,FolderOpen,AlertTriangle} from 'lucide-react';
 import {dateValue} from '../lib/reconcile';
 import {tableWorkbook} from '../lib/invoice-workbook';
-import type {CollectedInvoiceResult,CollectedInvoice} from '../lib/invoice-collector';
+import type {CollectedInvoiceResult,CollectedInvoice,UndatedInvoice} from '../lib/invoice-collector';
 
 export default function InstitutionAudit({onOpenInvoice}:{
   onOpenInvoice:(recordId:string,invoiceId:string)=>Promise<void>;
@@ -33,7 +33,7 @@ export default function InstitutionAudit({onOpenInvoice}:{
     finally{setBusy(false)}
   }
 
-  async function openInvoice(row:CollectedInvoice){
+  async function openInvoice(row:Pick<CollectedInvoice,'recordId'|'invoiceId'>){
     const key=row.recordId+':'+row.invoiceId;
     setOpening(key);setOpenError('');
     try{await onOpenInvoice(row.recordId,row.invoiceId)}
@@ -44,18 +44,33 @@ export default function InstitutionAudit({onOpenInvoice}:{
   function exportExcel(){
     if(!report?.rows.length)return;
     const rows:(string|number)[][]=[
-      ['رقم الفاتورة','الفرع','التاريخ','الترحيلات المرتبطة','المبلغ (د.أ)','ترحيلات المجموعة المعتمدة','ترحيلات تحتاج مراجعة'],
+      ['رقم الفاتورة','الفرع','التاريخ','الترحيلات المرتبطة','المبلغ (د.أ)','ترحيلات المجموعة المعتمدة','ترحيلات تحتاج مراجعة','مصدر التاريخ'],
       ...report.rows.map(row=>[
         row.number,row.branch,row.date,row.transferNumbers.join('، '),row.amount,
-        (row.groupConfirmedTransfers||[]).join('، '),row.unresolvedTransferNumbers.join('، ')
+        (row.groupConfirmedTransfers||[]).join('، '),row.unresolvedTransferNumbers.join('، '),
+        row.dateSource==='transfer'?'تاريخ مشتق من ترحيل SAP':'محفوظ على الفاتورة'
       ]),
     ];
-    const workbook=tableWorkbook(rows,'فواتير المؤسسة',[23,28,17,44,20,44,44]);
+    const workbook=tableWorkbook(rows,'فواتير المؤسسة',[23,28,17,44,20,44,44,28]);
     const url=URL.createObjectURL(workbook),anchor=document.createElement('a');
     anchor.href=url;
     anchor.download='institution-invoices-'+report.from+'-to-'+report.to+'.xlsx';
     anchor.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+
+  function exportUndatedExcel(){
+    if(!report?.undatedDetails.length)return;
+    const rows:(string|number)[][]=[
+      ['رقم الفاتورة','الفرع','التاريخ الخام','تاريخ الكشف','الترحيلات المسجلة بالمجموعة','المبلغ (د.أ)','سبب نقص التاريخ'],
+      ...report.undatedDetails.map(row=>[
+        row.number,row.branch,row.originalDate,row.recordDate,row.transferNumbers.join('، '),row.amount,row.reason
+      ]),
+    ];
+    const workbook=tableWorkbook(rows,'فواتير تحتاج تاريخ',[23,27,20,20,45,22,68]);
+    const url=URL.createObjectURL(workbook),anchor=document.createElement('a');
+    anchor.href=url;anchor.download='invoices-needing-dates-'+report.from+'-to-'+report.to+'.xlsx';
+    anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
 
   return <div className="audit-page">
@@ -81,12 +96,37 @@ export default function InstitutionAudit({onOpenInvoice}:{
           <button type="button" className="button secondary" disabled={!report.rows.length}
             onClick={exportExcel}><Download size={16}/>سحب كشف Excel</button>
         </div>
-        {(report.unreadableRecords>0||report.undatedInvoices>0)&&
-          <p className="banner danger" role="alert"><AlertTriangle size={16}/>
-            {report.unreadableRecords>0?' سجلات غير قابلة للقراءة: '+report.unreadableRecords+'.':''}
-            {report.undatedInvoices>0?' فواتير بلا تاريخ صالح: '+report.undatedInvoices+'.':''}
-            {' '}هذه الحالات لم تُعتبر فواتير مفحوصة.
+        {report.inferredDates>0&&<p className="banner info" role="status">
+          استرجعت تاريخ {report.inferredDates} فاتورة في هذه الفترة من تاريخ ترحيل SAP المؤكد (قبل الترحيل بيوم)،
+          دون تغيير تاريخها المحفوظ. ستجد مصدر التاريخ في كشف Excel.
+        </p>}
+        {report.unreadableRecords>0&&<p className="banner danger" role="alert">
+          <AlertTriangle size={16}/> سجلات غير قابلة للقراءة: {report.unreadableRecords}.
+        </p>}
+        {report.undatedInvoices>0&&<details className="review-list no-print" open>
+          <summary><AlertTriangle size={16}/> {report.undatedInvoices} فواتير بلا تاريخ يمكن التحقق منه — عرض الأرقام والأسباب</summary>
+          <p className="hint">هذه الفواتير موجودة في السجل الكامل، وليس بالضرورة ضمن الفترة التي اخترتها.
+            لم أحذفها أو أعطِها تاريخًا تخمينيًا؛ أرقامها معروضة لتقدر تفتح سجلها وتصوّب تاريخها.</p>
+          <button type="button" className="button secondary" onClick={exportUndatedExcel}>سحب قائمة الفواتير الناقصة Excel</button>
+          <div className="table-scroll"><table>
+            <thead><tr><th>رقم الفاتورة</th><th>الفرع</th><th>تاريخ الفاتورة المحفوظ</th>
+              <th>تاريخ الكشف</th><th>ترحيلات المجموعة</th><th>السبب</th><th>فتح</th></tr></thead>
+            <tbody>{report.undatedDetails.map((row:UndatedInvoice)=>{
+              const key=row.recordId+':'+row.invoiceId;
+              return <tr key={key}><td><b>{row.number||'غير مدخل'}</b></td>
+                <td>{row.branch||'—'}</td><td dir="ltr">{row.originalDate||'فارغ'}</td>
+                <td dir="ltr">{row.recordDate||'—'}</td>
+                <td>{row.transferNumbers.join('، ')||'—'}</td><td>{row.reason}</td>
+                <td><button type="button" className="button secondary small" disabled={!!opening}
+                  onClick={()=>void openInvoice(row)}><FolderOpen size={14}/>
+                  {opening===key?'جاري الفتح…':'فتح السجل'}</button></td>
+              </tr>;
+            })}</tbody>
+          </table></div>
+          {report.undatedInvoices>report.undatedDetails.length&&<p className="hint">
+            عُرض أول {report.undatedDetails.length} من الفواتير غير المؤرخة.
           </p>}
+        </details>}
         {report.rows.length===0?<p className="hint">لا توجد فواتير محفوظة بتاريخ يقع ضمن الفترة المحددة.</p>:
           <div className="table-scroll"><table>
             <thead><tr><th>رقم الفاتورة</th><th>الفرع</th><th>التاريخ</th>
@@ -96,7 +136,9 @@ export default function InstitutionAudit({onOpenInvoice}:{
               return <tr key={key}>
                 <td><b>{row.number||'غير مدخل'}</b></td>
                 <td>{row.branch||'غير محدد'}</td>
-                <td dir="ltr">{row.date}</td>
+                <td dir="ltr">{row.date}
+                  {row.dateSource==='transfer'&&<p className="hint">من تاريخ الترحيل</p>}
+                </td>
                 <td>{row.transferNumbers.join('، ')||'غير محددة'}
                   {(row.groupConfirmedTransfers||[]).length>0&&<p className="hint">
                     ترحيلات المجموعة المعتمدة: {row.groupConfirmedTransfers.join('، ')}
