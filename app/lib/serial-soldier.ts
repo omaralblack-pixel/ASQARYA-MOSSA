@@ -154,7 +154,9 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     if(!candidates.length)return base;
     const saved=candidates[0], amount=fils(row.amount);
     const confirmed=fils(saved.invoice.amount||'');
+    const errorsBefore=blockers.length;
     const linked=serialTransfer(saved.draft,saved,transferOwner,blockers,legacyWarnings);
+    const transferHasErrors=blockers.length>errorsBefore;
     const transfers=linked.assigned, unassignedTransfers=linked.unassigned;
     if(!transfers.length&&!unassignedTransfers.length)blockers.push('فاتورة '+number+': لم يتم التحقق من أي ترحيل مرتبط بها.');
     const payloadSummary=(saved.draft as Draft & {summary?:{status?:string}}).summary;
@@ -169,6 +171,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     if(amount!==confirmed)return {...rowBase,state:'review',reason:'فرق مبلغ: عمر '+omarAmount+' / سجى '+row.amount};
     if(saved.invoice.complete!==true)return {...rowBase,state:'pending',reason:'الفاتورة محفوظة لكن الورق غير مؤكد'};
     if(approvedStatus&&approvedStatus!=='match')return {...rowBase,state:'review',reason:'المطابقة المحفوظة غير معتمدة: '+approvedStatus};
+    if(transferHasErrors)return {...rowBase,state:'review',reason:'يوجد خطأ في ربط أو تصنيف الترحيلات؛ راجع شيت مراجعة عمر'};
     if(!transfers.length&&!unassignedTransfers.length)return {...rowBase,state:'review',reason:'لم يتم التحقق من أي ترحيل مرتبط بالفاتورة'};
     return {...rowBase,state:'received',reason:'رقم الفاتورة والمبلغ مؤكدان'};
   });
