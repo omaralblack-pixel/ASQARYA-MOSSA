@@ -8,19 +8,22 @@ export type SerialRow = SerialInput & {state:SerialState; reason:string; transfe
 export type SerialRecord = {id:string; branch:string; status?:string; payload:string};
 export type SerialReport = {rows:SerialRow[]; blockers:string[]; legacyWarnings:string[]; count:{received:number;pending:number;missing:number;review:number}};
 
-export const LEGACY_PAGE_CUTOFF='2026-11-10';
-export type SerialOptions={allowLegacyPageGaps?:boolean};
+// Existing matched records dated before the new workflow do not need historic page numbers.
+export const LEGACY_PAGE_CUTOFF='2026-11-11';
 type Saved = {record:SerialRecord; draft:Draft; invoice:Draft['invoices'][number]; index:number};
 function normalNumber(value:unknown) {
   return invoiceDocumentNo(value).replace(/[,٬]/g,'');
 }
-function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, blockers:string[], warnings:string[], options:SerialOptions) {
+function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, blockers:string[], warnings:string[]) {
   const assigned:SerialTransfer[]=[];
   const unassigned:SerialTransfer[]=[];
   const references=new Map(sapReferences(draft.referenceSnapshot||[]).map(item=>[item.sapCode,item.code]));
   const multi=draft.invoices.length>1;
   const savedDate=dateValue(saved.invoice.date||'');
-  const canLegacy=options.allowLegacyPageGaps===true&&!!savedDate&&savedDate<LEGACY_PAGE_CUTOFF;
+  const summary=(draft as Draft&{summary?:{status?:string}}).summary;
+  // The owner's approved MATCH is authoritative for the old group. Only PAGE ownership
+  // is exempted. This does NOT assert that a group transfer belongs to a specific invoice.
+  const acceptedOldGroup=multi&&!!savedDate&&savedDate<LEGACY_PAGE_CUTOFF&&summary?.status==='match';
   for(const transfer of draft.transfers||[]){
     const numbers=transferNumbers(transfer.number||'');
     if(numbers.length!==1||!/^\d{4,20}$/.test(numbers[0])){
@@ -66,10 +69,12 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
         linked.add(pg-1);
       }
       if(ambiguous||!linked.size){
-        if(canLegacy){
-          // Group-level evidence only. Do not falsely attach this transfer to any invoice.
+        if(acceptedOldGroup){
+          // The transfer is CONFIRMED on the approved saved group, not on an individual
+          // invoice page. Keep it in a distinct group-level output field for accuracy.
           unassigned.push({number,kind});
-          warnings.push('ترحيل '+number+' في مجموعة الفاتورة '+saved.invoice.number+': رقم محفوظ لكن توزيعه على الفواتير القديمة غير معروف.');
+          warnings.push('الترحيل '+number+' معتمد ضمن مجموعة الفواتير القديمة التي تشمل '+saved.invoice.number+
+            '؛ تم استثناء شرط أرقام الصفحات فقط.');
         }else{
           blockers.push('الترحيل '+number+': مجموعة متعددة الفواتير، ولا يمكن ربط جميع بنوده بصفحات فواتير محددة.');
         }
@@ -85,7 +90,7 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
   }
   return {assigned,unassigned};
 }
-export function evaluateSerial(rows:SerialInput[], records:SerialRecord[], options:SerialOptions={}):SerialReport {
+export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):SerialReport {
   const blockers:string[]=[], legacyWarnings:string[]=[];
   const index=new Map<string,Saved[]>();
   const transferOwner=new Map<string,string>();
@@ -125,7 +130,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[], optio
     if(!candidates.length)return base;
     const saved=candidates[0], amount=fils(row.amount);
     const confirmed=fils(saved.invoice.amount||'');
-    const linked=serialTransfer(saved.draft,saved,transferOwner,blockers,legacyWarnings,options);
+    const linked=serialTransfer(saved.draft,saved,transferOwner,blockers,legacyWarnings);
     const transfers=linked.assigned, unassignedTransfers=linked.unassigned;
     if(!transfers.length&&!unassignedTransfers.length)blockers.push('فاتورة '+number+': لم يتم التحقق من أي ترحيل مرتبط بها.');
     const payloadSummary=(saved.draft as Draft & {summary?:{status?:string}}).summary;
