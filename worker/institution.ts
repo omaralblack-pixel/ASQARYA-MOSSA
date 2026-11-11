@@ -149,6 +149,118 @@ async function savedImport(request: Request, env: Cloudflare.Env) {
   }
 }
 
+
+/** Immutable SAP source-file archive. Each uploaded original stays in private Supabase Storage.
+ * Auth and same-origin checks are enforced by handleInstitution before this function runs.
+ */
+async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
+  const { SUPABASE_URL, SUPABASE_STORAGE_SECRET } = env;
+  if (!SUPABASE_URL || !SUPABASE_STORAGE_SECRET) return reply(503, "أرشيف الملازم أول غير متاح: ربط Supabase غير مفعّل.");
+  const base = new URL(storagePath, SUPABASE_URL).href;
+  const headers = new Headers({ apikey: SUPABASE_STORAGE_SECRET });
+  const url = new URL(request.url);
+  const safeKey = (value: string) => value.startsWith("lieutenant/") &&
+    !value.includes("..") && !value.includes("\\") && value.length <= 240;
+  const objectUrl = (key: string, authenticated = false) =>
+    base + "/" + (authenticated ? "authenticated/" : "") + bucket + "/" +
+    key.split("/").map(encodeURIComponent).join("/");
+  try {
+    if (request.method === "GET" && url.searchParams.has("key")) {
+      const key = url.searchParams.get("key") || "";
+      if (!safeKey(key)) return reply(400, "معرّف الملف غير صالح.");
+      const file = await fetch(objectUrl(key, true), { headers });
+      if (!file.ok) return reply(file.status === 404 ? 404 : 502, "تعذّر فتح الملف المحفوظ.");
+      // The existing private bucket permits application/json only. Archive originals
+      // losslessly as base64 inside a JSON envelope, then restore their exact bytes here.
+      const wrapped = await file.json() as { data?: string; originalSize?: number };
+      if (typeof wrapped?.data !== "string" ||
+          wrapped.data.length > Math.ceil(maxSapFileBytes * 4 / 3) + 16) {
+        return reply(502, "الملف المؤرشف غير صالح.");
+      }
+      const decoded = Buffer.from(wrapped.data, "base64");
+      if (!decoded.length || decoded.length > maxSapFileBytes ||
+          decoded.length !== wrapped.originalSize) return reply(502, "حجم الملف المؤرشف غير متطابق.");
+      const restored = new Uint8Array(decoded.length);
+      restored.set(decoded);
+      return new Response(restored.buffer, {
+        headers: {
+          ...privateHeaders,
+          "Content-Type": "application/octet-stream",
+          "X-Content-Type-Options": "nosniff",
+          "Content-Disposition": "attachment",
+        },
+      });
+    }
+    if (request.method === "GET") {
+      const page = Number(url.searchParams.get("page") || "0");
+      if (!Number.isSafeInteger(page) || page < 0 || page > 10000) return reply(400, "صفحة الأرشيف غير صالحة.");
+      const list = await fetch(base + "/list/" + bucket, {
+        method: "POST",
+        headers: { ...Object.fromEntries(headers), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prefix: "lieutenant/", limit: 100, offset: page * 100,
+          sortBy: { column: "created_at", order: "desc" },
+        }),
+      });
+      if (!list.ok) return reply(502, "تعذّر تحميل أرشيف الملازم أول.");
+      const objects = await list.json() as Array<{
+        name: string; created_at?: string; updated_at?: string;
+        metadata?: { size?: number; mimetype?: string }
+      }>;
+      if (!Array.isArray(objects)) return reply(502, "البيانات المسترجعة من الأرشيف غير صالحة.");
+      return Response.json({
+        files: objects.filter(item => !!item.name && !item.name.endsWith("/")).map(item => ({
+          key: "lieutenant/" + item.name,
+          name: item.name.replace(/^[a-z]+__[a-f0-9]{32}__/, ""),
+          kind: item.name.split("__")[0],
+          size: item.metadata?.size || 0,
+          created: item.created_at || item.updated_at || "",
+        })),
+        nextPage: objects.length === 100 ? page + 1 : null,
+      }, { headers: privateHeaders });
+    }
+    if (request.method !== "POST") return reply(405, "طريقة الطلب غير مدعومة.");
+    const kind = request.headers.get("X-File-Kind") || "";
+    const rawName = decodeURIComponent(request.headers.get("X-File-Name") || "");
+    const filename = rawName.replace(/[\\/?%*:|"<>]/g, "_").trim().slice(-120);
+    if (!["transfers", "opening", "balance", "other"].includes(kind) ||
+      !filename || filename.length > 120) return reply(400, "نوع الملف أو اسمه غير صالح.");
+    if (Number(request.headers.get("Content-Length") || 0) > maxSapFileBytes)
+      return reply(413, "حجم الملف يتجاوز 16 ميغابايت.");
+    const bytes = await request.arrayBuffer();
+    if (!bytes.byteLength || bytes.byteLength > maxSapFileBytes)
+      return reply(413, "الملف فارغ أو يتجاوز 16 ميغابايت.");
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+      byte => byte.toString(16).padStart(2, "0")).join("");
+    const key = "lieutenant/" + kind + "__" + digest.slice(0, 32) + "__" + filename;
+    // Preserve bytes exactly, using JSON envelope because the existing bucket is
+    // explicitly restricted to application/json (and is intentionally kept unchanged).
+    const body = JSON.stringify({
+      originalSize: bytes.byteLength,
+      data: Buffer.from(bytes).toString("base64"),
+    });
+    const saved = await fetch(objectUrl(key), {
+      method: "POST",
+      headers: {
+        ...Object.fromEntries(headers),
+        "Content-Type": "application/json",
+        "x-upsert": "false",
+      },
+      body,
+    });
+    let duplicate = saved.status === 409;
+    if (!saved.ok && saved.status === 400) {
+      const detail = await saved.text();
+      duplicate = /already exists|resourcealreadyexists|asset already exists/i.test(detail);
+    }
+    if (!saved.ok && !duplicate) return reply(502, "تعذّر حفظ الملف في قاعدة بيانات Supabase.");
+    return Response.json({ key, name: filename, duplicate, size: bytes.byteLength },
+      { headers: privateHeaders });
+  } catch {
+    return reply(502, "تعذّر الاتصال بأرشيف Supabase أو قراءة الملف.");
+  }
+}
+
 export async function handleInstitution(request: Request, env: Cloudflare.Env): Promise<Response | undefined> {
   const url = new URL(request.url);
   const api = url.pathname.startsWith("/api/");
@@ -184,4 +296,5 @@ export async function handleInstitution(request: Request, env: Cloudflare.Env): 
     return redirect(request, "/login", `${sessionCookie}=; ${cookieAttributes}; Max-Age=0`);
   }
   if (url.pathname === "/api/sap-import") return savedImport(request, env);
+  if (url.pathname === "/api/lieutenant-files") return lieutenantFiles(request, env);
 }
