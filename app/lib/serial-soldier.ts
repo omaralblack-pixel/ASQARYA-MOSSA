@@ -197,6 +197,11 @@ export function serialReviewNote(row:SerialRow):string {
  }
  return parts.join(' | ');
 }
+// Read-only export projection: show confirmed shared group transfers on each invoice
+// row without writing page ownership into the underlying reconciled group.
+export function serialInvoiceColumns(row:Pick<SerialRow,'transfers'|'unassignedTransfers'>):string[]{
+ return serialColumns([...row.transfers,...row.unassignedTransfers]);
+}
 export function serialColumns(transfers:SerialTransfer[]):string[] {
   const seen=new Set<string>();
   const uniq=transfers.filter(t=>{if(seen.has(t.number))return false;seen.add(t.number);return true;});
