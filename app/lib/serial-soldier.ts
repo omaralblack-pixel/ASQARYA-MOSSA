@@ -77,7 +77,7 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
           warnings.push('الترحيل '+number+' معتمد ضمن مجموعة الفواتير القديمة التي تشمل '+saved.invoice.number+
             '؛ تم استثناء شرط أرقام الصفحات فقط.');
         }else{
-          blockers.push('الترحيل '+number+': مرتبط بالمجموعة المحفوظة، لكن توزيع بنوده على صفحات الفواتير لم يُحسم بعد.');
+          blockers.push('الترحيل '+number+': مرتبط بالمجموعة المحفوظة، لكن لا يمكن ربط جميع بنوده بصفحات فواتير محددة بعد.');
         }
         continue;
       }
