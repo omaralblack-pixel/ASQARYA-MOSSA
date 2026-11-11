@@ -1,6 +1,7 @@
 import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
 import {sortSoldierInvoicePages} from '../../lib/soldier-page-sort';
+import {isHistoricalSoldierRecord} from '../../lib/soldier-start';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
@@ -38,6 +39,7 @@ type StoredReconciliation = {
   branch: string;
   payload: string;
   version: number;
+  created: string;
 };
 
 async function findSavedTransfer(number: string) {
@@ -217,12 +219,21 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   const version = (old?.version ?? 0) + 1;
   const nonce = crypto.randomUUID();
   const now = new Date().toISOString();
-  const currentCatalog=await currentPageSortingCatalog();
-  const sorted=sortSoldierInvoicePages(withInvoiceDates({
+  // Old saved groups were reviewed by the operator before the soldier launched.
+  // Reopening or resaving them must not run today's page sorter, overwrite old
+  // manual page selections, or create new SAP line allocations.
+  // New records entered today are checked even when their invoice dates are old.
+  const soldierExempt=!!old&&isHistoricalSoldierRecord(old.created);
+  const normalized=withInvoiceDates({
     ...d, id, version, referenceSnapshot: previous?.referenceSnapshot,
     transfers: d.transfers.map((transfer, index) => ({...transfer, number: ts[index]})),
     invoices: d.invoices.map((invoice, index) => ({...invoice, number: ns[index]})),
-  }),currentCatalog);
+  });
+  const sorted=soldierExempt
+    ?{draft:normalized,assigned:Object.keys(normalized.soldierLineAllocations||{}).length,
+        split:Object.values(normalized.soldierLineAllocations||{}).filter(p=>Object.keys(p).length>1).length,
+        unresolved:[] as {sapCode:string;transfer:string;reason:string}[]}
+    :sortSoldierInvoicePages(normalized,await currentPageSortingCatalog());
   const prepared = prepareReconciliation(sorted.draft, await refs());
   const reference = prepared.reference;
   const clean = {...prepared.draft, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
@@ -282,7 +293,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
     return json({error: 'تعارض في أرقام الفواتير أو الترحيلات. راجع المستندات وأعد المحاولة.'}, 409);
   }
   return json({id, version, referenceSnapshot: reference, summary,
-    pageSorting:{assigned:sorted.assigned,split:sorted.split,
+    pageSorting:{assigned:sorted.assigned,split:sorted.split,exemptedHistorical: soldierExempt,
       unresolved:sorted.unresolved.map(row=>({sapCode:row.sapCode,transfer:row.transfer,reason:row.reason}))},
     pages:prepared.draft.pages,soldierLineAllocations:prepared.draft.soldierLineAllocations,
     soldierLineTotals:prepared.draft.soldierLineTotals,soldierManualLineKeys:prepared.draft.soldierManualLineKeys});
