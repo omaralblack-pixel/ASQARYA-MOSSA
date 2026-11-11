@@ -482,7 +482,7 @@ function finishCurrentPage(){
   Q('');
 }
 function exportText(){if(!result)return;const header=['رقم المادة','الفاتورة الزرقاء','رقم الفاتورة الحقيقي','اسم المادة','الكمية بالحبة','السعر','القيمة','كود SAP'];const rows=[header,...visibleRows.map(r=>[r.code,String(getPage(r.key)),draft?.invoices[getPage(r.key)-1]?.number||'',r.name,num(r.transfer),money(r.unitPrice),money(r.expected),r.sapCode])];const txt='\ufeff'+rows.map(r=>r.join('\t')).join('\r\n');const blob=new Blob([txt],{type:'text/tab-separated-values;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='institution-check-sheet'+(selectedPage===null?'':'-page-'+selectedPage)+'.tsv';a.click();URL.revokeObjectURL(url)}
-async function save() {
+async function save(overrideSoldier=false) {
   if (!draft || busy) return;
   await run(async () => {
     const ready=prepared?.draft??draft;
@@ -493,16 +493,17 @@ async function save() {
       const source = transferSources[row.id];
       return source && transferNumbers(row.number).includes(source.number) ? [source] : [];
     });
-    const saved = await api({action: 'save', draft: savedDraft, transferSources: sources});
+    const saved = await api({action: 'save', draft: savedDraft, transferSources: sources, overrideSoldier});
     setTransferSources(current => Object.fromEntries(Object.entries(current).filter(([, source]) => !sources.includes(source))));
     D(current => current && current.transfers[0]?.id === draft.transfers[0]?.id
       ? {...current, id: saved.id, version: saved.version, referenceSnapshot: saved.referenceSnapshot,
           useCurrentReference: false, linkedSapCodes: undefined,
           pages:saved.pages,soldierLineAllocations:saved.soldierLineAllocations,
-          soldierLineTotals:saved.soldierLineTotals,soldierManualLineKeys:saved.soldierManualLineKeys}
+          soldierLineTotals:saved.soldierLineTotals,soldierManualLineKeys:saved.soldierManualLineKeys,
+          soldierOverride:saved.soldierOverride}
       : current);
     N(draft.invoices.some(invoice => invoiceDocumentNo(invoice.number))
-? 'تم حفظ الفاتورة وترحيلاتها.'
+? (overrideSoldier?'تم اعتماد المطابقة بقرارك، وتم تجاوز ملاحظات جندي توزيع الصفحات.':'تم حفظ الفاتورة وترحيلاتها.')
 : 'تم حفظ الترحيل في السجل.');
     if(sapPreview.groups.length){
       try{
@@ -574,7 +575,9 @@ return <div className="recon-app"><header className="topbar"><a className="brand
   change({acceptedDifference:{paper:result.total!,calculated:result.expected!}});
 }}><Check size={16}/>اعتماد المطابقة رغم الفرق</button>}
 {acceptedDifference&&<button type="button" className="button secondary" disabled={busy} onClick={()=>change({acceptedDifference:undefined})}>إلغاء اعتماد الفرق</button>}
-<button className="button primary" disabled={busy} onClick={save}><Save size={17}/>{busy?'جارٍ الحفظ…':draft.id?'حفظ التعديلات':'حفظ'}</button></div></section></>}
+<button className="button secondary" disabled={busy||result.status!=='match'||result.priceDifference!==0}
+ onClick={()=>void save(true)}><Check size={17}/>اعتماد بقراري — تجاهل ملاحظات الجندي</button>
+<button className="button primary" disabled={busy} onClick={()=>void save()}><Save size={17}/>{busy?'جارٍ الحفظ…':draft.id?'حفظ التعديلات':'حفظ'}</button></div></section></>}
 {tab==='history'&&<><div className="page-title"><div><p className="eyebrow">الأرشيف</p><h1>سجل المطابقة</h1><p>الترحيلات والفواتير محفوظة مع نتيجة المطابقة وأسعارها وقت الحفظ. تصدير Excel يشمل كل السجل حتى مع وجود بحث.</p></div><button className="button secondary" disabled={!historyRecords.some(r=>(JSON.parse(r.payload).invoices||[]).some((invoice:Invoice)=>invoiceDocumentNo(invoice.number)))} onClick={()=>window.print()}><Printer size={16}/>طباعة سجل المطابقات</button><button className="button secondary" disabled={busy||!records.length} onClick={exportFullHistory}><FileText size={16}/>تصدير السجل كامل Excel</button><button className="button secondary" onClick={()=>run(getRecords)}><RefreshCw size={16}/>تحديث</button></div><div className="search panel no-print"><Search size={17}/><input value={query} onChange={e=>Q(e.target.value)} placeholder="ابحث بالفرع أو رقم الترحيل أو الفاتورة"/></div>{historyRecords.map(r=>{const p=JSON.parse(r.payload);return <button key={r.id} className="record panel no-print" onClick={()=>loadRecord(r)}><span className="record-icon"><ClipboardPaste size={22}/></span><span><b>{r.branch}</b><small>ترحيلات: {p.transfers.map((t:any)=>t.number).join('، ')}</small><small>فواتير: {p.invoices.map((i:any)=>i.number).join('، ')}</small></span><span>{money(p.summary?.total??null)} د.أ</span><Badge state={r.status} label={!(p.invoices||[]).some((invoice:Invoice)=>invoiceDocumentNo(invoice.number))?'ترحيل بلا فاتورة زرقاء':p.summary?.acceptedDifference?'مطابق باعتمادك':undefined}/><span className="text-button">فتح الكشف ←</span></button>})}{!records.length&&<div className="panel empty">لا توجد ترحيلات أو فواتير محفوظة بعد.</div>}<InvoiceRegisterPrint records={historyRecords}/></>}
 {tab==='invoices'&&<InvoiceRegister records={records} busy={busy} refresh={()=>run(getRecords)} open={loadRecord}/>}
 {tab==='serial-soldier'&&<SerialSoldier/>}
