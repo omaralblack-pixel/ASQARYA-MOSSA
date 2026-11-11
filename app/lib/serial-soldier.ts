@@ -1,4 +1,4 @@
-import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
+import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, sapReferences, soldierLineKey, transferNumbers, reconcile, checkSignature, type Draft} from './reconcile';
 
 
 export type SerialInput = {row:number; number:string; amount:string; date:string};
@@ -9,6 +9,27 @@ export type SerialRecord = {id:string; branch:string; status?:string; payload:st
 export type SerialReport = {rows:SerialRow[]; blockers:string[]; legacyWarnings:string[]; count:{received:number;pending:number;missing:number;review:number}};
 
 export const LEGACY_PAGE_CUTOFF='2026-11-10';
+
+/** Previously approved blue invoices can be exported without inventing page-level SAP ownership.
+ * The GROUP's amounts must still equal its calculated SAP value. This never approves a
+ * per-invoice SAP transfer relationship, and never changes saved invoice or transfer records.
+ */
+function financiallyApprovedHistoricalGroup(draft:Draft):boolean {
+ try{
+  if(!draft.referenceSnapshot?.length||draft.invoices.length<2||
+    draft.invoices.some(invoice=>!invoice.complete||!invoiceDocumentNo(invoice.number)||
+      fils(invoice.amount)===null)||!draft.transfers.length)return false;
+  const saved=(draft as Draft&{summary?:{status?:string}}).summary;
+  const checked=draft.checks||{};
+  const computed=reconcile(draft,draft.referenceSnapshot);
+  if(computed.total===null||computed.expected===null||computed.total!==computed.expected||
+    computed.priceDifference!==0||computed.rows.some(row=>row.errors.length)||
+    computed.parsed.issues.length||computed.parsed.excluded.length)return false;
+  if(saved?.status==='match')return true;
+  return computed.rows.length>0&&computed.rows.every(row=>
+    checked[row.key]?.state==='match'&&checked[row.key].signature===checkSignature(row));
+ }catch{return false}
+}
 export type SerialOptions={allowLegacyPageGaps?:boolean};
 type Saved = {record:SerialRecord; draft:Draft; invoice:Draft['invoices'][number]; index:number};
 function normalNumber(value:unknown) {
@@ -20,7 +41,8 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
   const references=new Map(sapReferences(draft.referenceSnapshot||[]).map(item=>[item.sapCode,item.code]));
   const multi=draft.invoices.length>1;
   const savedDate=dateValue(saved.invoice.date||'');
-  const canLegacy=options.allowLegacyPageGaps===true&&!!savedDate&&savedDate<LEGACY_PAGE_CUTOFF;
+  const canLegacy=!!savedDate&&savedDate<LEGACY_PAGE_CUTOFF&&
+    (financiallyApprovedHistoricalGroup(draft)||options.allowLegacyPageGaps===true);
   for(const transfer of draft.transfers||[]){
     const numbers=transferNumbers(transfer.number||'');
     if(numbers.length!==1||!/^\d{4,20}$/.test(numbers[0])){
@@ -69,7 +91,7 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
         if(canLegacy){
           // Group-level evidence only. Do not falsely attach this transfer to any invoice.
           unassigned.push({number,kind});
-          warnings.push('ترحيل '+number+' في مجموعة الفاتورة '+saved.invoice.number+': رقم محفوظ لكن توزيعه على الفواتير القديمة غير معروف.');
+          warnings.push('ترحيل '+number+' في المجموعة القديمة للفواتير ومنها '+saved.invoice.number+': القيمة الإجمالية معتمدة لكن صفحة الترحيل غير مثبتة؛ معروض بعمود ترحيلات المجموعة فقط.');
         }else{
           blockers.push('الترحيل '+number+': مجموعة متعددة الفواتير، ولا يمكن ربط جميع بنوده بصفحات فواتير محددة.');
         }
