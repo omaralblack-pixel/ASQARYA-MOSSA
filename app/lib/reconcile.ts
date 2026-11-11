@@ -210,9 +210,9 @@ export function transferNumbers(value: string) {
   return value.split(/[+،]/).map(number => documentNo(number.replace(/٬/g, ','))).filter(Boolean);
 }
 export function serialHeaders(paste:string){return (paste.replace(/\r/g,'').split('\n').find(l=>l.trim())||'').split('\t').map(s=>s.trim())}
-export function monthly(paste:string,month:string,columns:{number:number;date:number;branch:number},filtered:boolean,format:string,groups:any[]){
- const result={missing:[] as any[],received:[] as any[],pending:[] as any[],outside:[] as any[],extra:[] as any[],canceled:[] as any[],toCancel:[] as any[],reverse:[] as any[],problems:[] as string[],duplicates:[] as string[]};
- const lines=paste.replace(/\r/g,'').split('\n').filter(line=>line.trim());
+export function monthly(paste:string,month:string,columns:{number:number;date:number;branch:number},filtered:boolean,format:string,groups:any[],branches:string[]=[]){
+ const result={missing:[] as any[],received:[] as any[],pending:[] as any[],outside:[] as any[],extra:[] as any[],canceled:[] as any[],toCancel:[] as any[],reverse:[] as any[],problems:[] as string[],warnings:[] as string[],duplicates:[] as string[]};
+ const lines=paste.replace(/^\uFEFF/,'').replace(/\r/g,'').split('\n').filter(line=>line.trim());
  const plainNumbers=lines.every(isTransferNumber);
  const hasDate=!plainNumbers&&columns.date>=0;
  if(!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)||!lines.length){
@@ -236,23 +236,45 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
  }
  const headers=plainNumbers?[]:serialHeaders(paste).map(header);
  const col=(names:string[])=>headers.findIndex(h=>names.includes(h));
- const fromCol=col(['fromwarehouse','منمستودع','المستودعالمصدر']);
- const toCol=col(['towarehousecode','towarehouse','إلىمستودع','المستودعالهدف']);
- const detailCol=col(['details','تفاصيل','التفاصيل']);
- const remarksCol=col(['remarks','ملاحظات']);
+ const fromCol=col(['fromwarehouse','fromwhse','منمستودع','المستودعالمصدر']);
+ const toCol=col(['towarehousecode','towarehouse','towhse','إلىمستودع','المستودعالهدف']);
+ const statusCol=col(['canceled','cancelled','iscanceled','iscancelled','cancelstatus','documentcanceled','حالةالالغاء','حالةالإلغاء','ملغي']);
+ const itemCol=col(['itemno','itemcode','كودالصنف','رقمالصنف']);
+ const quantityCol=col(['quantity','الكمية']);
+ const unitCol=col(['uomcode','uomname','uom','الوحدة']);
+ const noteCols=headers.flatMap((h,i)=>/remarks?|comments?|jrnlmemo|journalmemo|notes?|details?|ملاحظ|ريماركس|تفاصيل|البيان/.test(h)?[i]:[]);
+ const branchNameCol=col(['branchname','اسمالفرع','الفرع']);
  const sourceRows=lines.slice(plainNumbers?0:1).map(line=>line.split('\t'));
- const canceledBy=new Map<string,string>();
- for(const cells of sourceRows){
-  const number=transferNumbers(cells[plainNumbers?0:columns.number]||'')[0];
-  const details=[detailCol,remarksCol].filter(index=>index>=0).map(index=>cells[index]||'').join(' ');
-  const original=details.match(/inventory\s+transfer\s+no\.?\s*(\d+)\s+has\s+been\s+canceled/i)?.[1];
-  if(original&&number)canceledBy.set(original,number);
- }
- const cashVan=/(?:كاش\s*فان|كاش\s*فإن|كاش\s*ڤان|cash[\s-]*van)/i;
+ const notesOf=(cells:string[])=>noteCols.map(i=>(cells[i]||'').trim()).filter(Boolean).join(' | ');
+ const whCode=(value:string)=>/^\d+$/.test(digits(value.trim()))?digits(value.trim()).padStart(3,'0'):value.trim();
+ const cashVan=/(?:كاش[\s._\-ـ]*[فڤ][اأإآ]ن|cash[\s._\-]*van)/iu;
  const institution=/المؤسسة\s*الاستهلاكية\s*العسكرية|مستودع\s*المؤسسة|\b011\b/i;
- const seen=new Set<string>();
+ const cancelText=/inventory\s+transfer\s+no\.?\s*(\d+)\s+has\s+been\s+canceled/i;
+ const normalizeBranch=(value:string)=>digits(value).toLowerCase().replace(/[أإآٱ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').replace(/[\u064B-\u065F\u0670ـ]/g,'').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+ const branchOptions=branches.map(value=>{
+  const pieces=value.split(' — ');
+  const label=pieces.slice(1).join(' — ').trim();
+  return {code:pieces[0]?.trim()||'',label,key:normalizeBranch(label)};
+ }).filter(item=>item.key.length>=3);
+ const branchByCode=new Map(branchOptions.map(item=>[digits(item.code),item.label]));
+ const inferBranch=(raw:string,remarks:string)=>{
+  const value=raw.trim();
+  if(value&&value!=='—')return branchByCode.get(digits(value))||value;
+  const normalized=' '+normalizeBranch(remarks)+' ';
+  const matches=branchOptions.filter(item=>normalized.includes(' '+item.key+' ')).sort((a,b)=>b.key.length-a.key.length);
+  if(!matches.length)return '';
+  // Never guess between two distinct branch names in the same note.
+  if(matches.some(item=>item!==matches[0]&&!matches[0].key.includes(item.key)))return '';
+  return matches[0].label;
+ };
+ if(!plainNumbers&&!noteCols.length)result.warnings.push('كشف SAP لا يحتوي على عمود Remarks/Comments معروف؛ لا يمكن اكتشاف كل خطوط الكاش فان من الملاحظات.');
+ if(!plainNumbers&&statusCol<0)result.warnings.push('عمود CANCELED غير موجود. لا يمكن تأكيد حالة الإلغاء من SAP إلا إذا ظهرت حركة إلغاء صريحة في الملاحظات.');
+
+ type MonthlyDocument={number:string;date:string;branch:string;remarks:string;rows:string[][];cancelFlag:string;from:string;to:string;isReverse:boolean;isCancellationDoc:boolean;originalNo:string};
+ const documents=new Map<string,MonthlyDocument>();
  const numberColumn=plainNumbers?0:columns.number;
  const numberHeader=plainNumbers?'':header(serialHeaders(paste)[numberColumn]||'');
+ const hasItemLines=itemCol>=0&&quantityCol>=0;
  for(let i=plainNumbers?0:1;i<lines.length;i++){
   const cells=lines[i].split('\t');
   const rawNumber=cells[numberColumn]||'';
@@ -271,37 +293,111 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
    result.outside.push({number,date});
    continue;
   }
-  if(seen.has(number)){
-   result.duplicates.push(number);
-   continue;
+  const remarks=notesOf(cells);
+  const rawBranch=!plainNumbers?(cells[columns.branch]||cells[branchNameCol]||''):'';
+  const branch=inferBranch(rawBranch,remarks);
+  const from=fromCol>=0?whCode(cells[fromCol]||''):'';
+  const to=toCol>=0?whCode(cells[toCol]||''):'';
+  const cancelFlag=statusCol>=0?(cells[statusCol]||'').trim().toUpperCase():'';
+  const originalNo=remarks.match(cancelText)?.[1]||'';
+  const isReverse=from==='011'&&['001','002','009'].includes(to);
+  const existing=documents.get(number);
+  if(existing){
+   if(!hasItemLines&&!result.duplicates.includes(number))result.duplicates.push(number);
+   if(existing.date!==(date||month))result.problems.push('الترحيل '+number+': تواريخ متضاربة بين السطور');
+   if(branch&&existing.branch&&branch!==existing.branch)result.problems.push('الترحيل '+number+': أسماء فروع متضاربة بين السطور');
+   if(remarks&&!existing.remarks.includes(remarks))existing.remarks+=(existing.remarks?' | ':'')+remarks;
+   if(cancelFlag&&!existing.cancelFlag)existing.cancelFlag=cancelFlag;
+   existing.isReverse||=isReverse;
+   existing.isCancellationDoc||=Boolean(originalNo)||cancelFlag==='C';
+   if(originalNo)existing.originalNo=originalNo;
+   existing.rows.push(cells);
+  }else{
+   documents.set(number,{number,date:date||month,branch,remarks,rows:[cells],cancelFlag,from,to,isReverse,
+    isCancellationDoc:Boolean(originalNo)||cancelFlag==='C',originalNo});
   }
-  seen.add(number);
+ }
+
+ const canceledBy=new Map<string,string>();
+ for(const document of documents.values()){
+  if(document.originalNo)canceledBy.set(document.originalNo,document.number);
+ }
+ const reverseByOriginal=new Map<string,{number:string;kind:string}>();
+ const reverseReference=/(?:عكس(?:ي)?(?:\s+ترحيل)?|ترحيل\s+عكسي(?:\s+لترحيل)?|مقابل(?:\s+ترحيل)?|reverse(?:\s+(?:transfer|of))?|original(?:\s+transfer)?)\s*(?:رقم|no\.?|#|:|-)?\s*(\d{5,12})/iu;
+ for(const document of documents.values()){
+  if(!document.isReverse||document.isCancellationDoc)continue;
+  const match=digits(document.remarks).match(reverseReference);
+  if(match&&documents.has(match[1])){
+   reverseByOriginal.set(match[1],{number:document.number,kind:'عكسي مذكور في Remarks'});
+  }
+ }
+ // Link an ordinary reverse transfer only when every SAP item, quantity and
+ // warehouse direction has an exact, unique counterpart. It is NOT SAP cancellation.
+ const signature=(document:MonthlyDocument,flip:boolean)=>{
+  if(itemCol<0||quantityCol<0||fromCol<0||toCol<0)return '';
+  const parts=document.rows.map(cells=>{
+   const item=(cells[itemCol]||'').trim().toUpperCase();
+   const quantity=numeric(cells[quantityCol]||'');
+   const from=whCode(cells[fromCol]||'');
+   const to=whCode(cells[toCol]||'');
+   if(!item||quantity===null||!from||!to)return '';
+   return [item,Math.abs(quantity).toFixed(6),unitCol>=0?(cells[unitCol]||'').trim().toLowerCase():'',flip?to:from,flip?from:to].join('|');
+  });
+  return parts.some(part=>!part)?'':parts.sort().join('||');
+ };
+ const candidates=new Map<string,string[]>();
+ for(const reverse of documents.values()){
+  if(!reverse.isReverse||reverse.isCancellationDoc)continue;
+  const key=signature(reverse,true);
+  if(!key)continue;
+  const forward=[...documents.values()].filter(item=>!item.isReverse&&!item.isCancellationDoc
+   &&signature(item,false)===key
+   &&(!reverse.branch||!item.branch||reverse.branch===item.branch));
+  if(forward.length!==1||reverseByOriginal.has(forward[0].number))continue;
+  const ids=candidates.get(forward[0].number)||[];
+  ids.push(reverse.number);
+  candidates.set(forward[0].number,ids);
+ }
+ for(const [original,ids] of candidates)if(ids.length===1)reverseByOriginal.set(original,{number:ids[0],kind:'عكسي مطابق لكل البنود (ليس إلغاءً)'});
+
+ for(const document of documents.values()){
+  const {number,date,branch,remarks,cancelFlag,from,to,isReverse,isCancellationDoc,originalNo}=document;
   const entry=saved.get(number);
-  const row={number,date:date||month,branch:!plainNumbers&&columns.branch>=0?cells[columns.branch]||'':''};
-  const details=[detailCol,remarksCol].filter(index=>index>=0).map(index=>cells[index]||'').join(' ');
-  const from=fromCol>=0?cells[fromCol]||'':'';
-  const to=toCol>=0?cells[toCol]||'':'';
-  const cancelMatch=details.match(/inventory\s+transfer\s+no\.?\s*(\d+)\s+has\s+been\s+canceled/i);
-  if(cancelMatch||canceledBy.has(number)){
-   result.canceled.push({...row,reason:cancelMatch?'حركة إلغاء للترحيل '+cancelMatch[1]:'أُلغي بحركة رقم '+canceledBy.get(number),group:entry?.group});
-   continue;
+  const row={number,date,branch,remarks,group:entry?.group};
+  const flaggedCanceled=['Y','YES','TRUE','CANCELED','CANCELLED','ملغي','ملغى'].includes(cancelFlag);
+  const canceledDocument=isCancellationDoc||['مستند إلغاء','مستند الغاء'].includes(cancelFlag);
+  const officialCancel=canceledBy.get(number);
+  const canceled=flaggedCanceled||Boolean(officialCancel);
+  if(canceledDocument||canceled){
+   result.canceled.push({...row,reason:canceledDocument?'حركة إلغاء رسمية للترحيل '+(originalNo||'غير معروف'):'أُلغي على SAP'+(officialCancel?' بحركة رقم '+officialCancel:''),
+    counterpart:canceledDocument?originalNo:officialCancel,cancellationStatus:'تم الإلغاء'});
   }
-  if(cashVan.test(details)||cashVan.test(row.branch)){
-   result.toCancel.push({...row,reason:'كاش فان — مطلوب التحقق والإلغاء على SAP',group:entry?.group});
+  const isCashVan=cashVan.test(remarks)||cashVan.test(branch);
+  if(isCashVan&&!canceledDocument){
+   const reversal=reverseByOriginal.get(number);
+   const counterpart=officialCancel||reversal?.number||'';
+   const cancellationStatus=canceled?'تم الإلغاء':
+    ['N','NO','FALSE','غير ملغي','غير ملغى'].includes(cancelFlag)?'غير ملغي':'لم يثبت الإلغاء';
+   result.toCancel.push({...row,posted:'مرحل',cancellationStatus,
+    counterpart,counterpartKind:officialCancel?'حركة إلغاء رسمية':reversal?.kind||'',
+    reason:canceled?'كاش فان — أُلغي رسميًا':reversal?'كاش فان — يوجد ترحيل عكسي، لكنه ليس إلغاءً على SAP':'كاش فان — مطلوب مراجعة الإلغاء على SAP'});
+  }
+  if(canceledDocument||canceled)continue;
+  if(isCashVan)continue;
+  if(isReverse){
+   const related=[...reverseByOriginal].filter(([,value])=>value.number===number).map(([key])=>key);
+   result.reverse.push({...row,reason:'ترحيل عكسي من المؤسسة إلى '+(to||'مستودع آخر'),counterpart:related.join('، ')});
    continue;
   }
   if(fromCol>=0&&toCol>=0&&institution.test(from)&&!institution.test(to)){
-   result.reverse.push({...row,reason:'ترحيل عكسي من المؤسسة إلى '+to,group:entry?.group});
+   result.reverse.push({...row,reason:'ترحيل عكسي من المؤسسة إلى '+to});
    continue;
   }
-  if(!entry){
-   result.missing.push(row);
-  }else if(!entry.complete){
-   result.pending.push({...row,group:entry.group,reason:'الفواتير غير مكتملة'});
-  }else{
-   result.received.push({...row,group:entry.group});
-  }
+  if(!entry)result.missing.push(row);
+  else if(!entry.complete)result.pending.push({...row,reason:'الفواتير غير مكتملة'});
+  else result.received.push(row);
  }
+ const seen=new Set(documents.keys());
  result.extra=[...saved].filter(([number,entry])=>entry.date?.startsWith(month)&&!seen.has(number))
   .map(([number,entry])=>({number,branch:entry.group.branch,date:entry.date,group:entry.group}));
  return result;
