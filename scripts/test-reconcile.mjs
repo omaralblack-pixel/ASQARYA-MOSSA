@@ -50,6 +50,28 @@ const blankBranchReview=monthly(
 assert.equal(blankBranchReview.toCancel.length,1);
 assert.equal(blankBranchReview.toCancel[0].branch,'عجلون');
 assert.equal(blankBranchReview.toCancel[0].cancellationStatus,'لم يثبت الإلغاء');
+
+const arabicStatusTable=[
+ 'رقم الترحيل\tتاريخ الترحيل\tملاحظات الترحيل\tحالة الإلغاء',
+ '2615767\t02/11/2026\tكاش فان عجلون\tغير ملغي',
+ '2615768\t02/11/2026\tكاش فان عجلون\tملغي',
+].join('\n');
+const arabicStatusReview=monthly(arabicStatusTable,'2026-11',{number:0,date:1,branch:-1},false,'dmy',[],['7 — عجلون']);
+assert.equal(arabicStatusReview.toCancel.length,2);
+assert.equal(arabicStatusReview.toCancel.find(row=>row.number==='2615767').cancellationStatus,'غير ملغي');
+assert.equal(arabicStatusReview.toCancel.find(row=>row.number==='2615768').cancellationStatus,'تم الإلغاء');
+const multiRowTable=[
+ 'Document Number\tDocument Date\tRemarks\tCANCELED\tItem No.\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse',
+ '2617000\t11/11/2026\tكاش فان عجلون\tN\tDAR00005\t1\tPiece\t001\t011',
+ '2617000\t11/11/2026\tكاش فان عجلون\tN\tDAR00027\t2\tPiece\t002\t011',
+ '2617001\t11/11/2026\tعكس ترحيل 2617000\tN\tDAR00005\t1\tPiece\t011\t001',
+].join('\n');
+const multiRowReview=monthly(multiRowTable,'2026-11',{number:0,date:1,branch:-1},false,'dmy',[],['7 — عجلون']);
+assert.equal(multiRowReview.toCancel.length,1,'Repeated SAP item rows belong to one transfer');
+assert.equal(multiRowReview.duplicates.length,0,'Item rows within one transfer are not duplicate documents');
+assert.equal(multiRowReview.toCancel[0].counterpart,'2617001');
+assert.equal(multiRowReview.toCancel[0].cancellationStatus,'غير ملغي','A partial reversal cannot cancel SAP original');
+
 console.log('PASS: 12 cash-van transfers from Remarks, no branch column, official cancellations, exact reverse counterpart, and no false cancellation.');
 
 const zeroPrice=ref.map(i=>i.sapCode==='FVL00302'?{...i,price:null}:i);assert.equal(reconcile(d,zeroPrice).status,'quantityMatch');
