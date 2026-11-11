@@ -54,21 +54,40 @@ const legacyRecord=record('g-legacy',[
  {...invoice('2624002304','591.160'),date:'2026-11-09'}
 ],[transfer('2612001','DAR00001','001','011'),transfer('2612002','DAR00002','002','011')]);
 result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[legacyRecord]);
-assert.ok(result.blockers.some(e=>e.includes('لا يمكن ربط')),'Old missing pages still blocked by default');
-result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[legacyRecord],{allowLegacyPageGaps:true});
-assert.deepEqual(result.blockers,[],'Explicit historical page exception permits audit export only');
-assert.equal(result.legacyWarnings.length,4);
-assert.deepEqual(result.rows.map(r=>r.transfers),[[],[]],'Uncertain transfers must not be attributed to invoices');
+assert.deepEqual(result.blockers,[],'Approved historical group may export without saved page numbers');
+assert.equal(result.count.received,2,'Both old MATCH invoices must remain received');
 assert.deepEqual(result.rows.map(r=>r.unassignedTransfers.map(t=>t.number)),
- [['2612001','2612002'],['2612001','2612002']],'No old group transfer can be silently omitted');
-const newRecord=record('g-future',[
+ [['2612001','2612002'],['2612001','2612002']],
+ 'Group-certified transfers must not be falsely assigned to individual invoice pages');
+assert.equal(result.rows.every(r=>r.reason.includes('مؤكدان')),true);
+assert.equal(result.legacyWarnings.length,4);
+const oldNov10=record('g-10',[
  {...invoice('2624002303','186.400'),date:'2026-11-10'},
  {...invoice('2624002304','591.160'),date:'2026-11-10'}
+],[transfer('2612001','DAR00001','001','011'),transfer('2612002','DAR00002','002','011')]);
+assert.deepEqual(evaluateSerial([row(5,'2624002303','186.400')],[oldNov10]).blockers,[],
+ 'November 10 belongs to historic records before cutoff');
+const newRecord=record('g-new',[
+ {...invoice('2624002303','186.400'),date:'2026-11-11'},
+ {...invoice('2624002304','591.160'),date:'2026-11-11'}
 ],[transfer('2612001','DAR00001','001','011')]);
-result=evaluateSerial([row(5,'2624002303','186.400')],[newRecord],{allowLegacyPageGaps:true});
-assert.ok(result.blockers.some(e=>e.includes('لا يمكن ربط')),'Future groups cannot use historical exception');
-result=evaluateSerial([row(5,'2624002303','186.401')],[legacyRecord],{allowLegacyPageGaps:true});
-assert.equal(result.rows[0].state,'review','Historical override cannot approve amount discrepancy');
-result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002303','186.400')],[legacyRecord],{allowLegacyPageGaps:true});
-assert.ok(result.blockers.some(e=>e.includes('مكرر')),'Historical override cannot bypass duplicate invoice protections');
-console.log('PASS: invoice serial soldier verifies money, receipt, grouping and one-export exception for historical page gaps only');
+assert.ok(evaluateSerial([row(5,'2624002303','186.400')],[newRecord]).blockers
+ .some(e=>e.includes('لا يمكن ربط')),
+ 'New invoices still require their page allocations');
+const unapprovedOld=record('g-old-review',[
+ {...invoice('2624002303','186.400'),date:'2026-11-09'},
+ {...invoice('2624002304','591.160'),date:'2026-11-09'}
+],[transfer('2612001','DAR00001','001','011')],{summary:{status:'review'}});
+assert.ok(evaluateSerial([row(5,'2624002303','186.400')],[unapprovedOld]).blockers
+ .some(e=>e.includes('لا يمكن ربط')),
+ 'Only already MATCH records receive historical exception');
+assert.equal(evaluateSerial([row(5,'2624002303','186.401')],[legacyRecord]).rows[0].state,'review',
+ 'One-fils mismatch in Saja still requires review');
+assert.ok(evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002303','186.400')],[legacyRecord]).blockers
+ .some(e=>e.includes('مكرر')),
+ 'Invoice duplicates remain critical errors');
+assert.deepEqual(evaluateSerial([row(5,'2624002303','186.400')],[record('other',[
+ {...invoice('2624002303','186.400'),date:'2026-11-09'}
+],[transfer('2611004','DAR00004','011','001')])]).blockers,[],
+ 'Valid one-invoice historical records remain supported');
+console.log('PASS: serial soldier retains approved old group matching without page numbers, while enforcing amount, duplicates and new records');
