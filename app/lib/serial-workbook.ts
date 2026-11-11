@@ -154,7 +154,7 @@ function editCell(doc:Document,cell:Element,expected:string,shared:string[]){
 // Reuse the existing remarks column when present; otherwise add only ONE remarks column.
 function notesColumn(rows:Map<number,Element>,pkg:Package,report:SerialReport):{column:number;added:boolean}{
  const candidates=[rows.get(4),rows.get(3)].filter((row):row is Element=>!!row)
-   .flatMap(row=>children(row,'c')).filter(cell=>/ملاحظات?|remarks?|notes?/i.test(text(cell,pkg.shared)));
+   .flatMap(row=>children(row,'c')).filter(cell=>/(?:ملاحظ(?:ة|ات)?|remarks?|notes?)/i.test(text(cell,pkg.shared)));
  for(const cell of candidates){
   const col=cellColumn(cell.getAttribute('r')||'');
   if(col&&report.rows.every(item=>!find(getCell(rows.get(item.row)!,columnName(col)+item.row)??cell,'f')))
