@@ -55,12 +55,12 @@ export default function SerialSoldier(){
    try{
      const {readSerialWorkbook,createSerialWorkbook}=await import('../lib/serial-workbook');
      const parsed=readSerialWorkbook(buffer);
-     if(parsed.errors.length)throw Error('فشل تحقق الملف الأصلي؛ لن يتم التصدير.');
+     setIssues(parsed.errors);
      const saved=await getSaved();
      const fresh=evaluateSerial(parsed.rows,saved);
      fresh.blockers=[...new Set([...parsed.errors,...fresh.blockers])];
      setReport(fresh);
-     if(fresh.blockers.length)throw Error('تم إيقاف التصدير: '+fresh.blockers.length+' أخطاء حرجة. أصلح السجل أو الملف ثم أعد الفحص.');
+     // A review copy is always available for a readable XLSX; validation issues stay visible.
      const blob=createSerialWorkbook(buffer,fresh);
      const url=URL.createObjectURL(blob),a=document.createElement('a');
      a.href=url;
@@ -77,15 +77,15 @@ export default function SerialSoldier(){
    </div>
    <section className="panel no-print">
      <h2><FileSpreadsheet size={21} style={{verticalAlign:'middle',marginLeft:8}}/>كشف سجى الأصلي</h2>
-     <p className="hint">المصدر المعتمد: الشيت «للطباعة»؛ رقم الفاتورة D، المبلغ F، ترحيلات رئيسي K ونواشف L، والتعديلات M وما بعدها. لا تُعدّل أي بيانات في قاعدة المشروع.</p>
+     <p className="hint">المصدر المعتمد: الشيت «للطباعة»؛ رقم الفاتورة D، المبلغ F، ترحيلات رئيسي K ونواشف L، والتعديلات M وما بعدها. بيانات عمر المحفوظة هي المرجع عند الاختلاف؛ تبقى بيانات سجى الأصلية ظاهرة، ولا تُعدّل أي بيانات في قاعدة المشروع.</p>
      <label style={{display:'block',marginBottom:14}}>اختيار Excel سجى (.xlsx)
        <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={e=>{const f=e.target.files?.[0];if(f)void checkExcel(f);e.target.value='';}}/>
      </label>
      <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
-       <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy||report.blockers.length>0}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
+       <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
      </div>
-     <p className="hint">أي مجموعة فواتير قديمة محفوظة بحالة «مطابق» تُعتمد دون اشتراط أرقام الصفحات. ترحيلاتها المؤكدة على مستوى المجموعة تظهر بعنوان «ترحيلات المجموعة المعتمدة» دون نسبتها لورقة منفردة.</p>
+     <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. تشمل أعمدة «عمر» و«سجى» وشيت «مراجعة عمر» بجميع التنبيهات. أي مجموعة فواتير قديمة محفوظة بحالة «مطابق» تُعتمد دون اشتراط أرقام الصفحات؛ ترحيلاتها المؤكدة على مستوى المجموعة لا تُنسب لفاتورة منفردة.</p>
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
      {error&&<p role="alert" className="red"><AlertTriangle size={16} style={{verticalAlign:'middle'}}/> {error}</p>}
      {issues.length>0&&<div role="alert" className="review-list"><strong>سطور Excel غير سليمة:</strong>{issues.map((issue,i)=><p key={i}>{issue}</p>)}</div>}
@@ -100,12 +100,12 @@ export default function SerialSoldier(){
          <div className="stat"><span>تحتاج مراجعة</span><strong>{report.count.review}</strong></div>
        </div>
        {report.blockers.length>0&&<div role="alert" className="review-list" style={{marginTop:15}}>
-         <h3><AlertTriangle size={18} style={{verticalAlign:'middle'}}/> التصدير متوقف: {report.blockers.length} أخطاء حرجة</h3>
-         <p>الفواتير القديمة المطابقة مستثناة تلقائيًا من شرط الصفحات فقط. باقي الأخطاء الحرجة، مثل فرق المبلغ أو تكرار الرقم، تتطلب التصحيح.</p>
+         <h3><AlertTriangle size={18} style={{verticalAlign:'middle'}}/> {report.blockers.length} أخطاء تحتاج مراجعة — التنزيل متاح</h3>
+         <p>الملف الناتج نسخة للمراجعة مع جميع الفروقات. لا تتحول الأخطاء إلى مطابقة معتمدة، ولا يتم تعديل البيانات المحفوظة. سجلات الفواتير القديمة المطابقة مستثناة من شرط الصفحات فقط.</p>
          <div style={{maxHeight:260,overflowY:'auto'}}>{report.blockers.map((b,i)=><p key={i}>{b}</p>)}</div>
        </div>}
        {report.legacyWarnings.length>0&&<details className="review-list" style={{marginTop:14}}><summary>ترحيلات مجموعات قديمة معتمدة دون اشتراط أرقام الصفحات ({report.legacyWarnings.length})</summary><div style={{maxHeight:240,overflowY:'auto'}}>{report.legacyWarnings.map((item,i)=><p key={i}>{item}</p>)}</div></details>}
-       {report.count.review>0&&<p className="amber">الفواتير ذات فروقات المبالغ أو حالة المطابقة غير المعتمدة تُظلل بالأصفر ولا تُحتسب واصلة مطابقة. إذا لم توجد أخطاء حرجة، يمكن استخراج كشف للمراجعة دون اعتباره كشفًا مكتملًا.</p>}
+       {report.count.review>0&&<p className="amber">الفواتير ذات فروقات المبالغ أو الأرقام أو حالة المطابقة غير المعتمدة تُظلل بالأصفر ولا تُحتسب واصلة مطابقة. يمكنك تنزيل نسخة مراجعة في جميع الأحوال.</p>}
      </section>
      <section className="panel">
        <h2>ملخص فواتير كل يوم</h2>
@@ -117,12 +117,12 @@ export default function SerialSoldier(){
          <label>فلترة حسب اليوم <select aria-label="تصفية فواتير جندي السيريل حسب التاريخ" value={day} onChange={e=>setDay(e.target.value)}><option value="">كل الأيام</option>{daily.map(([date])=><option key={date} value={date}>{date}</option>)}</select></label>
        </div>
        <p className="hint">يُعرض أول 200 صف هنا لتسهيل التصفح، بينما يشمل ملف التصدير جميع الفواتير من دون استثناء.</p>
-       <div className="table-scroll"><table><thead><tr><th>صف Excel</th><th>رقم الفاتورة</th><th>المبلغ</th><th>الحالة</th><th>رئيسي 001→011</th><th>نواشف 002→011</th><th>تعديلات / عكسي</th><th>ملاحظات</th></tr></thead>
+       <div className="table-scroll"><table><thead><tr><th>صف Excel</th><th>رقم سجى</th><th>رقم عمر</th><th>مبلغ سجى</th><th>مبلغ عمر</th><th>الحالة</th><th>رئيسي 001→011</th><th>نواشف 002→011</th><th>تعديلات / عكسي</th><th>ملاحظات</th></tr></thead>
        <tbody>{filtered.slice(0,200).map((item:SerialRow)=>{
          const cols=[...item.transfers.filter(x=>x.kind==='main'),...item.transfers.filter(x=>x.kind==='dry')];
          const adjustments=item.transfers.filter(x=>x.kind==='adjustment');
          return <tr key={item.row} style={{backgroundColor:color[item.state]}}>
-           <td>{item.row}</td><td dir="ltr">{item.number}</td><td dir="ltr">{item.amount}</td><td>{label[item.state]}</td>
+           <td>{item.row}</td><td dir="ltr">{item.number||'—'}</td><td dir="ltr">{item.omarNumber||'—'}</td><td dir="ltr">{item.amount||'—'}</td><td dir="ltr">{item.omarAmount||'—'}</td><td>{label[item.state]}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='main').map(t=>t.number).join('، ')||'—'}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='dry').map(t=>t.number).join('، ')||'—'}</td>
            <td dir="ltr">{adjustments.map(t=>t.number).join('، ')||'—'}</td><td>{item.reason}</td>
