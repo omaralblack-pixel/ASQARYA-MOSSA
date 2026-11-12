@@ -5,6 +5,7 @@ import type {LieutenantTransfer} from './lieutenant';
 import {analyzeLieutenantMovements,isCashVanTransfer} from './lieutenant-counterparts';
 
 export type DayInvoiceState='match'|'late'|'pending'|'short'|'extra'|'review'|'cashvan-settled'|'cashvan-pending';
+export type DaySapStatus='posted'|'waiting'|'missing'|'reversed'|'partial'|'review';
 export type DayInvoiceRecord={id:string;branch:string;status:string;payload:string};
 export type DayInvoiceData={
   rows:CollectedInvoice[];records:DayInvoiceRecord[];
@@ -15,6 +16,7 @@ export type DayInvoiceResult={
   recordId:string;number:string;branch:string;invoiceDate:string;asOf:string;
   transferNumbers:string[];postedDates:string[];state:DayInvoiceState;
   financiallyMatchedGroup:boolean;items:DayItemResult[];notes:string[];
+  sapStatus?:DaySapStatus;
   cashVan?:boolean;reverseNumbers?:string[];
 };
 export type DayInvoiceReport={rows:DayInvoiceResult[];sourceLastDate:string;};
@@ -85,6 +87,104 @@ const pageParts=(draft:Draft,transferId:string,line:TransferLine,qtyPieces:numbe
   return Number.isSafeInteger(page)&&page>=1&&page<=draft.invoices.length?
     {[String(page)]:Math.abs(qtyPieces)}:null;
 };
+
+/** Prove the SAP movement independently of the operator's financial approval.
+ * Look through the whole supplied SAP export up to asOf, including referenced
+ * later reversals/corrections and explicitly numbered invoice documents.
+ * A group approval does not prove a posting, and a posting does not prove the
+ * item-by-item allocation of a multi-page invoice.
+ */
+function verifyInvoiceSap(
+  invoiceNumber:string,branch:string,linkedNumbers:string[],asOf:string,
+  source:LieutenantTransfer[],bySource:Map<string,LieutenantTransfer>,
+  movements:ReturnType<typeof analyzeLieutenantMovements>,
+  cancellationDates:Map<string,string>,corrective:Map<string,LieutenantTransfer[]>,
+  sourceLastDate:string,
+):{status:DaySapStatus;notes:string[]}{
+  const notes:string[]=[];
+  if(!linkedNumbers.length)
+    return {status:'missing',notes:['لا يوجد رقم ترحيل SAP مثبت لهذه الفاتورة، حتى لو كانت معتمدة ماليًا.']};
+  let posted=0,waiting=0,reversed=0,changed=0,missing=0,unknown=0;
+  for(const number of linkedNumbers){
+    const current=bySource.get(number);
+    if(!current){
+      missing++;
+      notes.push('مستند SAP '+number+' غير موجود في كشف الترحيلات الحالي.');continue;
+    }
+    const date=current.transfer.date;
+    if(!date||current.issues.length){
+      unknown++;
+      notes.push('مستند '+number+' بلا تاريخ SAP صالح أو فيه أخطاء في المصدر.');continue;
+    }
+    if(date>asOf){
+      waiting++;
+      notes.push('الترحيل '+number+' بتاريخ '+date+' بعد نهاية فحص '+asOf+'؛ لم يُحتسب.');continue;
+    }
+    if(current.reverse||current.signedAdjustment||current.cancellationState==='cancellation'){
+      unknown++;
+      notes.push('المستند '+number+' ليس ترحيل وارد فعّالًا إلى 011.');continue;
+    }
+    const parsed=sourceLines(current);
+    if(parsed.issues.length||parsed.excluded.length||!parsed.lines.some(line=>
+      line.to==='011'&&line.from!=='011'&&line.quantity>0)){
+      unknown++;
+      notes.push('بنود SAP للمستند '+number+' لا تثبت واردًا صالحًا إلى 011.');continue;
+    }
+    const movement=movements.get(number);
+    const canceledAt=cancellationDates.get(number);
+    if(canceledAt&&canceledAt<=asOf){
+      reversed++;
+      notes.push('الترحيل '+number+' ألغي على SAP بتاريخ '+canceledAt+'.');continue;
+    }
+    if(movement?.kind==='reversed'){
+      reversed++;
+      notes.push('الترحيل '+number+' يقابله عكسي مطابق رقم '+
+        (movement.counterparts?.join('، ')||movement.counterpart||'غير مثبت')+
+        ' بتاريخ '+(movement.counterpartDate||'غير معروف')+'.');continue;
+    }
+    if((current.cancellationState==='canceled'||movement?.kind==='sap-canceled')&&!canceledAt){
+      unknown++;
+      notes.push('الترحيل '+number+' ملغي حاليًا لكن تاريخ الإلغاء غير مثبت؛ لا يمكن تحديد حالته في '+asOf+'.');
+      continue;
+    }
+    const corrections=(corrective.get(number)||[]).filter(item=>
+      !!item.transfer.date&&item.transfer.date<=asOf&&item.cancellationState!=='canceled');
+    if(corrections.length){
+      changed++;
+      notes.push('ترحيل '+number+' له تصحيح/عكسي بتاريخ الفحص: '+
+        corrections.map(item=>item.transfer.number+' ('+item.transfer.date+')').join('، ')+
+        '؛ يلزم تدقيق أثر الكميات ولا يجوز اعتباره واردًا كاملًا.');continue;
+    }
+    posted++;
+  }
+  // Later SAP documents referring to this exact invoice in Remarks are
+  // disclosed, never silently attached to a historical approved group.
+  const explicitlyRelated=source.filter(item=>
+    item.branch===branch&&item.invoiceNumbers?.includes(invoiceNumber)&&
+    item.transfer.date&&item.transfer.date<=asOf&&
+    !linkedNumbers.includes(item.transfer.number));
+  if(explicitlyRelated.length){
+    unknown++;
+    notes.push('وجدت ترحيلات أخرى تذكر رقم هذه الفاتورة في Remarks ولم تُربط بها: '+
+      explicitlyRelated.map(item=>item.transfer.number+' ('+item.transfer.date+')').join('، ')+
+      '. راجعها قبل تأكيد تغطية SAP؛ لم أوزع كمياتها تلقائيًا.');
+  }
+  if(sourceLastDate<asOf){
+    unknown++;
+    notes.push('كشف SAP يصل إلى '+(sourceLastDate||'تاريخ غير معروف')+
+      ' فقط؛ لا يثبت اكتمال الحركات حتى '+asOf+'.');
+  }
+  const distinctKinds=[posted,waiting,reversed,missing].filter(Boolean).length;
+  const status:DaySapStatus=unknown?'review':
+    changed||distinctKinds>1?'partial':
+    posted>0?'posted':
+    reversed>0?'reversed':
+    waiting>0?'waiting':'missing';
+  if(status==='posted')
+    notes.push('وجود الترحيلات الواردة إلى 011 مثبت حتى '+asOf+
+      ' بحسب ملف SAP؛ هذا لا يعيد تدقيق كميات الصفحات المعتمدة ماليًا.');
+  return {status,notes};
+}
 
 /** Read-only: a blue-invoice date selects invoices; an SAP posting date controls
  * inventory receipt. Never spread one multi-page SAP row across every invoice.
@@ -343,6 +443,8 @@ export function auditInvoicesForDay(
         postedDates.add(current.transfer.date);
       }
     }
+    const sapCheck=verifyInvoiceSap(row.number,row.branch,allNumbers,asOf,source,bySource,
+      movements,cancellationDates,corrective,sourceLastDate);
     let state:DayInvoiceState='match';
     if(financiallyMatchedGroup){
       state=[...postedDates].some(date=>date>row.date)?'late':'match';
@@ -358,10 +460,11 @@ export function auditInvoicesForDay(
       notes.push('آخر ترحيل في كشف SAP بتاريخ '+(sourceLastDate||'غير معروف')+
         '، قبل تاريخ الفحص '+asOf+'؛ يلزم كشف محدث لإثبات عدم الترحيل.');
     }
+    notes.push(...sapCheck.notes);
     return {recordId:row.recordId,number:row.number,branch:row.branch,
       invoiceDate:row.date,asOf,transferNumbers:[...new Set([...nums,...row.unresolvedTransferNumbers,...row.groupConfirmedTransfers])],
       postedDates:[...postedDates].sort(),state,financiallyMatchedGroup:!!financiallyMatchedGroup,
-      items,notes:[...new Set(notes)]};
+      sapStatus:sapCheck.status,items,notes:[...new Set(notes)]};
   });
   return {rows,sourceLastDate};
 }
