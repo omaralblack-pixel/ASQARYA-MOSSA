@@ -150,7 +150,7 @@ const storageContext={
     return Response.json([{name:archivedKey}]);
   },
 };
-vm.runInNewContext(isolatedArchive+'\\n globalThis.testArchive = lieutenantFiles;',storageContext);
+vm.runInNewContext(isolatedArchive+'; globalThis.testArchive = lieutenantFiles;',storageContext);
 const removeFile=(key)=>storageContext.testArchive(new Request('https://local.test/api/lieutenant-files',{
   method:'DELETE',body:JSON.stringify({key}),
 }),{SUPABASE_URL:'https://storage.test',SUPABASE_STORAGE_SECRET:'private-server-secret'});
