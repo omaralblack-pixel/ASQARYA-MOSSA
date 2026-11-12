@@ -176,7 +176,7 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
         return reply(400, "طلب حذف الملف غير صالح.");
       }
       if (typeof key !== "string" ||
-        !/^lieutenant[/](?:transfers|opening|balance|other)__[a-f0-9]{32}__[^/\\]{1,120}$/.test(key)) {
+        !/^lieutenant[/](?:transfers|opening|balance|other)__[a-f0-9]{32}__(?:\d{4}-\d{2}-\d{2}__)?[^/\\]{1,120}$/.test(key)) {
         return reply(400, "معرّف ملف الأرشيف غير صالح.");
       }
       const result = await fetch(base + "/" + bucket, {
@@ -235,22 +235,33 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
       }>;
       if (!Array.isArray(objects)) return reply(502, "البيانات المسترجعة من الأرشيف غير صالحة.");
       return Response.json({
-        files: objects.filter(item => !!item.name && !item.name.endsWith("/")).map(item => ({
-          key: "lieutenant/" + item.name,
-          name: item.name.replace(/^[a-z]+__[a-f0-9]{32}__/, ""),
-          kind: item.name.split("__")[0],
-          size: item.metadata?.size || 0,
-          created: item.created_at || item.updated_at || "",
-        })),
+        files: objects.filter(item => !!item.name && !item.name.endsWith("/")).map(item => {
+          const parsed = item.name.match(/^(transfers|opening|balance|other)__[a-f0-9]{32}__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
+          return {
+            key: "lieutenant/" + item.name,
+            name: parsed?.[3] || item.name,
+            kind: parsed?.[1] || "other",
+            snapshotDate: parsed?.[2] || "",
+            size: item.metadata?.size || 0,
+            created: item.created_at || item.updated_at || "",
+          };
+        }),
         nextPage: objects.length === 100 ? page + 1 : null,
       }, { headers: privateHeaders });
     }
     if (request.method !== "POST") return reply(405, "طريقة الطلب غير مدعومة.");
     const kind = request.headers.get("X-File-Kind") || "";
+    const snapshotDate = request.headers.get("X-Snapshot-Date") || "";
     const rawName = decodeURIComponent(request.headers.get("X-File-Name") || "");
     const filename = rawName.replace(/[\\/?%*:|"<>]/g, "_").trim().slice(-120);
     if (!["transfers", "opening", "balance", "other"].includes(kind) ||
       !filename || filename.length > 120) return reply(400, "نوع الملف أو اسمه غير صالح.");
+    if (snapshotDate && (
+      !["opening", "balance"].includes(kind) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate) ||
+      !Number.isFinite(Date.parse(snapshotDate + "T00:00:00Z")) ||
+      new Date(snapshotDate + "T00:00:00Z").toISOString().slice(0, 10) !== snapshotDate
+    )) return reply(400, "تاريخ لقطة الرصيد غير صالح.");
     if (Number(request.headers.get("Content-Length") || 0) > maxSapFileBytes)
       return reply(413, "حجم الملف يتجاوز 16 ميغابايت.");
     const bytes = await request.arrayBuffer();
@@ -258,7 +269,8 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
       return reply(413, "الملف فارغ أو يتجاوز 16 ميغابايت.");
     const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
       byte => byte.toString(16).padStart(2, "0")).join("");
-    const key = "lieutenant/" + kind + "__" + digest.slice(0, 32) + "__" + filename;
+    const key = "lieutenant/" + kind + "__" + digest.slice(0, 32) + "__" +
+      (snapshotDate ? snapshotDate + "__" : "") + filename;
     // Preserve bytes exactly, using JSON envelope because the existing bucket is
     // explicitly restricted to application/json (and is intentionally kept unchanged).
     const body = JSON.stringify({
