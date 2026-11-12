@@ -4,7 +4,7 @@ import type {CollectedInvoice} from './invoice-collector';
 import type {LieutenantTransfer} from './lieutenant';
 import {analyzeLieutenantMovements} from './lieutenant-counterparts';
 
-export type DayInvoiceState='match'|'late'|'pending'|'short'|'extra'|'financial'|'financial-late'|'review';
+export type DayInvoiceState='match'|'late'|'pending'|'short'|'extra'|'review';
 export type DayInvoiceRecord={id:string;branch:string;status:string;payload:string};
 export type DayInvoiceData={
   rows:CollectedInvoice[];records:DayInvoiceRecord[];
@@ -47,7 +47,7 @@ const paperQuantities=(invoice:Draft['invoices'][number])=>{
   const source=invoice.auditLines?.trim()?
     invoice.auditLines:
     Object.entries(invoice.quantities||{}).map(([code,quantity])=>code+'\t'+quantity).join('\n');
-  if(!source.trim())return {totals,issues:['أصناف وكميات الفاتورة الورقية غير مسجلة؛ لا تكفي القيمة الإجمالية للمطابقة.']};
+  if(!source.trim())return {totals,issues:['أصناف وكميات الفاتورة الورقية غير مسجلة في السجل.']};
   for(const line of source.replace(/\r/g,'').split('\n')){
     if(!line.trim())continue;
     const fields=line.split('\t').map(field=>field.trim());
@@ -87,7 +87,9 @@ const pageParts=(draft:Draft,transferId:string,line:TransferLine,qtyPieces:numbe
 
 /** Read-only: a blue-invoice date selects invoices; an SAP posting date controls
  * inventory receipt. Never spread one multi-page SAP row across every invoice.
- * Unprovable links, missing unit conversion, or changed SAP contents stay review.
+ * A saved operator approval is authoritative for the invoice status. Missing
+ * quantity/page details remain unknown, without reopening that approval.
+ * Unapproved invoices still require independently verifiable quantities.
  */
 export function auditInvoicesForDay(
   daily:DayInvoiceData,source:LieutenantTransfer[],asOf:string,currentReference:Item[],
@@ -127,10 +129,11 @@ export function auditInvoicesForDay(
       if(!draft?.invoices?.length||!draft.transfers)throw Error('invalid');
     }catch{notes.push('تعذّر قراءة تفاصيل الفاتورة المحفوظة.');}
     const invoice=draft?.invoices.find(item=>item.id===row.invoiceId);
-    // A saved group-level financial match is not proof of the item quantities
-    // or the allocation of a shared SAP transfer to an individual invoice.
-    const financiallyMatchedGroup=registered?.status==='match'||
-      (draft as (Draft&{summary?:{status?:string}})|undefined)?.summary?.status==='match';
+    // The operator has already checked and accepted this record. Respect the
+    // current saved status; a stale payload summary must not override it.
+    const savedStatus=registered?.status||
+      (draft as (Draft&{summary?:{status?:string}})|undefined)?.summary?.status;
+    const financiallyMatchedGroup=savedStatus==='match';
     if(!invoice)notes.push('الفاتورة غير موجودة في سجل المجموعة.');
     if(!invoice?.complete)notes.push('الفاتورة الورقية غير مؤكدة الاكتمال.');
     if(duplicateNumbers.get(row.branch+'|'+row.number)!>1)
@@ -141,12 +144,6 @@ export function auditInvoicesForDay(
     notes.push(...paper.issues);
     // Missing/partially readable paper quantities are unknown, NEVER zero.
     const paperKnown=!!invoice?.complete&&paper.issues.length===0&&paper.totals.size>0;
-    // An old accepted group may have no paper SKU quantities saved at all.
-    // This is different from a malformed or partly recorded paper invoice.
-    // Keep financial approval visible, without treating it as quantity proof.
-    const noPaperQuantities=!!invoice&&!(invoice.auditLines||'').trim()&&
-      !Object.values(invoice.quantities||{}).some(quantity=>String(quantity??'').trim());
-    const financialOnly=!!financiallyMatchedGroup&&noPaperQuantities;
     const references=draft?.referenceSnapshot?.length?draft.referenceSnapshot:currentReference;
     if(!references.length)notes.push('مرجع ربط أصناف المؤسسة بأكواد SAP غير متاح.');
     const posted=new Map<string,number>();
@@ -283,18 +280,30 @@ export function auditInvoicesForDay(
         expected,posted:actual,
         difference:expected!==null&&actual!==null?round(expected-actual):null};
     });
-    if(financiallyMatchedGroup&&(!paperKnown||!postedKnown))
-      notes.push('المطابقة المالية محفوظة للمجموعة، لكن هذا لا يثبت أصناف وكميات الفاتورة بشكل مستقل.');
+    if(financiallyMatchedGroup){
+      notes.unshift('مطابقة حسب اعتمادك المالي المحفوظ؛ لا يُطلب إعادة إدخال الكميات أو توزيع الصفحات.');
+      // Receipt dates can be read without inventing a quantity allocation.
+      // Legacy shared transfers stay group links and never add duplicate items.
+      const linkedNumbers=[...new Set([...nums,...row.unresolvedTransferNumbers,...row.groupConfirmedTransfers])];
+      for(const number of linkedNumbers){
+        const current=bySource.get(number);
+        if(!current?.transfer.date)continue;
+        if(current.transfer.date>asOf){
+          notes.push('الترحيل '+number+' بتاريخ '+current.transfer.date+' بعد تاريخ الفحص؛ لم تدخل كمياته في الفحص.');
+          continue;
+        }
+        const movement=movements.get(number);
+        const canceledAt=cancellationDates.get(number);
+        const canceledNow=current.cancellationState==='canceled'||movement?.kind==='sap-canceled';
+        if(current.cancellationState==='cancellation'||movement?.kind==='sap-cancel-doc'||
+          current.reverse||current.signedAdjustment||movement?.kind==='reversed'||
+          canceledNow&&(!canceledAt||canceledAt<=asOf))continue;
+        postedDates.add(current.transfer.date);
+      }
+    }
     let state:DayInvoiceState='match';
-    if(financialOnly){
-      // This category makes NO claim of an item-level match. Any unresolved,
-      // canceled, late or missing SAP evidence remains visible in the notes.
-      state=postedKnown&&anyTransfer&&[...postedDates].some(date=>date>row.date)
-        ?'financial-late':'financial';
-      if(!anyTransfer&&nums.some(number=>(bySource.get(number)?.transfer.date||'')>asOf))
-        notes.push('الترحيل مرتبط بالمجموعة لكن تاريخ SAP بعد تاريخ الفحص؛ لم يثبت وصوله حتى هذا اليوم.');
-      if(!anyTransfer&&row.groupConfirmedTransfers.length)
-        notes.push('الترحيلات معتمدة ماليًا على مستوى المجموعة فقط؛ توزيعها على هذه الفاتورة غير مثبت.');
+    if(financiallyMatchedGroup){
+      state=[...postedDates].some(date=>date>row.date)?'late':'match';
     }else if(notes.length)state='review';
     else if(items.some(item=>item.difference!==null&&item.difference< -epsilon))state='extra';
     else if(items.some(item=>item.difference!==null&&item.difference>epsilon))

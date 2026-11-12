@@ -34,7 +34,7 @@ const savedInvoice=(id,number,date,qty,code='11371486')=>({
   id,number,date,amount:String(qty),complete:true,quantities:{[code]:String(qty)},
 });
 const record=(invoices,transfers,other={})=>({
-  id:'r1',branch:'23 — خالد',status:'match',
+  id:'r1',branch:'23 — خالد',status:'review',
   payload:JSON.stringify({id:'r1',branch:'23 — خالد',date:'2026-11-01',
     invoices,transfers,referenceSnapshot:reference,...other}),
 });
@@ -81,8 +81,8 @@ const unallocated=audit([record([paper,paper2],[mixed])],
   [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],'2026-11-03');
 assert.deepEqual(unallocated.map(x=>x.state),['review','review'],
   'Multiple invoices without verified page allocations may not be marked matched');
-assert.ok(unallocated.every(x=>x.financiallyMatchedGroup),
-  'Saved group-level financial approval should remain visible without pretending quantity approval');
+assert.ok(unallocated.every(x=>!x.financiallyMatchedGroup),
+  'Unapproved groups must not inherit a saved approval');
 
 const notEnough=audit([record([paper],[saved])],
   [live('2617001','2026-11-02',[line('DAR00005',80)])],'2026-11-05');
@@ -126,10 +126,10 @@ const pastedPaper=record([{...paper,quantities:{},
 assert.equal(audit([pastedPaper],[src],'2026-11-03')[0].state,'late',
   'Pasted invoice column headers must not create false item errors');
 
-const missingAmounts=record([{...paper,quantities:{},auditLines:''}],[saved]);
+const missingAmounts={...record([{...paper,quantities:{},auditLines:''}],[saved]),status:'match'};
 const missingPaperResult=audit([missingAmounts],[src],'2026-11-03')[0];
-assert.equal(missingPaperResult.state,'financial-late',
-  'Saved financial approval must be visible without claiming item-level quantity matching');
+assert.equal(missingPaperResult.state,'late',
+  'The operator-approved invoice must be matched, with SAP delay kept visible');
 assert.equal(missingPaperResult.financiallyMatchedGroup,true);
 assert.equal(missingPaperResult.items[0].expected,null,
   'Unknown paper quantity must never appear as zero');
@@ -139,10 +139,10 @@ assert.equal(missingPaperResult.items[0].difference,null,
   'Unknown paper quantity must never generate a fake negative variance');
 const missingPaperOnSameDay=audit([missingAmounts],
   [live('2617001','2026-11-01',[line('DAR00005',100)])],'2026-11-01')[0];
-assert.equal(missingPaperOnSameDay.state,'financial',
-  'A financially approved invoice with no paper quantities is not a verified quantity match');
+assert.equal(missingPaperOnSameDay.state,'match',
+  'Saved financial approval must remain matched without re-entering paper quantities');
 const notYetPosted=audit([missingAmounts],[src],'2026-11-02')[0];
-assert.equal(notYetPosted.state,'financial');
+assert.equal(notYetPosted.state,'match','The saved invoice approval must not be reopened by the SAP cutoff');
 assert.equal(notYetPosted.items.length,0,
   'A future-only SAP posting and absent paper quantities must not invent an item amount');
 assert.ok(notYetPosted.notes.some(note=>note.includes('بعد تاريخ الفحص')),
@@ -150,13 +150,17 @@ assert.ok(notYetPosted.notes.some(note=>note.includes('بعد تاريخ الف�
 const unapprovedMissing=audit([{...missingAmounts,status:'review'}],[src],'2026-11-03')[0];
 assert.equal(unapprovedMissing.state,'review',
   'An unapproved invoice must never inherit financial approval');
-const unknownSplit=record([{...paper,quantities:{},auditLines:''},
-  {...paper2,quantities:{},auditLines:''}],[mixed]);
+const unknownSplit={...record([{...paper,quantities:{},auditLines:''},
+  {...paper2,quantities:{},auditLines:''}],[mixed]),status:'match'};
 const financiallyApprovedSplit=audit([unknownSplit],
   [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],
   '2026-11-03');
-assert.deepEqual(financiallyApprovedSplit.map(row=>row.state),['financial','financial'],
-  'Previously approved financial groups remain visible without inventing per-page quantities');
+assert.deepEqual(financiallyApprovedSplit.map(row=>row.state),['late','late'],
+  'Previously approved financial groups must match without inventing per-page quantities');
+assert.ok(financiallyApprovedSplit.every(row=>row.postedDates.includes('2026-11-03')),
+  'The dates of approved group transfers remain visible without page allocation');
+assert.equal(financiallyApprovedSplit.reduce((sum,row)=>sum+row.items.reduce((n,item)=>n+(item.posted??0),0),0),0,
+  'Matching an approved shared group must not invent or duplicate invoice-level quantities');
 assert.ok(financiallyApprovedSplit.every(row=>row.items.every(item=>item.difference===null)),
   'Unallocated legacy group rows may not create fake quantity differences');
 const malformedPaper=record([{...paper,auditLines:'11371486\t100\nINVALID\t3'}],[saved]);
@@ -166,6 +170,31 @@ assert.equal(malformedResult.items[0].expected,null,
 assert.equal(malformedResult.state,'review',
   'Invalid source rows remain a review, not financial-only acceptance');
 assert.equal(malformedResult.items[0].difference,null);
+const approvedMalformed=audit([{...malformedPaper,status:'match'}],[src],'2026-11-03')[0];
+assert.equal(approvedMalformed.state,'late',
+  'Incomplete saved quantity details must not reopen the operator approval');
+assert.equal(approvedMalformed.items[0].expected,null);
+const approvedUnallocated=audit([{...group,status:'match',
+  payload:JSON.stringify({...JSON.parse(group.payload),pages:{}})}],
+  [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],'2026-11-03');
+assert.deepEqual(approvedUnallocated.map(row=>row.state),['late','late'],
+  'Saved approval must not require reassigning previously checked pages');
+const staleSummary={...missingAmounts,status:'review',
+  payload:JSON.stringify({...JSON.parse(missingAmounts.payload),summary:{status:'match'}})};
+assert.equal(audit([staleSummary],[src],'2026-11-03')[0].state,'review',
+  'A stale summary must not override the current saved review status');
+assert.equal(audit([{...record([paper],[saved]),status:'match'}],
+  [live('2617001','2026-11-03',[line('DAR00005',80)])],'2026-11-03')[0].state,'late',
+  'The saved operator decision remains authoritative while numeric differences stay in details');
+const approvedWithoutSource=audit([missingAmounts],[],'2026-11-03')[0];
+assert.equal(approvedWithoutSource.state,'match');
+assert.deepEqual(approvedWithoutSource.postedDates,[],
+  'Saved approval alone must not invent an SAP posting date');
+const approvedCanceled=audit([missingAmounts],
+  [live('2617001','2026-11-03',[line('DAR00005',100)],{cancellationState:'canceled'})],'2026-11-03')[0];
+assert.equal(approvedCanceled.state,'match');
+assert.deepEqual(approvedCanceled.postedDates,[],
+  'Canceled SAP documents must not supply an effective receipt date');
 assert.deepEqual(JSON.parse(group.payload).invoices,[paper,paper2],
   'Read-only audit must not mutate previously saved invoices');
 const endpoint=fs.readFileSync('app/api/reconcile/route.ts','utf8');
@@ -174,6 +203,6 @@ assert.ok(endpoint.includes('collectInvoicesByDate(records.results,day,day)'));
 const screen=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
 assert.ok(screen.includes('فحص جميع فواتير هذا اليوم'));
 assert.ok(screen.includes('auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference)'));
-assert.ok(screen.includes('معتمدة ماليًا فقط'));
-assert.ok(screen.includes("dailyCounts.financial+dailyCounts['financial-late']"));
-console.log('PASS: Daily blue-invoice date, SAP cutoff, delay, shortage, cancellation, page allocation and no-write safeguards.');
+assert.ok(!screen.includes('معتمدة ماليًا فقط'));
+assert.ok(screen.includes('dailyCounts.match+dailyCounts.late'));
+console.log('PASS: Saved operator approval, unapproved quantity checks, SAP cutoff, delay, cancellation, shared quantities and no-write safeguards.');
