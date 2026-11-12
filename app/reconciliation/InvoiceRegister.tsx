@@ -67,7 +67,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
   // checked invoice can misleadingly appear to be absent.
   const searched = digits(query.trim()).toLowerCase();
   const searching = Boolean(query.trim());
-  const exactInvoiceSearch = /^\\d{8,20}$/.test(searched);
+  const exactInvoiceSearch = /^\d{8,20}$/.test(searched);
   const rows = searching ? [...received, ...pending] : status === 'received' ? received : pending;
   const receivedKeys = new Set(received.map(row => row.key));
   const selectedDate = dateValue(invoiceDate);
@@ -112,7 +112,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
   const notReceived = comparison.filter(row=>row.state==='missing'||row.state==='pending');
   const questionable = comparison.filter(row=>row.state==='review');
   const visibleComparison = comparison.filter(row=>
-    (sapFilter==='all'||(sapFilter==='notReceived'&&(row.state==='missing'||row.state==='pending'))||row.state===sapFilter) &&
+    (exactInvoiceSearch||sapFilter==='all'||(sapFilter==='notReceived'&&(row.state==='missing'||row.state==='pending'))||row.state===sapFilter) &&
     (!exactInvoiceSearch || row.number===searched));
   const sapOnlySearchMatch = exactInvoiceSearch && !visible.length
     ? comparison.find(row=>row.number===searched && row.state==='missing') : undefined;
