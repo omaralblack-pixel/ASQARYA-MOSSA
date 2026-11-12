@@ -3,8 +3,8 @@ import {useMemo,useState} from 'react';
 import {AlertTriangle,CheckCircle2,Download,FileSpreadsheet,RefreshCw,Upload} from 'lucide-react';
 import {evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
 
-const label={received:'واصل ومطابق',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
-const color={received:'#d8f3dc',pending:'#fad5e5',missing:'#fad5e5',review:'#fff0bf'};
+const label={received:'واصل ومطابق',received_difference:'واصلة — فرق في الملاحظات',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
+const color={received:'#d8f3dc',received_difference:'#fff0bf',pending:'#fad5e5',missing:'#fad5e5',review:'#fff0bf'};
 async function getSaved():Promise<SerialRecord[]> {
  const response=await fetch('/api/reconcile?export=1',{cache:'no-store'});
  const data:any=await response.json();
@@ -21,11 +21,14 @@ export default function SerialSoldier(){
  const [day,setDay]=useState('');
  const [updated,setUpdated]=useState('');
  const daily=useMemo(()=>{
-   const map=new Map<string,{total:number;received:number;pending:number;missing:number;review:number}>();
+   const map=new Map<string,{total:number;received:number;differences:number;pending:number;missing:number;review:number}>();
    for(const row of report?.rows||[]){
      const date=row.date||'تاريخ غير معروف';
-     const result=map.get(date)||{total:0,received:0,pending:0,missing:0,review:0};
-     result.total++;result[row.state]++;map.set(date,result);
+     const result=map.get(date)||{total:0,received:0,differences:0,pending:0,missing:0,review:0};
+     result.total++;
+     if(row.state==='received_difference'){result.received++;result.differences++;}
+     else result[row.state]++;
+     map.set(date,result);
    }
    return [...map].sort(([a],[b])=>a.localeCompare(b));
  },[report]);
@@ -92,10 +95,11 @@ export default function SerialSoldier(){
    </section>
    {report&&<>
      <section className="panel">
-       <div className="section-title"><CheckCircle2 size={20}/><div><h2>نتيجة الفحص</h2><p>التصنيف يراجع الرقم والمبلغ وحالة التأكيد في السجل؛ الترحيـلات تؤخذ من حركات المستودعات الفعلية، مع اعتماد المطابقة المحفوظة للسجلات القديمة.</p></div></div>
+       <div className="section-title"><CheckCircle2 size={20}/><div><h2>نتيجة الفحص</h2><p>التصنيف يفصل وصول الورق عن اختلاف الرقم أو المبلغ؛ تُسجل الفروقات بالملاحظات وتُحسب الفواتير المؤكد وصولها ضمن الواصلة. تؤخذ الترحيلات من حركات المستودعات الفعلية.</p></div></div>
        <div className="stats">
          <div className="stat"><span>جميع فواتير سجى</span><strong>{report.rows.length}</strong></div>
-         <div className="stat"><span>واصل ومطابق</span><strong>{report.count.received}</strong></div>
+         <div className="stat"><span>الفواتير الواصلة (شاملة الفروقات)</span><strong>{report.count.received}</strong></div>
+         <div className="stat"><span>منها واصلة مع فرق</span><strong>{report.rows.filter(row=>row.state==='received_difference').length}</strong></div>
          <div className="stat"><span>غير مسجلة / ورق غير مؤكد</span><strong>{report.count.missing+report.count.pending}</strong></div>
          <div className="stat"><span>تحتاج مراجعة</span><strong>{report.count.review}</strong></div>
        </div>
@@ -105,12 +109,12 @@ export default function SerialSoldier(){
          <div style={{maxHeight:260,overflowY:'auto'}}>{report.blockers.map((b,i)=><p key={i}>{b}</p>)}</div>
        </div>}
        {report.legacyWarnings.length>0&&<details className="review-list" style={{marginTop:14}}><summary>ترحيلات مجموعات قديمة معتمدة دون اشتراط أرقام الصفحات ({report.legacyWarnings.length})</summary><div style={{maxHeight:240,overflowY:'auto'}}>{report.legacyWarnings.map((item,i)=><p key={i}>{item}</p>)}</div></details>}
-       {report.count.review>0&&<p className="amber">الفواتير ذات فروقات المبالغ أو الأرقام أو حالة المطابقة غير المعتمدة تُظلل بالأصفر ولا تُحتسب واصلة مطابقة. يمكنك تنزيل نسخة مراجعة في جميع الأحوال.</p>}
+       {(report.count.review>0||report.rows.some(row=>row.state==='received_difference'))&&<p className="amber">اختلاف المبلغ أو رقم الفاتورة لا يلغي وصول الورق المؤكد: تُحسب الفاتورة واصلة وتُظلل بالأصفر ويُكتب الفرق في الملاحظات. أما عدم تأكيد الورق أو المطابقة المحفوظة أو وجود مشكلة ربط فعلية فيبقى بحاجة مراجعة أو تأكيد. التنزيل متاح دائمًا.</p>}
      </section>
      <section className="panel">
        <h2>ملخص فواتير كل يوم</h2>
-       <div className="table-scroll"><table><thead><tr><th>التاريخ</th><th>الإجمالي</th><th>واصل ومطابق</th><th>غير مسجلة بالمشروع</th><th>غير مؤكد</th><th>مراجعة</th></tr></thead>
-       <tbody>{daily.map(([date,c])=><tr key={date}><td dir="ltr">{date}</td><td>{c.total}</td><td>{c.received}</td><td>{c.missing}</td><td>{c.pending}</td><td>{c.review}</td></tr>)}</tbody></table></div>
+       <div className="table-scroll"><table><thead><tr><th>التاريخ</th><th>الإجمالي</th><th>واصل (شامل الفروقات)</th><th>منها بفرق</th><th>غير مسجلة بالمشروع</th><th>غير مؤكد</th><th>مراجعة</th></tr></thead>
+       <tbody>{daily.map(([date,c])=><tr key={date}><td dir="ltr">{date}</td><td>{c.total}</td><td>{c.received}</td><td>{c.differences}</td><td>{c.missing}</td><td>{c.pending}</td><td>{c.review}</td></tr>)}</tbody></table></div>
      </section>
      <section className="panel">
        <div className="table-controls"><h2>تفاصيل الفواتير</h2>
