@@ -1,5 +1,39 @@
 @scope (.recon-app) {
 
+.lieutenant-balance-list{display:flex;flex-direction:column;gap:16px;margin-top:18px}
+.lieutenant-balance-card{border:1px solid #d8e5ec;background:#fff;border-radius:12px;padding:18px;box-shadow:0 2px 8px #23455c09}
+.lieutenant-balance-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:15px}
+.lieutenant-balance-header>div{min-width:0}
+.lieutenant-balance-code{font-size:14px;color:#236188;display:inline-block;margin-bottom:5px}
+.lieutenant-balance-name{font-size:13px;font-weight:600;line-height:1.75;overflow-wrap:anywhere;color:#243d4c}
+.lieutenant-balance-unit{flex-shrink:0;border-radius:20px;background:#edf5f9;color:#325a70;padding:6px 11px;font-size:12px}
+.lieutenant-balance-main{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
+.lieutenant-balance-metric{display:flex;flex-direction:column;gap:7px;border:1px solid #e0eaf0;border-radius:9px;background:#f8fafc;padding:14px;min-width:0}
+.lieutenant-balance-metric>span{font-size:11px;line-height:1.65;color:#4c6c80}
+.lieutenant-balance-metric>strong{font-size:23px;color:#193b4e;font-variant-numeric:tabular-nums;letter-spacing:.1px;text-align:right}
+.lieutenant-balance-difference{background:#edf6fb;border-color:#bfd6e3}
+.lieutenant-balance-difference.is-short{background:#fff4f3;border-color:#f0ccc8}
+.lieutenant-balance-difference.is-extra{background:#fff9eb;border-color:#e8d5a7}
+.lieutenant-balance-difference.is-match{background:#f0f8f2;border-color:#c8e5d0}
+.lieutenant-balance-difference.is-short>strong{color:#a83531}
+.lieutenant-balance-difference.is-extra>strong{color:#9b6405}
+.lieutenant-balance-difference.is-match>strong{color:#22633f}
+.lieutenant-balance-metric>small{font-size:11px;color:#587282}
+.lieutenant-balance-secondary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
+.lieutenant-balance-secondary>div{display:flex;flex-direction:column;gap:5px;border-bottom:1px solid #e3edf2;padding:8px 3px 11px;min-width:0}
+.lieutenant-balance-secondary span{font-size:11px;line-height:1.5;color:#587487}
+.lieutenant-balance-secondary b{font-size:16px;color:#244b62;font-variant-numeric:tabular-nums;text-align:right}
+.lieutenant-balance-notes{font-size:12px;color:#426273;line-height:1.8;margin-top:10px}
+.lieutenant-balance-notes p{margin:4px 0}
+.lieutenant-balance-evidence{border-top:1px solid #e3edf2;padding-top:12px;margin-top:13px;font-size:12px;color:#36596c}
+.lieutenant-balance-evidence summary{font-weight:700;cursor:pointer;padding:3px 0}
+.lieutenant-balance-evidence .hint{font-size:11px;line-height:1.85;margin:10px 0}
+.lieutenant-balance-evidence-table{min-width:760px;font-size:11px}
+.lieutenant-balance-evidence-table th{font-size:10px}
+.lieutenant-balance-evidence-table td{font-size:11px;white-space:normal;line-height:1.5}
+@media(max-width:900px){.lieutenant-balance-secondary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.lieutenant-balance-card{padding:13px}.lieutenant-balance-main{grid-template-columns:1fr}.lieutenant-balance-metric{padding:11px}.lieutenant-balance-metric>strong{font-size:21px}.lieutenant-balance-name{font-size:12px}.lieutenant-balance-secondary{gap:7px}}
+
 .lieutenant-stock-table th{white-space:normal;min-width:72px;line-height:1.7}
 .lieutenant-stock-table .name-cell{min-width:150px;max-width:220px}
 .lieutenant-stock-table td:last-child{min-width:125px;max-width:220px;line-height:1.8}
