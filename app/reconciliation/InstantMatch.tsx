@@ -175,8 +175,20 @@ export default function InstantMatch({
     const options=matchingDocuments(records,imports,searched,selectedKind);
     const exact=options.some(item=>item.number===searched);
     if (searched.length===4 || (!exact&&options.length>0)) {
-      setSuggestionsOpen(true);
-      setError(options.length?'اختر رقم الفاتورة أو الترحيل الكامل من نتائج البحث قبل المتابعة.':'ما لقيت مستندًا بهذه الخانات. لإضافة مستند جديد أدخل رقمه كاملًا.');
+      // Suggestions while typing may be stale; consult current D1 records
+      // before saying that a document has no matches.
+      setBusy(true);
+      setError('');
+      try {
+        const latestRecords = await refreshRecords();
+        const latest = matchingDocuments(latestRecords,imports,searched,selectedKind);
+        setSuggestionsOpen(true);
+        setError(latest.length
+          ?'اختر رقم المستند الكامل من الاقتراحات بعد تحديث السجل.'
+          :'لم تظهر أرقام بهذه الخانات في السجل الحالي أو ملف SAP الحالي. هذا لا يعني أن الورق غير واصل. جرّب الرقم كاملًا، أو راجع الأرشيف القديم.');
+      } catch(error) {
+        setError(error instanceof Error ? error.message : 'تعذّر التحقق من سجل المطابقات المحفوظ.');
+      } finally {setBusy(false)}
       return;
     }
     const searchKind:SearchKind=selectedKind==='all'?(searched.length>=9?'invoice':'transfer'):selectedKind;
@@ -245,7 +257,7 @@ export default function InstantMatch({
       } else {
         setSources({});
         setDraft(fillSearchedAmount(fresh(searched),searched,searchKind));
-        setNotice('ما لقيت ترحيلات مرتبطة بهذا الرقم. أضف أرقام الترحيلات من الحقل الموجود تحت.');
+        setNotice('لم أجد هذا الرقم في سجلات المطابقة المحفوظة أو ملف SAP الحالي. فتحته كفاتورة جديدة غير محفوظة؛ لا يعني ذلك أن ورقها غير واصل. راجع الترحيلات أو أرشيف SAP قبل إنشاء سجل جديد.');
       }
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر البحث عن المستند.')}
     finally {setBusy(false);}
@@ -365,7 +377,7 @@ export default function InstantMatch({
                   <span>{item.kind==='invoice'?'فاتورة زرقاء':'ترحيل SAP'}</span>
                   <small>{item.branch||'الفرع غير معروف'} · {item.origin==='saved'?'محفوظ بالسجل':'ملف SAP'}</small>
                 </button>)}</>:
-                <p className="instant-results-heading">ما في أرقام مطابقة بالملف المحفوظ أو السجل. إذا المستند جديد، أدخل رقمه الكامل.</p>}
+                <p className="instant-results-heading">لا تظهر اقتراحات بهذا الرقم في البيانات المحمّلة حاليًا. هذا بحث مبدئي، وليس إثباتًا أن الفاتورة غير مسجلة أو أن الورق غير واصل. اضغط «بحث وسحب الترحيلات» للتحقق من السجل المحدث، أو أدخل الرقم كاملًا.</p>}
             </div>}
         </div>
         {kind!=='transfer'&&<label>مبلغ الفاتورة الزرقاء (د.أ) — يُستخدم عند اختيار فاتورة
