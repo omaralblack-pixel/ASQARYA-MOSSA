@@ -74,11 +74,15 @@ assert.equal(grouped.length,2);
 assert.deepEqual(grouped.map(x=>x.state),['late','late'],
   'Confirmed per-page allocations must not double-count an SAP transfer');
 assert.deepEqual(grouped.map(x=>x.items.map(y=>y.code)),[['11371486'],['11064245']]);
+assert.equal(grouped.reduce((sum,x)=>sum+x.items.reduce((n,item)=>n+(item.posted??0),0),0),112,
+  'Shared SAP lines may be counted only once across both blue invoices');
 
 const unallocated=audit([record([paper,paper2],[mixed])],
   [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],'2026-11-03');
 assert.deepEqual(unallocated.map(x=>x.state),['review','review'],
   'Multiple invoices without verified page allocations may not be marked matched');
+assert.ok(unallocated.every(x=>x.financiallyMatchedGroup),
+  'Saved group-level financial approval should remain visible without pretending quantity approval');
 
 const notEnough=audit([record([paper],[saved])],
   [live('2617001','2026-11-02',[line('DAR00005',80)])],'2026-11-05');
@@ -123,8 +127,21 @@ assert.equal(audit([pastedPaper],[src],'2026-11-03')[0].state,'late',
   'Pasted invoice column headers must not create false item errors');
 
 const missingAmounts=record([{...paper,quantities:{},auditLines:''}],[saved]);
-assert.equal(audit([missingAmounts],[src],'2026-11-03')[0].state,'review',
+const missingPaperResult=audit([missingAmounts],[src],'2026-11-03')[0];
+assert.equal(missingPaperResult.state,'review',
   'Invoice amount alone is not quantity evidence');
+assert.equal(missingPaperResult.financiallyMatchedGroup,true);
+assert.equal(missingPaperResult.items[0].expected,null,
+  'Unknown paper quantity must never appear as zero');
+assert.equal(missingPaperResult.items[0].posted,100,
+  'Known SAP receipt remains visible even when the paper quantity is unknown');
+assert.equal(missingPaperResult.items[0].difference,null,
+  'Unknown paper quantity must never generate a fake negative variance');
+const malformedPaper=record([{...paper,auditLines:'11371486\t100\nINVALID\t3'}],[saved]);
+const malformedResult=audit([malformedPaper],[src],'2026-11-03')[0];
+assert.equal(malformedResult.items[0].expected,null,
+  'Partially parsed invoice lines must not be treated as a complete invoice');
+assert.equal(malformedResult.items[0].difference,null);
 assert.deepEqual(JSON.parse(group.payload).invoices,[paper,paper2],
   'Read-only audit must not mutate previously saved invoices');
 const endpoint=fs.readFileSync('app/api/reconcile/route.ts','utf8');
