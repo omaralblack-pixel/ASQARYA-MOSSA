@@ -442,12 +442,14 @@ export default function InstantMatch({
       </section>
       {result&&<section className="panel results-panel">
         <div className="section-title"><h2>نتيجة المطابقة الفورية</h2></div>
+        <p className="hint">{draft.id?'هذه مجموعة مسترجعة من السجل؛ أي تعديلات حالية لا تُثبت حتى تضغط حفظ.':'هذا كشف قيد الإعداد؛ لم يتم تسجيله في قاعدة البيانات بعد.'}</p>
+        {draft.invoices.length>1&&<p className="hint">المطابقة المالية هنا لمجموع الفواتير مع الترحيلات مجتمعة؛ لا تؤكد وحدها توزيع أصناف كل ترحيل على صفحات الفواتير. جندي السيريل يراجع أرقام الفواتير وروابط الصفحات بشكل مستقل.</p>}
         <div className="stats">
           <div className="stat"><span>مجموع الفواتير الزرقاء</span><strong>{money(result.total)} د.أ</strong></div>
           <div className="stat"><span>قيمة الترحيلات بأسعار المؤسسة</span><strong>{money(result.expected)} د.أ</strong></div>
           <div className="stat"><span>الفرق (الفواتير − الترحيلات)</span><strong dir="ltr">{money(result.priceDifference)} د.أ</strong></div>
           <div className={'stat status-stat '+result.status}><span>الحالة</span>
-            <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?'مطابق':result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
+            <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?(draft.invoices.length>1?'مطابق ماليًا — إجمالي المجموعة':'مطابق ماليًا') :result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
         </div>
         {draft.invoices.some(item=>!dateValue(item.date))&&<p className="hint" role="alert">حدّد تاريخ الفاتورة الزرقاء أو صحّح التاريخ التلقائي قبل الحفظ، حتى يظل محفوظًا في السجل.</p>}
                 {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
