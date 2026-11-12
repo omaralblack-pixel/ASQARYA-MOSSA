@@ -128,8 +128,8 @@ assert.equal(audit([pastedPaper],[src],'2026-11-03')[0].state,'late',
 
 const missingAmounts=record([{...paper,quantities:{},auditLines:''}],[saved]);
 const missingPaperResult=audit([missingAmounts],[src],'2026-11-03')[0];
-assert.equal(missingPaperResult.state,'review',
-  'Invoice amount alone is not quantity evidence');
+assert.equal(missingPaperResult.state,'financial-late',
+  'Saved financial approval must be visible without claiming item-level quantity matching');
 assert.equal(missingPaperResult.financiallyMatchedGroup,true);
 assert.equal(missingPaperResult.items[0].expected,null,
   'Unknown paper quantity must never appear as zero');
@@ -137,10 +137,34 @@ assert.equal(missingPaperResult.items[0].posted,100,
   'Known SAP receipt remains visible even when the paper quantity is unknown');
 assert.equal(missingPaperResult.items[0].difference,null,
   'Unknown paper quantity must never generate a fake negative variance');
+const missingPaperOnSameDay=audit([missingAmounts],
+  [live('2617001','2026-11-01',[line('DAR00005',100)])],'2026-11-01')[0];
+assert.equal(missingPaperOnSameDay.state,'financial',
+  'A financially approved invoice with no paper quantities is not a verified quantity match');
+const notYetPosted=audit([missingAmounts],[src],'2026-11-02')[0];
+assert.equal(notYetPosted.state,'financial');
+assert.equal(notYetPosted.items[0].posted,0);
+assert.equal(notYetPosted.items[0].expected,null);
+assert.ok(notYetPosted.notes.some(note=>note.includes('بعد تاريخ الفحص')),
+  'Later SAP transfers must not be represented as already posted');
+const unapprovedMissing=audit([{...missingAmounts,status:'review'}],[src],'2026-11-03')[0];
+assert.equal(unapprovedMissing.state,'review',
+  'An unapproved invoice must never inherit financial approval');
+const unknownSplit=record([{...paper,quantities:{},auditLines:''},
+  {...paper2,quantities:{},auditLines:''}],[mixed]);
+const financiallyApprovedSplit=audit([unknownSplit],
+  [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],
+  '2026-11-03');
+assert.deepEqual(financiallyApprovedSplit.map(row=>row.state),['financial','financial'],
+  'Previously approved financial groups remain visible without inventing per-page quantities');
+assert.ok(financiallyApprovedSplit.every(row=>row.items.every(item=>item.difference===null)),
+  'Unallocated legacy group rows may not create fake quantity differences');
 const malformedPaper=record([{...paper,auditLines:'11371486\t100\nINVALID\t3'}],[saved]);
 const malformedResult=audit([malformedPaper],[src],'2026-11-03')[0];
 assert.equal(malformedResult.items[0].expected,null,
   'Partially parsed invoice lines must not be treated as a complete invoice');
+assert.equal(malformedResult.state,'review',
+  'Invalid source rows remain a review, not financial-only acceptance');
 assert.equal(malformedResult.items[0].difference,null);
 assert.deepEqual(JSON.parse(group.payload).invoices,[paper,paper2],
   'Read-only audit must not mutate previously saved invoices');
@@ -150,4 +174,6 @@ assert.ok(endpoint.includes('collectInvoicesByDate(records.results,day,day)'));
 const screen=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
 assert.ok(screen.includes('فحص جميع فواتير هذا اليوم'));
 assert.ok(screen.includes('auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference)'));
+assert.ok(screen.includes('معتمدة ماليًا فقط'));
+assert.ok(screen.includes("dailyCounts.financial+dailyCounts['financial-late']"));
 console.log('PASS: Daily blue-invoice date, SAP cutoff, delay, shortage, cancellation, page allocation and no-write safeguards.');
