@@ -192,6 +192,7 @@ function writeNumber(doc:Document,cell:Element,value:number){
  cell.removeAttribute('t');
  const number=element(doc,'v');setText(doc,number,String(value));cell.appendChild(number);
 }
+// Generated blue rows retain their project origin when this workbook is uploaded again.
 export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob {
  const pkg=load(new Uint8Array(input));
  const actual=rowsFrom(pkg);
