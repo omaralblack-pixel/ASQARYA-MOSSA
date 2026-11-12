@@ -214,6 +214,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     try{
       const data=await checkedJson<DayInvoiceData>(
         '/api/reconcile?lieutenantInvoiceDay='+encodeURIComponent(invoiceDay));
+      if(!Array.isArray(data.rows)||!Array.isArray(data.records))
+        throw Error('استجابة فحص الفواتير ليست بالإصدار المتوقع؛ تحقق من نشر آخر نسخة للسيرفر.');
       setDailyInvoices(data);
     }catch(cause){
       setDailyError(cause instanceof Error?cause.message:'تعذّر قراءة الفواتير الزرقاء المحفوظة.');
@@ -398,6 +400,19 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     const totals={match:0,late:0,pending:0,short:0,extra:0,review:0};
     for(const row of dailyReport?.rows||[])totals[row.state]++;
     return totals;
+  },[dailyReport]);
+  const dailySkuTotals=useMemo(()=>{
+    const totals=new Map<string,{code:string;name:string;expected:number;posted:number;uncertain:boolean}>();
+    for(const invoice of dailyReport?.rows||[])for(const item of invoice.items){
+      const total=totals.get(item.code)||{
+        code:item.code,name:item.name,expected:0,posted:0,uncertain:false,
+      };
+      total.expected+=item.expected;total.posted+=item.posted;
+      total.uncertain ||= invoice.state==='review';
+      totals.set(item.code,total);
+    }
+    return [...totals.values()].sort((a,b)=>a.uncertain===b.uncertain?
+      Math.abs(b.expected-b.posted)-Math.abs(a.expected-a.posted):a.uncertain?1:-1);
   },[dailyReport]);
   const approvals=useMemo(()=>lieutenantApprovals(transfers,snapshot.records),[transfers,snapshot.records]);
   const rows=useMemo(()=>makeRows(transfers,snapshot,to,approvals).filter(row=>
@@ -661,6 +676,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           يوجد {dailyInvoices.unreadableRecords} سجل غير قابل للقراءة في قاعدة الفواتير؛ النتائج لا تشمل هذه السجلات.
         </p>}
         {dailyInvoices.undatedInvoices>0&&<p className="hint">يوجد {dailyInvoices.undatedInvoices} فاتورة بلا تاريخ يمكن التحقق منه على مستوى السجل، ولم تُنسب تلقائيًا إلى اليوم المختار.</p>}
+        {dailyInvoices.inferredDates>0&&<p className="hint">{dailyInvoices.inferredDates} فاتورة في هذا اليوم تاريخها مستنتج من تاريخ ترحيل SAP ناقص يومًا، وليس تاريخ فاتورة مؤكّدًا يدويًا.</p>}
         <div className="stats">
           <div className="stat"><span>فواتير اليوم</span><strong>{dailyReport.rows.length}</strong></div>
           <div className="stat"><span>مطابقة</span><strong>{dailyCounts.match}</strong></div>
@@ -669,6 +685,23 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <div className="stat"><span>نقص أو زيادة</span><strong>{dailyCounts.short+dailyCounts.extra}</strong></div>
           <div className="stat"><span>بيانات غير مكتملة</span><strong>{dailyCounts.review}</strong></div>
         </div>
+        {dailyReport.rows.length>0&&dailyCounts.match+dailyCounts.late===dailyReport.rows.length&&
+          <p><span className="badge match"><CheckCircle2 size={14}/> جميع فواتير اليوم مطابقة بالكميات؛ الترحيلات المتأخرة معلّمة بوضوح.</span></p>}
+        {dailySkuTotals.length>0&&<details className="lieutenant-stock-details">
+          <summary>إجمالي الأصناف لجميع فواتير اليوم ({dailySkuTotals.length} صنف)</summary>
+          <p className="hint">تجميع بالكود المعتمد للمؤسسة وبالحبة. لا يتم اعتبار أصناف الفواتير غير المكتملة صفرًا أو إعلان مطابقتها.</p>
+          <div className="table-scroll"><table><thead><tr>
+            <th>رقم صنف المؤسسة</th><th>الصنف</th><th>كمية الفواتير (حبة)</th>
+            <th>المرحل حتى تاريخ الفحص (حبة)</th><th>الفرق</th><th>الحالة</th>
+          </tr></thead><tbody>{dailySkuTotals.map(item=><tr key={item.code}>
+            <td dir="ltr">{item.code}</td><td>{item.name}</td>
+            <td dir="ltr">{item.uncertain?'—':item.expected.toFixed(3)}</td>
+            <td dir="ltr">{item.uncertain?'—':item.posted.toFixed(3)}</td>
+            <td dir="ltr">{item.uncertain?'—':(item.expected-item.posted).toFixed(3)}</td>
+            <td>{item.uncertain?'بيانات تحتاج مراجعة':
+              Math.abs(item.expected-item.posted)<0.000001?'مطابق':'يوجد فرق'}</td>
+          </tr>)}</tbody></table></div>
+        </details>}
         {!dailyReport.rows.length?<p className="hint">لا توجد فواتير زرقاء مؤرّخة في هذا اليوم ضمن السجلات التي أمكن قراءتها.</p>:
         <div className="table-scroll"><table>
           <thead><tr><th>الفاتورة الزرقاء</th><th>الفرع</th><th>تاريخ الفاتورة</th>
