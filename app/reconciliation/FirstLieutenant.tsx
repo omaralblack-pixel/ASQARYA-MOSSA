@@ -654,7 +654,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       {dailyInvoices&&selectedTransfer&&!dailyReport&&<p className="banner warn" role="alert">
         مصدر ترحيلات SAP لا يحتوي حركات قابلة للفحص.
       </p>}
-      {dailyReport&&<>
+      {dailyReport&&dailyInvoices&&<>
         <p className="hint">المصدر: <b>{transferSourceName}</b> · أحدث تاريخ حركة ظاهر في الملف: <b dir="ltr">{dailyReport.sourceLastDate||'غير معروف'}</b>.
           لا يمكن إثبات عدم وجود ترحيلات جديدة بعد أحدث تاريخ يغطيه الملف.</p>
         {dailyInvoices.unreadableRecords>0&&<p className="banner warn" role="alert">
