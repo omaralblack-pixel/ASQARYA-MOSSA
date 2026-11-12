@@ -165,6 +165,32 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
     base + "/" + (authenticated ? "authenticated/" : "") + bucket + "/" +
     key.split("/").map(encodeURIComponent).join("/");
   try {
+    if (request.method === "DELETE") {
+      // Delete only one explicitly selected lieutenant source file. Saved
+      // reconciliations, transfer queues, and other storage objects are untouched.
+      let key: unknown;
+      try {
+        const payload = JSON.parse(await readBody(request, 2048)) as { key?: unknown };
+        key = payload?.key;
+      } catch {
+        return reply(400, "طلب حذف الملف غير صالح.");
+      }
+      if (typeof key !== "string" ||
+        !/^lieutenant\\/(?:transfers|opening|balance|other)__[a-f0-9]{32}__[^/\\\\]{1,120}$/.test(key)) {
+        return reply(400, "معرّف ملف الأرشيف غير صالح.");
+      }
+      const result = await fetch(base + "/" + bucket, {
+        method: "DELETE",
+        headers: { ...Object.fromEntries(headers), "Content-Type": "application/json" },
+        body: JSON.stringify({ prefixes: [key] }),
+      });
+      if (!result.ok) return reply(502, "تعذّر حذف الملف من أرشيف Supabase.");
+      const removed = await result.json().catch(() => null) as Array<{ name?: string }> | null;
+      if (!Array.isArray(removed) || !removed.some(file => file?.name === key)) {
+        return reply(404, "الملف غير موجود في الأرشيف أو لم يُحذف.");
+      }
+      return Response.json({ deleted: true, key }, { headers: privateHeaders });
+    }
     if (request.method === "GET" && url.searchParams.has("key")) {
       const key = url.searchParams.get("key") || "";
       if (!safeKey(key)) return reply(400, "معرّف الملف غير صالح.");
