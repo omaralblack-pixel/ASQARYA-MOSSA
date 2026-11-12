@@ -143,8 +143,8 @@ assert.equal(missingPaperOnSameDay.state,'financial',
   'A financially approved invoice with no paper quantities is not a verified quantity match');
 const notYetPosted=audit([missingAmounts],[src],'2026-11-02')[0];
 assert.equal(notYetPosted.state,'financial');
-assert.equal(notYetPosted.items[0].posted,0);
-assert.equal(notYetPosted.items[0].expected,null);
+assert.equal(notYetPosted.items.length,0,
+  'A future-only SAP posting and absent paper quantities must not invent an item amount');
 assert.ok(notYetPosted.notes.some(note=>note.includes('بعد تاريخ الفحص')),
   'Later SAP transfers must not be represented as already posted');
 const unapprovedMissing=audit([{...missingAmounts,status:'review'}],[src],'2026-11-03')[0];
