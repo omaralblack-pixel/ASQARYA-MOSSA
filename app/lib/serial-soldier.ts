@@ -2,7 +2,7 @@ import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, s
 
 
 export type SerialInput = {row:number; number:string; amount:string; date:string; originalTransfers?:string[]};
-export type SerialState = 'received'|'pending'|'missing'|'review';
+export type SerialState = 'received'|'received_difference'|'pending'|'missing'|'review';
 export type SerialTransfer = {number:string; kind:'main'|'dry'|'adjustment'};
 export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; unassignedTransfers:SerialTransfer[]; branch:string; omarNumber:string; omarAmount:string};
 export type SerialRecord = {id:string; branch:string; status?:string; payload:string};
@@ -178,16 +178,22 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
       blockers.push('فاتورة '+number+': مبلغ غير صالح أو مفقود في ملف سجى أو سجل المشروع.');
       return {...rowBase,state:'review',reason:'المبلغ غير صالح أو مفقود'};
     }
-    if(matchedByTransfer)return {...rowBase,state:'review',reason:'اختلاف رقم الفاتورة: عمر '+omarNumber+' / سجى '+number+'؛ ربط مقترح عبر ترحيل SAP، يحتاج مراجعة'+(amount!==confirmed?'، وفرق مبلغ: عمر '+omarAmount+' / سجى '+row.amount:'')};
-    if(amount!==confirmed)return {...rowBase,state:'review',reason:'فرق مبلغ: عمر '+omarAmount+' / سجى '+row.amount};
+    // Receipt is a separate fact from invoice number/amount equality. A confirmed,
+    // approved invoice linked by a unique SAP transfer is received even if Saja
+    // mistyped its number or amount; discrepancies are retained in notes.
     if(saved.invoice.complete!==true)return {...rowBase,state:'pending',reason:'الفاتورة محفوظة لكن الورق غير مؤكد'};
     if(approvedStatus&&approvedStatus!=='match')return {...rowBase,state:'review',reason:'المطابقة المحفوظة غير معتمدة: '+approvedStatus};
     if(transferHasErrors)return {...rowBase,state:'review',reason:'يوجد خطأ في ربط أو تصنيف الترحيلات؛ راجع أرقام الترحيلات'};
     if(!transfers.length&&!unassignedTransfers.length)return {...rowBase,state:'review',reason:'لم يتم التحقق من أي ترحيل مرتبط بالفاتورة'};
+    if(matchedByTransfer||amount!==confirmed)
+      return {...rowBase,state:'received_difference',reason:'الفاتورة واصلة، مع فرق موضح بالملاحظات'};
     return {...rowBase,state:'received',reason:'رقم الفاتورة والمبلغ مؤكدان'};
   });
   const count={received:0,pending:0,missing:0,review:0};
-  for(const row of result)count[row.state]++;
+  for(const row of result){
+    if(row.state==='received_difference')count.received++;
+    else count[row.state]++;
+  }
   return {rows:result,blockers:[...new Set(blockers)],legacyWarnings:[...new Set(legacyWarnings)],count};
 }
 /** Only describe exceptions; approved rows should never receive repeated Omar/Saja values. */
@@ -201,11 +207,11 @@ export function serialReviewNote(row:SerialRow):string {
    if(omar!==null&&saja!==null&&omar!==saja)
      parts.push('فرق المبلغ: عمر '+(omar/1000).toFixed(3)+' د.أ، سجى '+(saja/1000).toFixed(3)+' د.أ');
  }
- if(!parts.length){
-   if(row.state==='missing')parts.push('غير موجودة في سجل المطابقة؛ لا يمكن استنتاج وصول الورق من غياب التسجيل');
-   else if(row.state==='pending')parts.push('ورق الفاتورة غير مؤكد في سجل عمر');
-   else if(row.reason)parts.push(row.reason);
- }
+ // A discrepancy must not hide a separate pending/unapproved validation issue.
+ if(row.state==='pending')parts.push('ورق الفاتورة غير مؤكد في سجل عمر');
+ else if(row.state==='review'&&row.reason)parts.push(row.reason);
+ else if(!parts.length&&row.state==='missing')
+   parts.push('غير موجودة في سجل المطابقة؛ لا يمكن استنتاج وصول الورق من غياب التسجيل');
  return parts.join(' | ');
 }
 // Read-only export projection: show confirmed shared group transfers on each invoice
