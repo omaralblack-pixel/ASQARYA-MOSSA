@@ -23,6 +23,25 @@ const round=(n:number)=>Number(n.toFixed(6));
 const signature=(lines:TransferLine[])=>lines.map(line=>[
   line.sapCode,line.quantity.toFixed(6),line.unit,line.from,line.to].join('|')).join('||');
 const sourceLines=(row:LieutenantTransfer)=>parseTransfer(row.transfer.paste,{allowReverse:true});
+// SAP correction rows can have negative Quantity. The normal reconciliation
+// parser deliberately rejects negatives, so read those rows separately.
+function correctionLines(row:LieutenantTransfer){
+  if(row.reverse)return sourceLines(row);
+  const result:{lines:TransferLine[];issues:string[];excluded:string[]}={lines:[],issues:[],excluded:[]};
+  for(const [index,text] of row.transfer.paste.replace(/\\r/g,'').split('\\n').slice(1).entries()){
+    if(!text.trim())continue;
+    const [rawCode,name,rawQty,unit,from,to]=text.split('\\t');
+    const sapCode=(rawCode||'').toUpperCase();
+    const quantity=Number((rawQty||'').replace(/,/g,''));
+    if(!/^[A-Z]{2,6}\\d{3,10}$/.test(sapCode)||!Number.isFinite(quantity)||
+      !['Piece','Carton','KG'].includes(unit)||!from||!to||from==='011'&&to==='011'){
+      result.issues.push('سطر تصحيح SAP غير صالح: '+(index+2));continue;
+    }
+    result.lines.push({row:index+2,sapCode,name:name||'',quantity,unit,from,to});
+  }
+  if(!result.lines.length)result.issues.push('لا توجد بنود تصحيح صالحة.');
+  return result;
+}
 const paperQuantities=(invoice:Draft['invoices'][number])=>{
   const totals=new Map<string,number>(),issues:string[]=[];
   const source=invoice.auditLines?.trim()?
@@ -83,8 +102,7 @@ export function auditInvoicesForDay(
       const saved=cancellationDates.get(related);
       if(!saved||movement.transfer.date<saved)cancellationDates.set(related,movement.transfer.date);
     }
-    const original=related||movement.reverse?(
-      related||(movement.reverse?movement.remarks.match(reverseRef)?.[1]:undefined)):undefined;
+    const original=related||(movement.reverse?movement.remarks.match(reverseRef)?.[1]:undefined);
     if(!original||!bySource.has(original)||original===movement.transfer.number)continue;
     if((movement.signedAdjustment||movement.reverse)&&
       movement.cancellationState!=='canceled'&&movement.cancellationState!=='cancellation'){
@@ -195,11 +213,11 @@ export function auditInvoicesForDay(
       if(draft?.invoices.length===1){
         for(const correction of corrective.get(number)||[]){
           if(!correction.transfer.date||correction.transfer.date>asOf||correction.issues.length)continue;
-          const adjusted=sourceLines(correction);
+          const adjusted=correctionLines(correction);
           if(adjusted.issues.length||adjusted.excluded.length||!adjusted.lines.length){
             notes.push('حركة التصحيح '+correction.transfer.number+' غير قابلة للتحقق.');continue;
           }
-          const hasPositive=adjusted.lines.some(line=>correction.reverse?line.quantity<0:line.quantity>=0);
+          const hasPositive=adjusted.lines.some(line=>line.quantity>=0);
           if(hasPositive){notes.push('حركة التصحيح '+correction.transfer.number+' ليست حركة خصم صافية.');continue;}
           const originalAmounts=new Map<string,number>();
           for(const line of parsed.lines){
