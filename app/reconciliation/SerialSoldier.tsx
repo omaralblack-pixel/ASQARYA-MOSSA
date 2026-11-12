@@ -3,7 +3,7 @@ import {useMemo,useState} from 'react';
 import {AlertTriangle,CheckCircle2,Download,FileSpreadsheet,RefreshCw,Upload} from 'lucide-react';
 import {evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
 
-const label={received:'واصل ومطابق',pending:'ورقه غير مؤكدة',missing:'غير واصل',review:'تحتاج مراجعة'};
+const label={received:'واصل ومطابق',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
 const color={received:'#d8f3dc',pending:'#fad5e5',missing:'#fad5e5',review:'#fff0bf'};
 async function getSaved():Promise<SerialRecord[]> {
  const response=await fetch('/api/reconcile?export=1',{cache:'no-store'});
@@ -96,12 +96,12 @@ export default function SerialSoldier(){
        <div className="stats">
          <div className="stat"><span>جميع فواتير سجى</span><strong>{report.rows.length}</strong></div>
          <div className="stat"><span>واصل ومطابق</span><strong>{report.count.received}</strong></div>
-         <div className="stat"><span>غير واصل / ورق غير مؤكد</span><strong>{report.count.missing+report.count.pending}</strong></div>
+         <div className="stat"><span>غير مسجلة / ورق غير مؤكد</span><strong>{report.count.missing+report.count.pending}</strong></div>
          <div className="stat"><span>تحتاج مراجعة</span><strong>{report.count.review}</strong></div>
        </div>
        {report.blockers.length>0&&<div role="alert" className="review-list" style={{marginTop:15}}>
          <h3><AlertTriangle size={18} style={{verticalAlign:'middle'}}/> {report.blockers.length} أخطاء تحتاج مراجعة — التنزيل متاح</h3>
-         <p>الملف الناتج نسخة للمراجعة مع جميع الفروقات. لا تتحول الأخطاء إلى مطابقة معتمدة، ولا يتم تعديل البيانات المحفوظة. سجلات الفواتير القديمة المطابقة مستثناة من شرط الصفحات فقط.</p>
+         <p>الملف الناتج نسخة للمراجعة مع جميع الفروقات. لا تتحول الأخطاء إلى مطابقة معتمدة، ولا يتم تعديل البيانات المحفوظة. «غير مسجلة» تعني غياب رقم الفاتورة عن سجلات المشروع ولا تثبت غياب ورقها. سجلات الفواتير القديمة المطابقة مستثناة من شرط الصفحات فقط.</p>
          <div style={{maxHeight:260,overflowY:'auto'}}>{report.blockers.map((b,i)=><p key={i}>{b}</p>)}</div>
        </div>}
        {report.legacyWarnings.length>0&&<details className="review-list" style={{marginTop:14}}><summary>ترحيلات مجموعات قديمة معتمدة دون اشتراط أرقام الصفحات ({report.legacyWarnings.length})</summary><div style={{maxHeight:240,overflowY:'auto'}}>{report.legacyWarnings.map((item,i)=><p key={i}>{item}</p>)}</div></details>}
@@ -109,7 +109,7 @@ export default function SerialSoldier(){
      </section>
      <section className="panel">
        <h2>ملخص فواتير كل يوم</h2>
-       <div className="table-scroll"><table><thead><tr><th>التاريخ</th><th>الإجمالي</th><th>واصل ومطابق</th><th>غير واصل</th><th>غير مؤكد</th><th>مراجعة</th></tr></thead>
+       <div className="table-scroll"><table><thead><tr><th>التاريخ</th><th>الإجمالي</th><th>واصل ومطابق</th><th>غير مسجلة بالمشروع</th><th>غير مؤكد</th><th>مراجعة</th></tr></thead>
        <tbody>{daily.map(([date,c])=><tr key={date}><td dir="ltr">{date}</td><td>{c.total}</td><td>{c.received}</td><td>{c.missing}</td><td>{c.pending}</td><td>{c.review}</td></tr>)}</tbody></table></div>
      </section>
      <section className="panel">
