@@ -22,7 +22,7 @@ type QueueRecord={transfer_no:string;doc_date:string;payload:string;source_file:
 type OpeningStock={snapshot_date:string;warehouse:string;sap_code:string;item_name:string;unit:string;quantity:number;source:string;approved_at:string};
 type RecordSnapshot={records:SavedRecord[];queue:QueueRecord[];openingStock:OpeningStock[]};
 type ReviewStatus='approved'|'paper'|'linked'|'unlinked'|'queued'|'missing'|'review'|'reversed'|'reverse'|'sap-canceled'|'sap-cancel-doc'|'cashvan-pending'|'cancellation-review';
-type ReviewRow={source:LieutenantTransfer;status:ReviewStatus;recordId?:string;note:string};
+type ReviewRow={source:LieutenantTransfer;status:ReviewStatus;recordId?:string;note:string;counterparts?:string[]};
 
 const fileKinds:Record<FileKind,string>={
   transfers:'جميع ترحيلات SAP من وإلى 011',
@@ -115,6 +115,8 @@ const dailyStateNames:Record<DayInvoiceState,string>={
   match:'مطابقة',late:'مطابقة — ترحيل متأخر',pending:'بانتظار الترحيل',
   short:'نقص في الترحيل',extra:'كمية زائدة',
   review:'تحتاج مراجعة بيانات',
+  'cashvan-settled':'كاش فان — مسوّى بعكسي/إلغاء',
+  'cashvan-pending':'كاش فان — العكسي/الإلغاء غير مكتمل',
 };
 // Local calendar day, not UTC, because SAP stock is dated by posting day.
 function todayLocal():string{
@@ -180,7 +182,8 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodE
     if(source.issues.length)return {source,status:'review',note:source.issues.join(' · ')};
     const movement=movements.get(number);
     if(movement&&movement.kind!=='normal')
-      return {source,status:movement.kind,recordId:result?.id,note:movement.note};
+      return {source,status:movement.kind,recordId:result?.id,note:movement.note,
+        counterparts:movement.counterparts||[movement.counterpart].filter((value):value is string=>!!value)};
     if(result)return {source,status:approvals.warnings.has(number)?'linked':result.status,
       recordId:result.id,note:approvals.warnings.get(number)||result.note};
     if(queue.has(number))return {source,status:'queued',note:'محفوظ مستقلًا عن الفواتير؛ لم تُنشأ فاتورة تلقائية.'};
@@ -461,10 +464,12 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference):null,
     [dailyInvoices,selectedTransfer,transfers,invoiceAsOf,reference]);
   const dailyCounts=useMemo(()=>{
-    const totals={match:0,late:0,pending:0,short:0,extra:0,review:0};
+    const totals:Record<DayInvoiceState,number>={match:0,late:0,pending:0,short:0,extra:0,review:0,
+      'cashvan-settled':0,'cashvan-pending':0};
     for(const row of dailyReport?.rows||[])totals[row.state]++;
     return totals;
   },[dailyReport]);
+  const dailyInvoiceCount=(dailyReport?.rows||[]).filter(row=>!row.cashVan).length;
   const dailySkuTotals=useMemo(()=>{
     const totals=new Map<string,{code:string;name:string;expected:number;posted:number;uncertain:boolean}>();
     for(const invoice of dailyReport?.rows||[])for(const item of invoice.items){
@@ -753,14 +758,16 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         {dailyInvoices.undatedInvoices>0&&<p className="hint">يوجد {dailyInvoices.undatedInvoices} فاتورة بلا تاريخ يمكن التحقق منه على مستوى السجل، ولم تُنسب تلقائيًا إلى اليوم المختار.</p>}
         {dailyInvoices.inferredDates>0&&<p className="hint">{dailyInvoices.inferredDates} فاتورة في هذا اليوم تاريخها مستنتج من تاريخ ترحيل SAP ناقص يومًا، وليس تاريخ فاتورة مؤكّدًا يدويًا.</p>}
         <div className="stats">
-          <div className="stat"><span>فواتير اليوم</span><strong>{dailyReport.rows.length}</strong></div>
+          <div className="stat"><span>فواتير اليوم</span><strong>{dailyInvoiceCount}</strong></div>
+          <div className="stat"><span>كاش فان مسوّى</span><strong>{dailyCounts['cashvan-settled']}</strong></div>
+          <div className="stat"><span>كاش فان يحتاج تسوية</span><strong>{dailyCounts['cashvan-pending']}</strong></div>
           <div className="stat"><span>مطابقة</span><strong>{dailyCounts.match+dailyCounts.late}</strong></div>
           <div className="stat"><span>منها ترحيل متأخر</span><strong>{dailyCounts.late}</strong></div>
           <div className="stat"><span>بانتظار ترحيل</span><strong>{dailyCounts.pending}</strong></div>
           <div className="stat"><span>نقص أو زيادة مثبت</span><strong>{dailyCounts.short+dailyCounts.extra}</strong></div>
           <div className="stat"><span>تحتاج مراجعة بيانات</span><strong>{dailyCounts.review}</strong></div>
         </div>
-        {dailyReport.rows.length>0&&dailyCounts.match+dailyCounts.late===dailyReport.rows.length&&
+        {dailyReport.rows.length>0&&dailyCounts.match+dailyCounts.late===dailyInvoiceCount&&
           <p><span className="badge match"><CheckCircle2 size={14}/> جميع فواتير اليوم مطابقة؛ الترحيلات المتأخرة معلّمة بوضوح.</span></p>}
         {dailySkuTotals.length>0&&<details className="lieutenant-stock-details">
           <summary>إجمالي الأصناف لجميع فواتير اليوم ({dailySkuTotals.length} صنف)</summary>
@@ -783,15 +790,18 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
             <th>ترحيلات SAP المرتبطة</th><th>تاريخ الترحيل</th><th>الحالة</th><th>تفاصيل الأصناف والفرق</th>
           </tr></thead>
           <tbody>{dailyReport.rows.map((result,index)=><tr key={result.recordId+'|'+result.number+'|'+index}>
-            <td dir="ltr"><strong>{result.number}</strong></td>
+            <td dir="ltr"><strong>{result.cashVan?'كاش فان — بلا فاتورة زرقاء':result.number||'غير مثبت'}</strong></td>
             <td>{result.branch}</td><td dir="ltr">{result.invoiceDate}</td>
             <td dir="ltr">{result.transferNumbers.join('، ')||'غير مثبت'}</td>
             <td dir="ltr">{result.postedDates.join('، ')||'—'}</td>
             <td><span className={'badge '+(
-              result.state==='match'||result.state==='late'?'match':
+              result.state==='match'||result.state==='late'||result.state==='cashvan-settled'?'match':
               result.state==='short'||result.state==='extra'?'difference':'review')}>
-              {dailyStateNames[result.state]}</span></td>
-            <td><details><summary>عرض الأصناف ({result.items.length})</summary>
+              {dailyStateNames[result.state]}
+               {result.cashVan&&!!result.reverseNumbers?.length&&
+                 <small style={{display:'block'}}>رقم الترحيل العكسي: <b dir="ltr">{result.reverseNumbers.join('، ')}</b></small>}
+             </span></td>
+            <td><details><summary>{result.cashVan?'عرض تسوية الكاش فان':'عرض الأصناف ('+result.items.length+')'}</summary>
               {result.notes.length>0&&<ul>{result.notes.map(note=><li key={note}>{note}</li>)}</ul>}
               {result.items.length>0&&<table><thead><tr>
                 <th>رقم المؤسسة</th><th>الصنف</th><th>كمية الفاتورة (حبة)</th>
@@ -1083,7 +1093,10 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         <td>{row.source.reverse?'صادر من 011':'وارد إلى 011'}</td>
         <td><span className={'badge '+(completeStatuses.has(row.status)?'match':row.status==='review'||row.status==='missing'?'difference':'review')}>
           {completeStatuses.has(row.status)?<CheckCircle2 size={13}/>:<AlertTriangle size={13}/>}
-          {recordsReady?statusText[row.status]:'حالة الفاتورة غير متاحة'}</span>
+          {recordsReady?statusText[row.status]:'حالة الفاتورة غير متاحة'}
+           {recordsReady&&row.status==='reversed'&&!!row.counterparts?.length&&
+             <small style={{display:'block'}}>العكسي: <b dir="ltr">{row.counterparts.join('، ')}</b></small>}
+           </span>
           {row.source.cancellationState==='canceled'&&<small style={{display:'block'}}>حالة SAP: ترحيل ملغى (Y)</small>}
           {row.source.cancellationState==='cancellation'&&<small style={{display:'block'}}>حالة SAP: مستند إلغاء (C)</small>}
           {row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>حالة الإلغاء غير مذكورة</small>}

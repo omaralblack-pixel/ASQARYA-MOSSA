@@ -5,6 +5,7 @@ export type LieutenantMovementKind =
 export type LieutenantMovement = {
   kind:LieutenantMovementKind;
   counterpart?:string;
+  counterparts?:string[];
   counterpartDate?:string;
   note:string;
 };
@@ -30,6 +31,44 @@ function compare(incoming:LieutenantTransfer,outgoing:LieutenantTransfer):boolea
   if(!incoming.transfer.date||!outgoing.transfer.date||outgoing.transfer.date<incoming.transfer.date)return false;
   const original=signature(incoming);
   return !!original&&original===signature(outgoing,true);
+}
+/** A bundle of partial reverse documents is valid only if every SAP code,
+ * quantity, UoM and warehouse direction balances. Never reuse a reverse.
+ * An unreferenced reverse must belong to exactly one candidate original.
+ */
+function amounts(source:LieutenantTransfer,flip=false):Map<string,number>|null{
+  if(source.issues.length||source.signedAdjustment)return null;
+  const values=new Map<string,number>();
+  for(const text of source.transfer.paste.replace(/\r/g,'').split('\n').slice(1)){
+    if(!text.trim())continue;
+    const [rawCode,,rawQuantity,rawUnit,rawFrom,rawTo]=text.split('\t');
+    const quantity=Number((rawQuantity||'').replace(/,/g,''));
+    if(!rawCode||!rawUnit||!rawFrom||!rawTo||!Number.isFinite(quantity)||quantity<=0)return null;
+    const key=[rawCode.toUpperCase(),rawUnit.toLowerCase(),
+      flip?rawTo:rawFrom,flip?rawFrom:rawTo].join('|');
+    values.set(key,(values.get(key)||0)+quantity);
+  }
+  return values.size?values:null;
+}
+function canPartiallyReverse(original:LieutenantTransfer,reverse:LieutenantTransfer):boolean{
+  if(original.reverse||!reverse.reverse||original.transfer.number===reverse.transfer.number||
+    original.branch&&reverse.branch&&original.branch!==reverse.branch||
+    !original.transfer.date||!reverse.transfer.date||reverse.transfer.date<original.transfer.date)return false;
+  const incoming=amounts(original),outgoing=amounts(reverse,true);
+  return !!incoming&&!!outgoing&&[...outgoing].every(([key,qty])=>
+    incoming.has(key)&&qty<=incoming.get(key)!+0.000001);
+}
+function fullyBalanced(original:LieutenantTransfer,reverses:LieutenantTransfer[]):boolean{
+  const incoming=amounts(original);
+  if(!incoming||!reverses.length)return false;
+  const total=new Map<string,number>();
+  for(const reverse of reverses){
+    if(!canPartiallyReverse(original,reverse))return false;
+    for(const [key,quantity] of amounts(reverse,true)!)
+      total.set(key,(total.get(key)||0)+quantity);
+  }
+  return incoming.size===total.size&&[...incoming].every(([key,quantity])=>
+    Math.abs(quantity-(total.get(key)||0))<0.000001);
 }
 const active=(source:LieutenantTransfer)=>
   source.cancellationState!=='canceled'&&source.cancellationState!=='cancellation'&&
@@ -136,22 +175,72 @@ export function analyzeLieutenantMovements(
     usedReverse.add(ids[0]);
   }
 
-  for(const [originalNo,reverseNo] of pairs){
+  // Some Cash Van movements are reversed with two or more separate SAP
+  // documents. Require an exact aggregate, unique provenance and no reused IDs.
+  const bundles=new Map<string,string[]>();
+  for(const original of transfers){
+    const originalNo=original.transfer.number;
+    if(!isCashVanTransfer(original)||original.reverse||!active(original)||
+      resolved.has(originalNo)||pairs.has(originalNo))continue;
+    const compatible=transfers.filter(reverse=>{
+      if(!reverse.reverse||!active(reverse)||resolved.has(reverse.transfer.number)||
+        usedReverse.has(reverse.transfer.number)||!canPartiallyReverse(original,reverse))return false;
+      const ref=reverse.remarks.match(reverseReference)?.[1];
+      if(ref)return ref===originalNo;
+      // Without an explicit reference, all quantities/warehouses must point
+      // uniquely to this original; otherwise this is only a possible reverse.
+      const originals=transfers.filter(other=>!other.reverse&&active(other)&&
+        !resolved.has(other.transfer.number)&&!pairs.has(other.transfer.number)&&
+        canPartiallyReverse(other,reverse));
+      return originals.length===1&&originals[0].transfer.number===originalNo;
+    });
+    if(compatible.length<2||!fullyBalanced(original,compatible))continue;
+    const ids=compatible.map(reverse=>reverse.transfer.number);
+    bundles.set(originalNo,ids);
+    ids.forEach(number=>usedReverse.add(number));
+  }
+
+  for(const [originalNo,reverseNos] of [
+    ...[...pairs].map(([number,reverseNo]):[string,string[]]=>[number,[reverseNo]]),
+    ...bundles,
+  ]){
     const original=byNumber.get(originalNo)!;
-    const reverse=byNumber.get(reverseNo)!;
-    const later=reverse.transfer.date>periodEnd;
+    const reverses=reverseNos.map(number=>byNumber.get(number)!);
+    const latestDate=reverses.map(row=>row.transfer.date).sort().at(-1)!;
+    const later=latestDate>periodEnd;
     const cash=isCashVanTransfer(original);
+    const numbers=reverseNos.join('، ');
     resolved.set(originalNo,{
       kind:later?(cash?'cashvan-pending':'normal'):'reversed',
-      counterpart:reverseNo,counterpartDate:reverse.transfer.date,
+      counterpart:reverseNos[0],counterparts:reverseNos,counterpartDate:latestDate,
       note:later?
-        'يوجد عكسي مطابق رقم '+reverseNo+' بتاريخ '+reverse.transfer.date+'، لكنه خارج الفترة المحددة؛ لم تُغلق الحركة بعد.':
-        (cash?'كاش فان — عكسي مطابق بالكامل رقم '+reverseNo+'، صافي الحركة صفر (ليس إلغاء SAP).':
-          'عكسي مطابق بالكامل رقم '+reverseNo+'، صافي الحركة صفر (ليس إلغاء SAP).'),
+        'يوجد عكسي مطابق بالكامل برقم '+numbers+'، لكن آخر عكسي بتاريخ '+latestDate+
+        ' خارج الفترة المحددة؛ لم تُغلق الحركة بعد.':
+        (cash?'كاش فان — عكسي مطابق بالكامل برقم '+numbers+'؛ مجموع الأصناف والكميات والاتجاهات متساوٍ، وصافي الحركة صفر (ليس إلغاء SAP).':
+          'عكسي مطابق بالكامل برقم '+numbers+'، صافي الحركة صفر (ليس إلغاء SAP).'),
     });
-    resolved.set(reverseNo,{
-      kind:'reverse',counterpart:originalNo,counterpartDate:original.transfer.date,
-      note:'ترحيل عكسي مقابل '+originalNo+'؛ لا يحتاج فاتورة زرقاء مستقلة.',
+    for(const reverseNo of reverseNos)
+      resolved.set(reverseNo,{
+        kind:'reverse',counterpart:originalNo,counterpartDate:original.transfer.date,
+        note:'ترحيل عكسي مقابل '+originalNo+'؛ لا يحتاج فاتورة زرقاء مستقلة.',
+      });
+  }
+
+  // A referenced partial reversal is not a full settlement. Display its
+  // actual number for follow-up without incorrectly declaring the stock zero.
+  for(const original of transfers){
+    const number=original.transfer.number;
+    if(!isCashVanTransfer(original)||original.reverse||!active(original)||resolved.has(number))continue;
+    const partial=transfers.filter(reverse=>reverse.reverse&&active(reverse)&&
+      !usedReverse.has(reverse.transfer.number)&&
+      reverse.remarks.match(reverseReference)?.[1]===number&&
+      canPartiallyReverse(original,reverse));
+    if(!partial.length)continue;
+    const ids=partial.map(row=>row.transfer.number);
+    resolved.set(number,{
+      kind:'cashvan-pending',counterpart:ids[0],counterparts:ids,
+      note:'كاش فان — وُجد عكسي مرتبط رقم '+ids.join('، ')+
+        '، لكن لم يثبت أنه يغطي كامل الأصناف والكميات؛ لا تُعتبر الحركة مسوّاة بعد.',
     });
   }
   for(const source of transfers){

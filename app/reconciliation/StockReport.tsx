@@ -154,6 +154,8 @@ const invoiceStates:Record<DayInvoiceState,string>={
   short:'نقص كمية مثبت',
   extra:'زيادة كمية مثبتة',
   review:'تحتاج مراجعة البيانات',
+  'cashvan-settled':'كاش فان — مسوّى بعكسي/إلغاء',
+  'cashvan-pending':'كاش فان — العكسي/الإلغاء غير مكتمل',
 };
 
 function InvoiceComparison({file,selectedFrom,selectedTo,invalidRange}:{
@@ -179,7 +181,8 @@ function InvoiceComparison({file,selectedFrom,selectedTo,invalidRange}:{
     movement.get(row.transfer.number)?.kind==='normal');
   const linked=new Set(report?.rows.flatMap(row=>row.transferNumbers)||[]);
   const notLinked=report?incoming.filter(row=>!linked.has(row.transfer.number)):[];
-  const counts={match:0,late:0,pending:0,short:0,extra:0,review:0};
+  const counts:Record<DayInvoiceState,number>={match:0,late:0,pending:0,short:0,extra:0,review:0,
+    'cashvan-settled':0,'cashvan-pending':0};
   for(const row of report?.rows||[])counts[row.state]++;
   useEffect(()=>{setData(null);setError('');},[file,selectedFrom,selectedTo,from,to]);
 
@@ -221,7 +224,9 @@ function InvoiceComparison({file,selectedFrom,selectedTo,invalidRange}:{
     {!data&&!loading&&!error&&<p className="hint">اختر فترة الفواتير واضغط فحص. لا تُعدّل هذه العملية الفواتير أو اعتمادها.</p>}
     {data&&report&&<>
       <div className="stats">
-        <div className="stat"><span>فواتير الفترة</span><strong>{report.rows.length}</strong></div>
+        <div className="stat"><span>فواتير الفترة</span><strong>{report.rows.filter(row=>!row.cashVan).length}</strong></div>
+        <div className="stat"><span>كاش فان مسوّى</span><strong>{counts['cashvan-settled']}</strong></div>
+        <div className="stat"><span>كاش فان بحاجة تسوية</span><strong>{counts['cashvan-pending']}</strong></div>
         <div className="stat"><span>مطابقة أو معتمدة</span><strong>{counts.match+counts.late}</strong></div>
         <div className="stat"><span>نقص أو زيادة مثبتة</span><strong>{counts.short+counts.extra}</strong></div>
         <div className="stat"><span>بانتظار الترحيل</span><strong>{counts.pending}</strong></div>
@@ -238,12 +243,16 @@ function InvoiceComparison({file,selectedFrom,selectedTo,invalidRange}:{
           <th>ترحيلات SAP المرتبطة</th><th>حالة المطابقة</th><th>تفاصيل الأصناف والفرق</th>
         </tr></thead>
         <tbody>{report.rows.map((row,index)=><tr key={row.recordId+'|'+row.number+'|'+index}>
-          <td dir="ltr"><b>{row.number}</b></td><td>{row.branch}</td>
+          <td dir="ltr"><b>{row.cashVan?'كاش فان — بلا فاتورة زرقاء':row.number||'غير مثبت'}</b></td><td>{row.branch}</td>
           <td dir="ltr">{row.invoiceDate}</td>
           <td dir="ltr">{row.transferNumbers.join('، ')||'غير مثبت'}</td>
-          <td><span className={'badge '+(row.state==='match'||row.state==='late'?'match':
-            row.state==='short'||row.state==='extra'?'difference':'review')}>{invoiceStates[row.state]}</span></td>
-          <td><details><summary>عرض الأصناف ({row.items.length})</summary>
+          <td><span className={'badge '+(row.state==='match'||row.state==='late'||row.state==='cashvan-settled'?'match':
+            row.state==='short'||row.state==='extra'?'difference':'review')}>
+            {invoiceStates[row.state]}
+            {row.cashVan&&!!row.reverseNumbers?.length&&
+              <small style={{display:'block'}}>رقم العكسي: {row.reverseNumbers.join('، ')}</small>}
+          </span></td>
+          <td><details><summary>{row.cashVan?'عرض تسوية الكاش فان':'عرض الأصناف ('+row.items.length+')'}</summary>
             {!!row.notes.length&&<ul>{row.notes.map((note,i)=><li key={i}>{note}</li>)}</ul>}
             {!!row.items.length&&<table><thead><tr>
               <th>رقم صنف المؤسسة</th><th>اسم الصنف</th>
