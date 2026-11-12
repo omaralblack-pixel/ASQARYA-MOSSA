@@ -197,6 +197,60 @@ assert.deepEqual(approvedCanceled.postedDates,[],
   'Canceled SAP documents must not supply an effective receipt date');
 assert.deepEqual(JSON.parse(group.payload).invoices,[paper,paper2],
   'Read-only audit must not mutate previously saved invoices');
+// Cash Van movements are not missing blue invoices. A pair of independently
+// posted partial reversals must settle only when every item/UoM/warehouse sums.
+const cashOriginal=live('2615768','2026-11-02',[
+  line('DAR00005',12),line('CHS00033',8),
+]);
+cashOriginal.remarks='Cash Van — عجلون';
+cashOriginal.branch='12 — عجلون';
+const cashReverse1=live('2615901','2026-11-03',[
+  line('DAR00005',7,'Piece','011','001'),
+  line('CHS00033',3,'Piece','011','001'),
+],{reverse:true});
+cashReverse1.remarks='عكس ترحيل 2615768';
+cashReverse1.branch='12 — عجلون';
+const cashReverse2=live('2615902','2026-11-03',[
+  line('DAR00005',5,'Piece','011','001'),
+  line('CHS00033',5,'Piece','011','001'),
+],{reverse:true});
+cashReverse2.remarks='عكس ترحيل 2615768';
+cashReverse2.branch='12 — عجلون';
+const cashInvoice=savedInvoice('cash-i','', '2026-11-01',0);
+const cashRecord=record([cashInvoice],[card('2615768','2026-11-02',
+  line('DAR00005',12),line('CHS00033',8))]);
+const cashSettled=audit([cashRecord],[cashOriginal,cashReverse1,cashReverse2],
+  '2026-11-03')[0];
+assert.equal(cashSettled.state,'cashvan-settled',
+  'Two exact partial reversals settle Cash Van without requiring a blue invoice');
+assert.deepEqual(cashSettled.reverseNumbers,['2615901','2615902']);
+assert.equal(cashSettled.items.length,0,
+  'Cash Van must not fabricate a blue invoice item or quantity variance');
+const cashBefore=audit([cashRecord],[cashOriginal,cashReverse1,cashReverse2],
+  '2026-11-02')[0];
+assert.equal(cashBefore.state,'cashvan-pending',
+  'Reverse documents posted after cutoff must not backdate settlement');
+assert.deepEqual(cashBefore.reverseNumbers,['2615901','2615902']);
+const cashPartial=audit([cashRecord],[cashOriginal,cashReverse1],
+  '2026-11-03')[0];
+assert.equal(cashPartial.state,'cashvan-pending',
+  'A referenced partial reverse alone does not prove zero stock');
+assert.deepEqual(cashPartial.reverseNumbers,['2615901'],
+  'Show the real partial reverse number even when settlement is incomplete');
+const cashWrong=live('2615903','2026-11-03',[
+  line('DAR00005',5,'Carton','011','001'),
+  line('CHS00033',5,'Piece','011','001'),
+],{reverse:true});
+cashWrong.remarks='عكس ترحيل 2615768';
+cashWrong.branch='12 — عجلون';
+assert.equal(audit([cashRecord],[cashOriginal,cashReverse1,cashWrong],
+  '2026-11-03')[0].state,'cashvan-pending',
+  'Wrong UoM must never close a Cash Van document');
+const missingCash=audit([cashRecord],[cashReverse1,cashReverse2],
+  '2026-11-03')[0];
+assert.equal(missingCash.state,'review',
+  'Without the original SAP document, no reversal may be assumed to settle it');
+
 const endpoint=fs.readFileSync('app/api/reconcile/route.ts','utf8');
 assert.ok(endpoint.includes("u.searchParams.has('lieutenantInvoiceDay')"));
 assert.ok(endpoint.includes('collectInvoicesByDate(records.results,day,day)'));
@@ -205,4 +259,6 @@ assert.ok(screen.includes('فحص جميع فواتير هذا اليوم'));
 assert.ok(screen.includes('auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference)'));
 assert.ok(!screen.includes('معتمدة ماليًا فقط'));
 assert.ok(screen.includes('dailyCounts.match+dailyCounts.late'));
+assert.ok(screen.includes('رقم الترحيل العكسي:'));
+assert.ok(screen.includes('كاش فان مسوّى'));
 console.log('PASS: Saved operator approval, unapproved quantity checks, SAP cutoff, delay, cancellation, shared quantities and no-write safeguards.');
