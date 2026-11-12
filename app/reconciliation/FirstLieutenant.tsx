@@ -59,7 +59,57 @@ function explainStockDifference(item:StockAuditItem,canCompare:boolean):string{
   if(Math.abs(item.difference)<0.000001)return 'مطابق بين الرصيد الفعلي وحساب الافتتاحي وصافي الترحيلات.';
   const direction=item.difference>0?'زيادة في رصيد SAP':'نقص في رصيد SAP';
   return direction+' بمقدار '+Math.abs(item.difference).toFixed(3)+' '+stockUnit(item.unit)+
-    ' عن المتوقع من الترحيلات. السبب التفصيلي غير مثبت: افحص حركات OINM الأخرى (بيع، صرف، تسوية أو جرد) وأرقام مستنداتها.';
+    ' عن المتوقع من الترحيلات. تفاصيل العكسي والإلغاء موجودة أسفل الصنف؛ لا يُثبت سبب الفرق إلا بمستند مطابق.';
+}
+type StockEvidence={
+  number:string;date:string;kind:string;quantity:number;unit:string;effect:number|null;
+  counted:boolean;counterpart?:string;note:string;
+};
+/** Scan SAP source documents rather than attributing every residual balance
+ * difference to a reverse/cancellation without supporting document evidence. */
+function stockDifferenceEvidence(
+  transfers:LieutenantTransfer[],periodFrom:string,periodTo:string,
+):Map<string,StockEvidence[]>{
+  const result=new Map<string,StockEvidence[]>();
+  const movement=analyzeLieutenantMovements(transfers,periodTo);
+  const warehouse=(value:string)=>/^\d+$/.test(value.trim())?
+    value.trim().padStart(3,'0'):value.trim();
+  for(const source of transfers){
+    const number=source.transfer.number,date=source.transfer.date;
+    if(!date||date<periodFrom||date>periodTo)continue;
+    const status=movement.get(number);
+    const excluded=source.cancellationState==='canceled'||source.cancellationState==='cancellation';
+    const interested=source.reverse||source.signedAdjustment||excluded||
+      status?.kind==='sap-canceled'||status?.kind==='reversed'||
+      status?.kind==='cancellation-review'||status?.kind==='cashvan-pending';
+    if(!interested)continue;
+    const kind=source.cancellationState==='canceled'?'ترحيل ملغى في SAP':
+      source.cancellationState==='cancellation'?'مستند إلغاء SAP':
+      source.signedAdjustment?'تصحيح كمية سالبة':
+      source.reverse?'ترحيل عكسي':
+      status?.kind==='sap-canceled'?'ترحيل أصلي مقابل إلغاء':
+      status?.kind==='reversed'?'ترحيل أصلي له عكسي مطابق':
+      status?.kind==='cashvan-pending'?'كاش فان دون تسوية مثبتة':'حالة إلغاء تحتاج مراجعة';
+    for(const line of source.transfer.paste.replace(/\r/g,'').split('\n').slice(1)){
+      if(!line.trim())continue;
+      const [rawCode,,rawQuantity,unit,rawFrom,rawTo]=line.split('\t');
+      const code=(rawCode||'').trim().toUpperCase();
+      const quantity=Number((rawQuantity||'').replace(/,/g,''));
+      const from=warehouse(rawFrom||''),to=warehouse(rawTo||'');
+      if(!/^[A-Z]{2,6}\d{3,10}$/.test(code)||!Number.isFinite(quantity)||
+        !(from==='011'||to==='011')||from===to)continue;
+      const effect=to==='011'?quantity: -quantity;
+      const evidence:StockEvidence={number,date,kind,quantity,unit:unit||'—',
+        effect:excluded||source.issues.length?null:effect,
+        counted:!excluded&&!source.issues.length,counterpart:status?.counterpart,
+        note:source.issues.length?'مستند يحتاج مراجعة بيانات SAP':
+          status?.note||source.remarks||''};
+      result.set(code,[...(result.get(code)||[]),evidence]);
+    }
+  }
+  for(const docs of result.values())docs.sort((a,b)=>a.date.localeCompare(b.date)||
+    a.number.localeCompare(b.number,'en',{numeric:true}));
+  return result;
 }
 const dailyStateNames:Record<DayInvoiceState,string>={
   match:'مطابقة',late:'مطابقة — ترحيل متأخر',pending:'بانتظار الترحيل',
@@ -476,6 +526,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const incompleteItems=stockRows.filter(item=>!item.movementComplete);
   const [stockQueryText,setStockQueryText]=useState('');
   const [stockFilter,setStockFilter]=useState('all');
+  const stockEvidence=useMemo(()=>stockDifferenceEvidence(transfers,from,to),[transfers,from,to]);
   const visibleStockRows=stockRows.filter(item=>(!coverageReady||stockFilter==='all'||
     (stockFilter==='uncovered'?item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001:
     stockFilter==='incomplete'?!item.movementComplete:item.movementComplete&&item.requiredIncoming>0&&item.uncoveredIncoming===0))&&
@@ -884,23 +935,79 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
             <option value="covered">مغطاة بفواتير معتمدة</option><option value="incomplete">بيانات تحتاج مراجعة</option>
           </select></label>
         </div>
-        <div className="table-scroll"><table className="lieutenant-stock-table"><thead><tr>
-          <th>الصنف</th><th>الوحدة</th><th>رصيد SAP الفعلي</th><th>صافي الترحيلات</th>
-          <th>وارد يحتاج فاتورة</th><th>مرتبط بفواتير معتمدة</th><th>غير مغطى بفواتير معتمدة</th><th>حالة تغطية الفواتير</th><th>تفسير فرق الرصيد</th>
-        </tr></thead><tbody>{visibleStockRows.map(item=><tr key={item.code+'|'+item.unit}>
-          <td className="name-cell"><b dir="ltr">{item.code}</b><small>{item.name}</small></td><td>{stockUnit(item.unit)}</td>
-          <td dir="ltr"><strong>{item.quantity===null?'—':item.quantity.toFixed(3)}</strong></td>
-          <td dir="ltr">{canCompare&&item.movementComplete?item.netTransfers.toFixed(3):'—'}</td>
-          <td dir="ltr">{canCompare&&item.movementComplete?item.requiredIncoming.toFixed(3):'—'}</td>
-          <td dir="ltr">{coverageReady&&item.movementComplete?item.approvedIncoming.toFixed(3):'—'}</td>
-          <td dir="ltr">{coverageReady&&item.uncoveredIncoming!==null?item.uncoveredIncoming.toFixed(3):'—'}</td>
-          <td>{!coverageReady?'بانتظار اكتمال مصادر المقارنة':!item.movementComplete?'بيانات ناقصة':
-            item.requiredIncoming===0?'لا يوجد وارد يحتاج فاتورة':item.uncoveredIncoming===0?'مغطى بفواتير معتمدة':'بحاجة متابعة'}
-            {item.converted&&<small style={{display:'block'}}>وُحّدت الكميات حسب مرجع الأصناف</small>}
-            {item.issues.map(note=><small className="red" style={{display:'block'}} key={note}>{note}</small>)}
-          </td>
-          <td>{explainStockDifference(item,canCompare)}</td>
-        </tr>)}</tbody></table></div>
+        <div className="lieutenant-balance-list">
+          {visibleStockRows.map(item=>{
+            const evidence=stockEvidence.get(item.code)||[];
+            const verified=evidence.filter(doc=>doc.counted);
+            const reversed=evidence.filter(doc=>doc.kind==='ترحيل عكسي');
+            const canceled=evidence.filter(doc=>doc.kind.includes('إلغاء')||doc.kind.includes('ملغى'));
+            const gap=canCompare?item.difference:null;
+            const positive=gap!==null&&gap>0.000001;
+            const negative=gap!==null&&gap< -0.000001;
+            const qty=(value:number|null)=>value===null?'—':value.toFixed(3);
+            return <article className="lieutenant-balance-card" key={item.code+'|'+item.unit}>
+              <div className="lieutenant-balance-header">
+                <div>
+                  <strong dir="ltr" className="lieutenant-balance-code">{item.code}</strong>
+                  <div className="lieutenant-balance-name">{item.name}</div>
+                </div>
+                <span className="lieutenant-balance-unit">{stockUnit(item.unit)}</span>
+              </div>
+              <div className="lieutenant-balance-main">
+                <div className="lieutenant-balance-metric">
+                  <span>رصيد SAP الفعلي</span><strong dir="ltr">{qty(item.quantity)}</strong>
+                </div>
+                <div className="lieutenant-balance-metric">
+                  <span>الرصيد المتوقع من الترحيلات</span>
+                  <strong dir="ltr">{canCompare?qty(item.estimated):'—'}</strong>
+                </div>
+                <div className={'lieutenant-balance-metric lieutenant-balance-difference '+
+                  (negative?'is-short':positive?'is-extra':'is-match')}>
+                  <span>الفرق بالأرصدة (SAP − المتوقع)</span>
+                  <strong dir="ltr">{gap===null?'—':(gap>0.000001?'+':'')+gap.toFixed(3)}</strong>
+                  <small>{gap===null?'البيانات غير مكتملة':negative?'نقص برصيد SAP':
+                    positive?'زيادة برصيد SAP':'مطابق'}</small>
+                </div>
+              </div>
+              <div className="lieutenant-balance-secondary">
+                <div><span>صافي الترحيلات</span><b dir="ltr">{canCompare&&item.movementComplete?qty(item.netTransfers):'—'}</b></div>
+                <div><span>وارد يحتاج فاتورة</span><b dir="ltr">{canCompare&&item.movementComplete?qty(item.requiredIncoming):'—'}</b></div>
+                <div><span>مرتبط بفواتير معتمدة</span><b dir="ltr">{coverageReady&&item.movementComplete?qty(item.approvedIncoming):'—'}</b></div>
+                <div><span>غير مغطى بفواتير معتمدة</span><b dir="ltr">{coverageReady?qty(item.uncoveredIncoming):'—'}</b></div>
+              </div>
+              <div className="lieutenant-balance-notes">
+                <strong>حالة الفواتير: </strong>
+                {!coverageReady?'بانتظار اكتمال مصادر المقارنة':
+                  !item.movementComplete?'بيانات ناقصة':
+                  item.requiredIncoming===0?'لا يوجد وارد يحتاج فاتورة':
+                  item.uncoveredIncoming===0?'مغطى بفواتير معتمدة':'بحاجة متابعة'}
+                {item.converted&&<p>تم توحيد الوحدات حسب مرجع الأصناف.</p>}
+                {item.issues.map(note=><p className="red" key={note}>{note}</p>)}
+              </div>
+              <details className="lieutenant-balance-evidence">
+                <summary>الترحيلات العكسية والملغية والتصحيحات ({evidence.length})</summary>
+                <p className="hint">{explainStockDifference(item,canCompare)}</p>
+                <p className="hint">عكسي: {reversed.length} · إلغاء/ملغى: {canceled.length} · حركات محسوبة في الصافي: {verified.length}.
+                  الوثائق أدناه تُظهر أثر كل حركة؛ لا يعني وجود عكسي أو إلغاء أنه سبب الفرق المتبقي، فقد يكون محسوبًا بالفعل.</p>
+                {evidence.length>0?<div className="table-scroll"><table className="lieutenant-balance-evidence-table">
+                  <thead><tr><th>رقم المستند</th><th>التاريخ</th><th>نوع الحركة</th>
+                    <th>كمية المستند</th><th>أثرها على صافي 011</th><th>المستند المقابل</th></tr></thead>
+                  <tbody>{evidence.map((doc,i)=><tr key={doc.number+'|'+i}>
+                    <td dir="ltr">{doc.number}</td><td dir="ltr">{doc.date}</td>
+                    <td>{doc.kind}</td><td dir="ltr">{doc.quantity.toFixed(3)} {stockUnit(doc.unit)}</td>
+                    <td dir="ltr">{!doc.counted?'مستبعد من الصافي':
+                      doc.unit===item.unit&&doc.effect!==null?
+                        (doc.effect>0?'+':'')+doc.effect.toFixed(3):
+                        'الوحدة مختلفة — راجع التحويل'}</td>
+                    <td dir="ltr">{doc.counterpart||'—'}</td>
+                  </tr>)}</tbody>
+                </table></div>:
+                  <p>لا تظهر مستندات عكسية أو إلغاءات أو تصحيحات لهذا الصنف ضمن كشف SAP والفترة المحددة.</p>}
+                {evidence.some(doc=>doc.note)&&<p className="hint">ملاحظات SAP: {Array.from(new Set(evidence.map(doc=>doc.note).filter(Boolean))).slice(0,4).join(' · ')}</p>}
+              </details>
+            </article>;
+          })}
+        </div>
         {!visibleStockRows.length&&<p className="hint">لا توجد أصناف بهذه الفلاتر.</p>}
         <details className="lieutenant-stock-details"><summary>تفاصيل الافتتاحي والوارد والعكسي والتصحيحات</summary>
           <p className="hint">الفرق التفسيري هو رصيد SAP − (الافتتاحي + صافي الترحيلات). لا يمثل حكمًا نهائيًا على صحة رصيد المستودع دون سجل جميع حركات المخزون.</p>
