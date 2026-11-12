@@ -52,7 +52,10 @@ const paperQuantities=(invoice:Draft['invoices'][number])=>{
     if(!line.trim())continue;
     const fields=line.split('\t').map(field=>field.trim());
     const code=fields[0]?.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c)))||'';
-    if(!/^\d{8}$/.test(code)){issues.push('يوجد سطر في الفاتورة بلا رقم صنف مؤسسة صالح.');continue;}
+    if(!/^\d{8}$/.test(code)){
+      if(/^(?:رقم\\s*(?:المادة|الصنف)|item\\s*(?:no|code)|code)/i.test(fields[0]||''))continue;
+      issues.push('يوجد سطر في الفاتورة بلا رقم صنف مؤسسة صالح.');continue;
+    }
     const quantity=numeric(fields[1]||'');
     if(quantity===null||quantity<0){issues.push('كمية غير صالحة لصنف المؤسسة '+code);continue;}
     totals.set(code,(totals.get(code)||0)+quantity);
