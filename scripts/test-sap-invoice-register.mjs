@@ -62,4 +62,32 @@ assert.equal(checked.find(row=>row.number==='2623013986').state,'review','Duplic
 const malformed=sapInvoicesFromSavedFile('غير صالح');
 assert.ok(malformed.issues.length>0);
 assert.equal(malformed.invoices.length,0);
+// Regression guards for confusing SAP-only, saved, checked, and unregistered invoices.
+for(const file of ['app/reconciliation/InvoiceRegister.tsx',
+                   'app/reconciliation/InstantMatch.tsx',
+                   'app/reconciliation/SerialSoldier.tsx',
+                   'app/lib/serial-soldier.ts']){
+  const parsed=ts.transpileModule(fs.readFileSync(file,'utf8'),{
+    fileName:file,
+    compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022},
+    reportDiagnostics:true,
+  });
+  assert.deepEqual((parsed.diagnostics||[]).filter(d=>d.category===ts.DiagnosticCategory.Error),[],
+    file+' should have valid TS/TSX syntax');
+}
+const registry=fs.readFileSync('app/reconciliation/InvoiceRegister.tsx','utf8');
+assert.ok(registry.includes('const rows = searching ? [...received, ...pending]'),
+  'Invoice search must find both paper-checked and unchecked saved records');
+assert.ok(registry.includes('return invoiceDocumentNo(row.values[0]) === searched;'),
+  'Full invoice-number search must match the actual saved invoice number');
+assert.ok(registry.includes('const sapOnlySearchMatch'),
+  'A SAP Remarks match without a saved record must be separately identified');
+const instant=fs.readFileSync('app/reconciliation/InstantMatch.tsx','utf8');
+assert.ok(instant.includes('مطابق ماليًا — إجمالي المجموعة'),
+  'A multi-invoice total must not imply invoice-by-invoice page approval');
+const serialScreen=fs.readFileSync('app/reconciliation/SerialSoldier.tsx','utf8');
+assert.ok(serialScreen.includes("missing:'غير مسجلة بالمشروع'"),
+  'Missing project registrations must not be called physically missing paper');
+console.log('PASS: Invoice search checks all statuses, SAP-only results stay distinct, financial matches do not imply page allocations.');
+
 console.log('PASS: permanent SAP invoice comparison deduplicates transfers, excludes reverse/canceled, and retains paper receipt distinctions');
