@@ -43,6 +43,26 @@ const statusText:Record<ReviewStatus,string>={
 };
 const empty:RecordSnapshot={records:[],queue:[],openingStock:[]};
 const fileLimit=16*1024*1024;
+// Local calendar day, not UTC, because SAP stock is dated by posting day.
+function todayLocal():string{
+  const value=new Date();
+  return value.getFullYear()+'-'+String(value.getMonth()+1).padStart(2,'0')+'-'+
+    String(value.getDate()).padStart(2,'0');
+}
+async function fetchArchivedTransfer(file:StoredFile,branches:string[]){
+  const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key),
+    {cache:'no-store',redirect:'manual'});
+  if(response.status===401||response.type==='opaqueredirect')
+    throw Error('انتهت جلسة الدخول. سجّل دخولك من جديد.');
+  if(!response.ok)throw Error('تعذّر قراءة ترحيلات الأرشيف: HTTP '+response.status);
+  const source=decodeLieutenantFile(await response.arrayBuffer(),file.name);
+  if(classifyLieutenantContent(source)!=='transfers')
+    throw Error('الملف '+file.name+' ليس كشف ترحيلات فعلًا.');
+  const result=parseLieutenantTransfers(source,branches);
+  if(!result.transfers.length)
+    throw Error('الملف '+file.name+' لا يحتوي ترحيلات 011 قابلة للقراءة.');
+  return result;
+}
 async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
   let response:Response;
   try{response=await fetch(url,{cache:'no-store',redirect:'manual',...init})}
@@ -142,8 +162,8 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   const [issues,setIssues]=useState<string[]>([]);
   const [snapshot,setSnapshot]=useState<RecordSnapshot>(empty);
   const [snapshotLoaded,setSnapshotLoaded]=useState(false);
-  const [from,setFrom]=useState('2026-11-01');
-  const [to,setTo]=useState('2026-11-30');
+  const [from,setFrom]=useState(()=>todayLocal().slice(0,8)+'01');
+  const [to,setTo]=useState(todayLocal);
   const [stockDate,setStockDate]=useState<string|null>(null);
   const [stockCopyMessage,setStockCopyMessage]=useState('');
   const stockQueryRef=useRef<HTMLTextAreaElement>(null);
@@ -154,6 +174,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const [message,setMessage]=useState('');
+  const [autoLoading,setAutoLoading]=useState(false);
+  const [transferSourceName,setTransferSourceName]=useState('');
+  const transferSelectedRef=useRef(false);
 
   async function copyStockQuery(){
     if(!stockQuery)return;
@@ -196,7 +219,10 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       });
       if(!result.deleted||result.key!==file.key)throw Error('الخادم لم يؤكد حذف الملف المحدد.');
       if(selected===file.key)setSelected('');
-      if(selectedTransfer===file.key){setSelectedTransfer('');setTransfers([]);setIssues([]);}
+      if(selectedTransfer===file.key){
+        transferSelectedRef.current=false;setSelectedTransfer('');
+        setTransferSourceName('');setTransfers([]);setIssues([]);
+      }
       if(closing?.key===file.key)setClosing(null);
       if(opening?.key===file.key)setOpening(null);
       await refreshFiles();
@@ -240,8 +266,10 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       if(actualKind==='balance'||actualKind==='opening'){
         const parsed=parseLieutenantStock(text,actualKind);
         const stock={key,date,items:parsed.items,issues:parsed.issues};
-        if(actualKind==='balance')setClosing(stock);
-        else setOpening(stock);
+        if(actualKind==='balance'){
+          setClosing(stock);
+          if(date){setTo(date);setStockDate(null);setStockCopyMessage('');}
+        }else setOpening(stock);
         setMessage('تم فتح '+fileKinds[actualKind]+': '+parsed.items.length+
           ' صنفًا للمستودع 011.'+(date?' تاريخ اللقطة: '+date+'.':
           ' تاريخ هذه النسخة القديمة غير محدد؛ أعد رفعها مع اختيار تاريخ صحيح لتفعيل المقارنة.')+
@@ -253,6 +281,8 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         return;
       }
       const parsed=parseLieutenantTransfers(text,branches);
+      transferSelectedRef.current=true;
+      setTransferSourceName(file.name);
       setSelectedTransfer(key);
       setTransfers(parsed.transfers);setIssues(parsed.issues);
       setMessage('تم فتح ملف الترحيلات: '+parsed.transfers.length+' ترحيلًا للمستودع 011.'+repaired);
@@ -271,6 +301,29 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       const errors:string[]=[];
       if(archive.status==='fulfilled'){
         setFiles(archive.value.files);setNextPage(archive.value.nextPage);
+        // Restore read-only source data. Do not enqueue or create an invoice.
+        const candidates=archive.value.files.filter(file=>file.kind==='transfers');
+        if(candidates.length){
+          setAutoLoading(true);
+          let loaded=false;
+          try{
+            for(const candidate of candidates){
+              if(!active||transferSelectedRef.current)break;
+              try{
+                const result=await fetchArchivedTransfer(candidate,branches);
+                if(!active||transferSelectedRef.current)break;
+                transferSelectedRef.current=true;
+                setSelectedTransfer(candidate.key);
+                setTransferSourceName(candidate.name);
+                setTransfers(result.transfers);setIssues(result.issues);
+                loaded=true;
+                break;
+              }catch{/* Older files may be misclassified; skip only this candidate. */}
+            }
+            if(active&&!loaded&&!transferSelectedRef.current)
+              errors.push('لا يوجد ملف ترحيلات قابل للقراءة بين الملفات المسجّلة كترحيلات. افتح ملف SAP الصحيح من الأرشيف.');
+          }finally{if(active)setAutoLoading(false);}
+        }
       }else{
         errors.push(archive.reason instanceof Error?archive.reason.message:'تعذّر تحميل أرشيف الملازم أول.');
       }
@@ -374,6 +427,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       }catch(cause){decodeIssue=cause instanceof Error?cause.message:'تعذّر قراءة نوع الملف.';}
       const date=detected==='balance'?stockQueryDate:detected==='opening'?from:'';
       if(date&&!sapStockBalanceQuery(date))throw Error('اختر تاريخًا صحيحًا قبل إرفاق كشف الرصيد.');
+      if(date>todayLocal())throw Error('لا يمكن اعتماد رصيد SAP بتاريخ مستقبلي؛ اختر تاريخ اللقطة الحقيقي.');
       // Save the original bytes first, categorized by actual columns, not by
       // the selected hint or by its filename.
       const stored=await checkedJson<{key:string;name:string;duplicate:boolean}>('/api/lieutenant-files',{
@@ -394,7 +448,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       if(detected==='opening'||detected==='balance'){
         const parsed=parseLieutenantStock(text,detected);
         const stock={key:stored.key,date,items:parsed.items,issues:parsed.issues};
-        if(detected==='balance')setClosing(stock);else setOpening(stock);
+        if(detected==='balance'){
+          setClosing(stock);setTo(date);setStockDate(null);setStockCopyMessage('');
+        }else setOpening(stock);
         setMessage(saved+'تمت قراءة '+parsed.items.length+' صنفًا من '+fileKinds[detected]+
           ' بتاريخ '+date+'. لم تُنشأ فاتورة أو يُرسل شيء للجندي.'+reclassified+warning);
         return;
@@ -405,7 +461,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         return;
       }
       const result=parseLieutenantTransfers(text,branches);
+      transferSelectedRef.current=true;
       setSelectedTransfer(stored.key);
+      setTransferSourceName(file.name);
       setTransfers(result.transfers);setIssues(result.issues);
       if(!result.transfers.length){
         setMessage(saved+'لم يُعثر على ترحيلات صالحة؛ راجع ملاحظات قراءة SAP. لم يُرسل شيء للجندي.'+warning);
@@ -428,8 +486,8 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
 
   async function stampStockDate(stock:StockSnapshot,stockKind:'balance'|'opening'){
     const date=stockKind==='balance'?stockQueryDate:from;
-    if(!sapStockBalanceQuery(date)){
-      setError('اختر تاريخ لقطة صالحًا من حقول التاريخ.');return;
+    if(!sapStockBalanceQuery(date)||date>todayLocal()){
+      setError('اختر تاريخ الرصيد الحقيقي؛ لا يمكن اعتماد تاريخ مستقبلي.');return;
     }
     if(!window.confirm('هل هذا الكشف من SAP يمثل '+(stockKind==='balance'?'الرصيد الفعلي بنهاية':'الرصيد قبل أول حركة بتاريخ')+
       ' '+date+'؟ سيتم حفظ نسخة مؤرخة جديدة دون حذف القديمة.'))return;
@@ -448,7 +506,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         },body:await response.arrayBuffer(),
       });
       const changed={...stock,key:stored.key,date};
-      if(stockKind==='balance')setClosing(changed);else setOpening(changed);
+      if(stockKind==='balance'){
+        setClosing(changed);setTo(date);setStockDate(null);setStockCopyMessage('');
+      }else setOpening(changed);
       setSelected(stored.key);await refreshFiles();
       setMessage('تم تثبيت تاريخ '+date+' في نسخة جديدة من أرشيف '+fileKinds[stockKind]+
         '. بقي الملف القديم محفوظًا دون تغيير.');
@@ -555,9 +615,20 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
           onClick={()=>void stampStockDate(closing,'balance')}>
           تثبيت تاريخ هذا الرصيد على {stockQueryDate} وحفظ نسخة مؤرخة
         </button>}
-        {!canCompare&&<p role="alert" className="banner warn"><AlertTriangle size={16}/>
-          لا يمكن احتساب المقارنة: افتح ملف الترحيلات، واضبط «إلى تاريخ» على تاريخ كشف الرصيد ({closing.date||'غير مسجل في النسخة القديمة'}).
-          لا نفترض تاريخ الرصيد من تاريخ حفظ الملف.</p>}
+        {!canCompare&&<div role="alert" className="banner warn"><AlertTriangle size={16}/>
+          <div>
+            {!closing.date?'تاريخ كشف الرصيد غير مثبت. ثبّت تاريخ الرصيد الفعلي أولًا.':
+            !selectedTransfer?
+              (autoLoading?'جارٍ استعادة ترحيلات SAP المحفوظة من الأرشيف...':
+              'كشف الرصيد جاهز، لكن ملف ترحيلات SAP غير مفتوح. افتح ملف الحركات من الأرشيف، وليس كشف الرصيد مرة ثانية.'):
+            to!==closing.date?'تاريخ نهاية الفترة ('+to+') لا يطابق تاريخ كشف الرصيد ('+closing.date+').':
+            from>to?'تاريخ البداية بعد تاريخ النهاية.':'تحقق من ملف الترحيلات والفترة.'}
+            {closing.date&&to!==closing.date&&<button type="button" className="button secondary small"
+              onClick={()=>{setTo(closing.date);setStockDate(null);setStockCopyMessage('')}}>
+              مطابقة «إلى تاريخ» مع {closing.date}
+            </button>}
+          </div>
+        </div>}
         {closing.issues.length>0&&<div className="banner warn" role="alert">
           <strong>ملاحظات كشف الرصيد ({closing.issues.length}):</strong>
           <ul>{closing.issues.slice(0,10).map((note,i)=><li key={i}>{note}</li>)}</ul></div>}
@@ -599,6 +670,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
           {Object.entries(statusText).map(([key,text])=><option key={key} value={key}>{text}</option>)}
         </select>
       </div>
+      {selectedTransfer&&<p className="hint">مصدر الترحيلات الحالي: <strong>{transferSourceName}</strong>
+        — {transfers.length} ترحيلًا من الملف. إذا كانت الترحيلات موزعة على عدة ملفات، استخدم كشفًا شاملًا للفترة.
+        فتح الأرشيف للقراءة فقط ولا ينشئ فواتير.</p>}
       <div className="stats">
         <div className="stat"><span>ترحيلات الفترة</span><strong>{rows.length}</strong></div>
         <div className="stat"><span>مطابقة ومعتمدة</span><strong>{counts.approved}</strong></div>
@@ -609,7 +683,10 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         <div><strong>{issues.length} ملاحظة على قراءة SAP:</strong>
           <ul>{issues.slice(0,12).map((issue,i)=><li key={i}>{issue}</li>)}</ul></div>
       </div>}
-      {!selectedTransfer?<p className="hint">ارفع أو افتح ملف ترحيلات SAP من الأرشيف لبدء التقرير.</p>:
+      {!selectedTransfer?<p className="hint">{autoLoading?'جارٍ تحميل ترحيلات SAP من الأرشيف...':
+        files.some(file=>file.kind==='transfers')?
+        'لم يتم فتح كشف ترحيلات صالح بعد. اضغط «فتح من الأرشيف» بجانب ملف الترحيلات الصحيح؛ كشف الأرصدة ليس كشف حركات.':
+        'لا يوجد ملف ترحيلات مؤرشف. صدّر حركات المستودع 011 من SAP وارفعها مرة واحدة.'}</p>:
         !transfers.length?<p className="hint">هذا الملف ليس كشف ترحيلات صالحًا للمراجعة، أو لم يُفتح كشف ترحيلات بعد.</p>:
       <div className="table-scroll"><table><thead><tr>
         <th>رقم الترحيل</th><th>التاريخ</th><th>الفرع</th><th>اتجاه الحركة</th><th>الحالة</th><th>تفاصيل</th><th>فتح</th>
