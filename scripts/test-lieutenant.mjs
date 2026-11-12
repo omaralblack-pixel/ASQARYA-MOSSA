@@ -11,6 +11,40 @@ const lieutenantCode=compile('app/lib/lieutenant.ts')
   .replace(/from ['"]\.\/reconcile['"]/, 'from "'+reconcileUrl+'"');
 const {parseLieutenantTransfers}=await import('data:text/javascript;base64,'+Buffer.from(lieutenantCode).toString('base64'));
 
+const stockCode=compile('app/lib/lieutenant-stock.ts');
+const {classifyLieutenantContent,parseLieutenantStock,auditLieutenantStock}=
+  await import('data:text/javascript;base64,'+Buffer.from(stockCode).toString('base64'));
+const balanceHeader=['#','رقم الصنف','اسم الصنف','المستودع','وحدة المخزون','الرصيد الفعلي بنهاية التاريخ'].join('\t');
+const balanceRows=[
+  ['1','FVL00368','أرز الكيلاني','011','Piece','5.000'],
+  ['2','CHS00561','جبنة فيتا','011','Piece','14,721.000'],
+  ['3','FVL00012','ذرة','011','Carton','-2.500'],
+  ['4','FVL00012','ذرة','011','Carton','99.000'],
+  ['5','FVL00012','ذرة','002','Carton','20.000'],
+].map(row=>row.join('\t'));
+const balanceText=[balanceHeader,...balanceRows].join('\n');
+assert.equal(classifyLieutenantContent(balanceText),'balance','OINM closing balances must never be classified as transfers');
+const parsedBalance=parseLieutenantStock(balanceText,'balance');
+assert.equal(parsedBalance.items.length,3);
+assert.equal(parsedBalance.items[0].quantity,5);
+assert.equal(parsedBalance.items[1].quantity,14721);
+assert.equal(parsedBalance.items[2].quantity,-2.5);
+assert.ok(parsedBalance.issues.some(issue=>issue.includes('مكرر')));
+const openingText=balanceText.replace('الرصيد الفعلي بنهاية التاريخ','الرصيد الافتتاحي');
+assert.equal(classifyLieutenantContent(openingText),'opening');
+assert.equal(parseLieutenantStock(openingText,'opening').items.length,3);
+assert.equal(classifyLieutenantContent('random\tstuff\nhello\tworld'),'other');
+const audit=auditLieutenantStock(
+  [{code:'FVL00368',name:'أرز',warehouse:'011',unit:'Piece',quantity:5}],
+  [{code:'FVL00368',name:'أرز',warehouse:'011',unit:'Piece',quantity:5}],
+  [],new Set(),'2026-11-01','2026-11-12');
+assert.equal(audit[0].difference,0);
+const missingOpening=auditLieutenantStock(
+  [{code:'FVL00368',name:'أرز',warehouse:'011',unit:'Piece',quantity:5}],
+  [],[],new Set(),'2026-11-01','2026-11-12');
+assert.equal(missingOpening[0].estimated,null,'Missing opening must NOT be assumed zero');
+assert.equal(missingOpening[0].difference,null,'Missing opening must NOT manufacture a variance');
+
 const ar=['رقم الترحيل','التاريخ','كود الصنف','اسم الصنف','من مستودع','إلى مستودع','الكمية','الوحدة','حالة الإلغاء','ملاحظات'].join('\t');
 const rows=[
  ['2617000','2026-11-01','FVL00016','جزر ريفي','002','011','11','Piece','N','2623014032'],
@@ -20,6 +54,7 @@ const rows=[
  ['2617003','2026-11-03','FVL00016','جزر ريفي','001','011','11','Piece','Y',''],
  ['2617004','2026-11-03','DAR00005','كريمة','004','007','5','Piece','N',''],
 ];
+assert.equal(classifyLieutenantContent([ar,...rows.map(x=>x.join('\t'))].join('\n')),'transfers');
 const scan=parseLieutenantTransfers([ar,...rows.map(x=>x.join('\t'))].join('\n'),[]);
 assert.equal(scan.issues.length,0);
 assert.deepEqual(scan.transfers.map(r=>r.transfer.number),['2617000','2617001','2617002','2617003']);
@@ -36,6 +71,7 @@ const normal=[
  '2617005','01/11/2026','21','السرو','2623014032','FVL00016','جزر ريفي','3','Piece','001','011',
 ].join('\t');
 const normalScan=parseLieutenantTransfers(en+'\n'+normal,['21 — السرو']);
+assert.equal(classifyLieutenantContent(en+'\n'+normal),'transfers');
 assert.equal(normalScan.issues.length,0);
 assert.equal(normalScan.transfers[0].branch,'21 — السرو');
 assert.equal(normalScan.transfers[0].cancellationState,'unknown','No CANCELED column means unknown, not active');
