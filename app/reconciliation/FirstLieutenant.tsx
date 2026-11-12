@@ -49,8 +49,11 @@ const empty:RecordSnapshot={records:[],queue:[],openingStock:[]};
 const fileLimit=16*1024*1024;
 const stockUnit=(value:string)=>({Piece:'حبة',Carton:'كرتونة',KG:'كغم'}[value]||value);
 const dailyStateNames:Record<DayInvoiceState,string>={
-  match:'مطابقة',late:'مطابقة — ترحيل متأخر',pending:'بانتظار الترحيل',
-  short:'نقص في الترحيل',extra:'كمية زائدة',review:'تحتاج بيانات مكتملة',
+  match:'مطابقة بالكميات',late:'مطابقة بالكميات — ترحيل متأخر',pending:'بانتظار الترحيل',
+  short:'نقص في الترحيل',extra:'كمية زائدة',
+  financial:'معتمدة ماليًا فقط — كميات الورق غير مسجلة',
+  'financial-late':'معتمدة ماليًا فقط — الترحيل متأخر',
+  review:'تحتاج مراجعة بيانات',
 };
 // Local calendar day, not UTC, because SAP stock is dated by posting day.
 function todayLocal():string{
@@ -397,7 +400,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference):null,
     [dailyInvoices,selectedTransfer,transfers,invoiceAsOf,reference]);
   const dailyCounts=useMemo(()=>{
-    const totals={match:0,late:0,pending:0,short:0,extra:0,review:0};
+    const totals={match:0,late:0,pending:0,short:0,extra:0,financial:0,'financial-late':0,review:0};
     for(const row of dailyReport?.rows||[])totals[row.state]++;
     return totals;
   },[dailyReport]);
@@ -679,17 +682,19 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         {dailyInvoices.inferredDates>0&&<p className="hint">{dailyInvoices.inferredDates} فاتورة في هذا اليوم تاريخها مستنتج من تاريخ ترحيل SAP ناقص يومًا، وليس تاريخ فاتورة مؤكّدًا يدويًا.</p>}
         <div className="stats">
           <div className="stat"><span>فواتير اليوم</span><strong>{dailyReport.rows.length}</strong></div>
-          <div className="stat"><span>مطابقة</span><strong>{dailyCounts.match}</strong></div>
-          <div className="stat"><span>مطابقة — متأخرة</span><strong>{dailyCounts.late}</strong></div>
+          <div className="stat"><span>مطابقة بالكميات</span><strong>{dailyCounts.match}</strong></div>
+          <div className="stat"><span>مطابقة بالكميات — متأخرة</span><strong>{dailyCounts.late}</strong></div>
+          <div className="stat"><span>معتمدة ماليًا فقط</span><strong>{dailyCounts.financial+dailyCounts['financial-late']}</strong></div>
+          <div className="stat"><span>منها ترحيل متأخر مثبت</span><strong>{dailyCounts['financial-late']}</strong></div>
           <div className="stat"><span>بانتظار ترحيل</span><strong>{dailyCounts.pending}</strong></div>
-          <div className="stat"><span>نقص أو زيادة</span><strong>{dailyCounts.short+dailyCounts.extra}</strong></div>
-          <div className="stat"><span>كميات غير مثبتة / مراجعة</span><strong>{dailyCounts.review}</strong></div>
+          <div className="stat"><span>نقص أو زيادة مثبت</span><strong>{dailyCounts.short+dailyCounts.extra}</strong></div>
+          <div className="stat"><span>تحتاج مراجعة بيانات</span><strong>{dailyCounts.review}</strong></div>
         </div>
         {dailyReport.rows.length>0&&dailyCounts.match+dailyCounts.late===dailyReport.rows.length&&
           <p><span className="badge match"><CheckCircle2 size={14}/> جميع فواتير اليوم مطابقة بالكميات؛ الترحيلات المتأخرة معلّمة بوضوح.</span></p>}
         {dailySkuTotals.length>0&&<details className="lieutenant-stock-details">
           <summary>إجمالي الأصناف لجميع فواتير اليوم ({dailySkuTotals.length} صنف)</summary>
-          <p className="hint">تجميع بالكود المعتمد للمؤسسة وبالحبة. لا يتم اعتبار أصناف الفواتير غير المكتملة صفرًا أو إعلان مطابقتها.</p>
+          <p className="hint">تجميع بالكود المعتمد للمؤسسة وبالحبة. الاعتماد المالي للمجموعة لا يُثبت كميات الورق. الأصناف غير المتحقق منها تُعرض بشرطة (—) دون فروقات افتراضية.</p>
           <div className="table-scroll"><table><thead><tr>
             <th>رقم صنف المؤسسة</th><th>الصنف</th><th>كمية الفواتير (حبة)</th>
             <th>المرحل حتى تاريخ الفحص (حبة)</th><th>الفرق</th><th>الحالة</th>
@@ -716,7 +721,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
               result.state==='match'||result.state==='late'?'match':
               result.state==='short'||result.state==='extra'?'difference':'review')}>
               {result.state==='review'&&result.financiallyMatchedGroup?
-                'مطابقة مالية محفوظة للمجموعة — فحص الكميات غير مكتمل':dailyStateNames[result.state]}</span></td>
+                'مطابقة مالية محفوظة للمجموعة — توجد ملاحظة أخرى':dailyStateNames[result.state]}</span></td>
             <td><details><summary>عرض الأصناف ({result.items.length})</summary>
               {result.notes.length>0&&<ul>{result.notes.map(note=><li key={note}>{note}</li>)}</ul>}
               {result.items.length>0&&<table><thead><tr>
@@ -730,7 +735,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
               </tr>)}</tbody></table>}
             </details></td>
           </tr>)}</tbody></table></div>}
-        <p className="hint">الشرطة (—) تعني أن الكمية غير مثبتة، ولا تعني صفرًا. المطابقة المالية المحفوظة للمجموعة لا تثبت توزيع كل صنف على الفواتير.</p>
+        <p className="hint">الشرطة (—) تعني أن الكمية غير مثبتة، ولا تعني صفرًا. «معتمدة ماليًا فقط» تعني أن قيمة المجموعة سبق اعتمادها؛ لا تثبت مطابقة كمية الفاتورة الورقية ولا وصول الترحيل إلى SAP في تاريخ الفحص. راجع تاريخ الترحيل والملاحظات لكل فاتورة.</p>
         <p className="hint">الفحص للقراءة فقط؛ لا يعتمد فاتورة أو يعدّل أرشيف SAP. إذا كانت شدّة الصنف أو صفحة الفاتورة غير معرّفة، تظهر «بيانات غير مكتملة» بدل نسبة كمية غير مؤكدة. حركة SAP بتاريخ الترحيل، وليس بتاريخ الفاتورة.</p>
       </>}
     </section>
