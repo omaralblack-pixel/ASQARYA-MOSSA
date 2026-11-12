@@ -28,12 +28,12 @@ const sourceLines=(row:LieutenantTransfer)=>parseTransfer(row.transfer.paste,{al
 function correctionLines(row:LieutenantTransfer){
   if(row.reverse)return sourceLines(row);
   const result:{lines:TransferLine[];issues:string[];excluded:string[]}={lines:[],issues:[],excluded:[]};
-  for(const [index,text] of row.transfer.paste.replace(/\\r/g,'').split('\\n').slice(1).entries()){
+  for(const [index,text] of row.transfer.paste.replace(/\r/g,'').split('\n').slice(1).entries()){
     if(!text.trim())continue;
-    const [rawCode,name,rawQty,unit,from,to]=text.split('\\t');
+    const [rawCode,name,rawQty,unit,from,to]=text.split('\t');
     const sapCode=(rawCode||'').toUpperCase();
     const quantity=Number((rawQty||'').replace(/,/g,''));
-    if(!/^[A-Z]{2,6}\\d{3,10}$/.test(sapCode)||!Number.isFinite(quantity)||
+    if(!/^[A-Z]{2,6}\d{3,10}$/.test(sapCode)||!Number.isFinite(quantity)||
       !['Piece','Carton','KG'].includes(unit)||!from||!to||from==='011'&&to==='011'){
       result.issues.push('سطر تصحيح SAP غير صالح: '+(index+2));continue;
     }
@@ -92,8 +92,8 @@ export function auditInvoicesForDay(
   const byRecord=new Map(daily.records.map(row=>[row.id,row]));
   const bySource=new Map(source.map(row=>[row.transfer.number,row]));
   const movements=analyzeLieutenantMovements(source,asOf);
-  const cancelRef=/inventory\\s+transfer\\s+no\\.?\\s*(\\d{4,20})\\s+has\\s+been\\s+cancel(?:ed|led)/i;
-  const reverseRef=/(?:عكس(?:ي)?(?:\\s+ترحيل)?|ترحيل\\s+عكسي(?:\\s+لترحيل)?|reverse(?:\\s+(?:transfer|of))?)\\s*(?:رقم|no\\.?|#|:|-)?\\s*(\\d{4,20})/iu;
+  const cancelRef=/inventory\s+transfer\s+no\.?\s*(\d{4,20})\s+has\s+been\s+cancel(?:ed|led)/i;
+  const reverseRef=/(?:عكس(?:ي)?(?:\s+ترحيل)?|ترحيل\s+عكسي(?:\s+لترحيل)?|reverse(?:\s+(?:transfer|of))?)\s*(?:رقم|no\.?|#|:|-)?\s*(\d{4,20})/iu;
   const cancellationDates=new Map<string,string>();
   const corrective=new Map<string,LieutenantTransfer[]>();
   for(const movement of source){
