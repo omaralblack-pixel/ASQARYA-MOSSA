@@ -9,7 +9,7 @@ export type StockAuditItem=Omit<StockItem,'quantity'>&{
   opening:number|null;incoming:number;outgoing:number;adjustment:number;netTransfers:number;
   approvedIncoming:number;estimated:number|null;difference:number|null;
   requiredIncoming:number;uncoveredIncoming:number|null;movementComplete:boolean;
-  converted:boolean;issues:string[];
+  converted:boolean;openingAssumedZero:boolean;issues:string[];
 };
 const clean=(value:string)=>value.replace(/^\uFEFF/,'').toLowerCase()
   .replace(/[\s._\-:،#]+/g,'').trim();
@@ -94,12 +94,15 @@ export function parseLieutenantStock(source:string,kind:'opening'|'balance'):Sto
 
 /** An estimate from transfers, not the complete OINM journal. Unit conversions
  * require one unambiguous factor in the user's item reference; otherwise the
- * comparison stays incomplete. Missing stock/opening data never means zero.
+ * comparison stays incomplete. Missing actual SAP stock never means zero.
+ * When an opening baseline is confirmed for the selected start date, item
+ * codes absent from that baseline have an opening quantity of zero.
  */
 export function auditLieutenantStock(
   closing:StockItem[],opening:StockItem[],transfers:LieutenantTransfer[],
   approvedTransferNumbers:ReadonlySet<string>,from:string,to:string,
   reference:Item[]=[],invoiceRequiredNumbers?:ReadonlySet<string>,
+  openingConfirmed=false,
 ):StockAuditItem[]{
   const definitions=reference.filter(row=>row.active).flatMap(row=>[row,...(row.sapAliases||[])]);
   const convert=(qty:number,code:string,sourceUnit:string,targetUnit:string):number|null=>{
@@ -171,7 +174,9 @@ export function auditLieutenantStock(
     const delta=movement.get(key)||{incoming:0,outgoing:0,adjustment:0,approvedIncoming:0,requiredIncoming:0,converted:false,issues:new Set<string>()};
     const starts=opening.filter(item=>item.warehouse==='011'&&item.code===row.code)
       .map(item=>convert(item.quantity,row.code,normalizeUnit(item.unit),row.unit));
-    const openingValue=starts.length&&starts.every(value=>value!==null)&&
+    const openingAssumedZero=starts.length===0&&openingConfirmed;
+    const openingValue=openingAssumedZero?0:
+      starts.length&&starts.every(value=>value!==null)&&
       starts.every(value=>Math.abs(value!-starts[0]!)<0.000001)?round(starts[0]!):null;
     if(starts.length&&openingValue===null)delta.issues.add('الرصيد الافتتاحي بوحدة مختلفة أو بتعريفات متعارضة.');
     const net=round(delta.incoming-delta.outgoing+delta.adjustment);
@@ -184,7 +189,7 @@ export function auditLieutenantStock(
       outgoing:round(delta.outgoing),adjustment:round(delta.adjustment),netTransfers:net,
       requiredIncoming:round(delta.requiredIncoming),approvedIncoming:round(delta.approvedIncoming),
       uncoveredIncoming:complete?round(delta.requiredIncoming-delta.approvedIncoming):null,
-      movementComplete:complete,converted:delta.converted,issues:notes,estimated,
+      movementComplete:complete,converted:delta.converted,openingAssumedZero,issues:notes,estimated,
       difference:estimated===null||actual===null?null:round(actual-estimated)};
   });
 }
