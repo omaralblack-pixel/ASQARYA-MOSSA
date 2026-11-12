@@ -9,7 +9,7 @@ import {invoiceDocumentNo,transferNumbers,type Draft,type Transfer,type Item} fr
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 import {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {lieutenantApprovals} from '../lib/lieutenant-coverage';
-import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState} from '../lib/lieutenant-invoice-day';
+import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState,type DaySapStatus} from '../lib/lieutenant-invoice-day';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
 import {auditLieutenantStock,classifyLieutenantContent,parseLieutenantStock,
   type StockItem,type StockAuditItem,type LieutenantFileKind} from '../lib/lieutenant-stock';
@@ -111,6 +111,14 @@ function stockDifferenceEvidence(
     a.number.localeCompare(b.number,'en',{numeric:true}));
   return result;
 }
+const sapDayNames:Record<DaySapStatus,string>={
+  posted:'ترحيلات SAP مثبتة حتى الفحص',
+  waiting:'الترحيل بعد تاريخ الفحص',
+  missing:'مستند SAP غير مثبت',
+  reversed:'ترحيل معكوس أو ملغى',
+  partial:'عكسي/تصحيح أو تغطية جزئية',
+  review:'حركة SAP تحتاج مراجعة',
+};
 const dailyStateNames:Record<DayInvoiceState,string>={
   match:'مطابقة',late:'مطابقة — ترحيل متأخر',pending:'بانتظار الترحيل',
   short:'نقص في الترحيل',extra:'كمية زائدة',
@@ -470,6 +478,14 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     return totals;
   },[dailyReport]);
   const dailyInvoiceCount=(dailyReport?.rows||[]).filter(row=>!row.cashVan).length;
+  const dailySapCounts=useMemo(()=>{
+    const totals:Record<DaySapStatus,number>={posted:0,waiting:0,missing:0,reversed:0,partial:0,review:0};
+    for(const row of dailyReport?.rows||[])if(!row.cashVan&&row.sapStatus)totals[row.sapStatus]++;
+    return totals;
+  },[dailyReport]);
+  const inspectedSapDocuments=useMemo(()=>transfers.filter(item=>
+    item.transfer.date>invoiceDay&&item.transfer.date<=invoiceAsOf).length,
+    [transfers,invoiceDay,invoiceAsOf]);
   const dailySkuTotals=useMemo(()=>{
     const totals=new Map<string,{code:string;name:string;expected:number;posted:number;uncertain:boolean}>();
     for(const invoice of dailyReport?.rows||[])for(const item of invoice.items){
@@ -723,7 +739,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     <section className="panel" aria-label="مطابقة الفواتير الزرقاء حسب تاريخ الفاتورة">
       <div className="section-title"><div>
         <h2>فحص يوم الفواتير الزرقاء — هل ترحّلت الكميات على SAP؟</h2>
-        <p>اختر يوم إصدار الفواتير، ثم تاريخ فحص ترحيلاتها. يعتمد الفحص المطابقة التي حفظتها ويبيّن تاريخ الترحيل وتأخره. تُفحص أصناف وكميات الفواتير غير المعتمدة حسب البيانات المتاحة.</p>
+        <p>اختر يوم إصدار الفواتير، ثم نهاية فترة فحص SAP. يبقى اعتمادك المالي محفوظًا، ويظهر بجانبه فحص مستقل يقرأ الترحيلات والعكسي والإلغاء والتصحيحات حتى التاريخ المحدد. الأصناف غير المعتمدة تُفحص حسب البيانات المتاحة.</p>
       </div></div>
       <div className="table-controls no-print">
         <label>تاريخ الفواتير الزرقاء
@@ -741,7 +757,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           {dailyLoading?'جارٍ فحص الفواتير...':'فحص جميع فواتير هذا اليوم'}
         </button>
       </div>
-      <p className="hint">الفواتير التي حفظتها «مطابق ماليًا» تظهر «مطابقة» حسب اعتمادك، دون طلب الكميات أو توزيع الصفحات من جديد. يظهر تأخر الترحيل بجانب المطابقة، ولا تدخل كميات الترحيلات اللاحقة لتاريخ الفحص.</p>
+      <p className="hint">«مطابقة» تعني اعتمادك المالي المحفوظ ولا تُلغيه هذه الشاشة. عمود «إثبات SAP» منفصل: يفحص وجود الحركات الفعلية والعكسي والإلغاء حتى التاريخ المحدد، ولا يفترض أن الاعتماد المالي يثبت الترحيل أو يعيد طلب توزيع الصفحات.</p>
       {dailyError&&<p className="banner error" role="alert"><AlertTriangle size={16}/>{dailyError}</p>}
       {dailyInvoices&&!selectedTransfer&&<p className="banner warn" role="alert">
         بيانات الفواتير جاهزة، لكن ملف ترحيلات SAP لم يُسترجع بعد. افتح كشف الترحيلات من الأرشيف؛ لا يكفي كشف الرصيد الفعلي وحده.
@@ -752,6 +768,12 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       {dailyReport&&dailyInvoices&&<>
         <p className="hint">المصدر: <b>{transferSourceName}</b> · أحدث تاريخ حركة ظاهر في الملف: <b dir="ltr">{dailyReport.sourceLastDate||'غير معروف'}</b>.
           لا يمكن إثبات عدم وجود ترحيلات جديدة بعد أحدث تاريخ يغطيه الملف.</p>
+        <p className="hint">فترة تدقيق الحركة: بعد <b dir="ltr">{invoiceDay}</b> وحتى <b dir="ltr">{invoiceAsOf}</b> ·
+          {inspectedSapDocuments} مستند SAP ضمن الفترة في ملف الترحيلات الحالي (لكل الفروع).
+          لا يعني وجود المستند في الفترة أنه مرتبط بهذه الفاتورة إلا بدليل ربط صريح.</p>
+        {dailyReport.rows.some(result=>!result.cashVan&&result.sapStatus!=='posted')&&
+          <p className="banner warn" role="status">يوجد اعتماد مالي محفوظ لا يكفي وحده لإثبات ترحيل SAP حتى {invoiceAsOf}.
+            راجع عمود «إثبات SAP» والحركات اللاحقة في التفاصيل؛ لم نغيّر اعتماد أي فاتورة.</p>}
         {dailyInvoices.unreadableRecords>0&&<p className="banner warn" role="alert">
           يوجد {dailyInvoices.unreadableRecords} سجل غير قابل للقراءة في قاعدة الفواتير؛ النتائج لا تشمل هذه السجلات.
         </p>}
@@ -761,14 +783,17 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <div className="stat"><span>فواتير اليوم</span><strong>{dailyInvoiceCount}</strong></div>
           <div className="stat"><span>كاش فان مسوّى</span><strong>{dailyCounts['cashvan-settled']}</strong></div>
           <div className="stat"><span>كاش فان يحتاج تسوية</span><strong>{dailyCounts['cashvan-pending']}</strong></div>
-          <div className="stat"><span>مطابقة</span><strong>{dailyCounts.match+dailyCounts.late}</strong></div>
+          <div className="stat"><span>مطابقة ماليًا</span><strong>{dailyCounts.match+dailyCounts.late}</strong></div>
+          <div className="stat"><span>ترحيل SAP مثبت</span><strong>{dailySapCounts.posted}</strong></div>
+          <div className="stat"><span>إثبات SAP غير مكتمل</span><strong>{dailySapCounts.waiting+dailySapCounts.missing+
+            dailySapCounts.reversed+dailySapCounts.partial+dailySapCounts.review}</strong></div>
           <div className="stat"><span>منها ترحيل متأخر</span><strong>{dailyCounts.late}</strong></div>
           <div className="stat"><span>بانتظار ترحيل</span><strong>{dailyCounts.pending}</strong></div>
           <div className="stat"><span>نقص أو زيادة مثبت</span><strong>{dailyCounts.short+dailyCounts.extra}</strong></div>
           <div className="stat"><span>تحتاج مراجعة بيانات</span><strong>{dailyCounts.review}</strong></div>
         </div>
-        {dailyReport.rows.length>0&&dailyCounts.match+dailyCounts.late===dailyInvoiceCount&&
-          <p><span className="badge match"><CheckCircle2 size={14}/> جميع فواتير اليوم مطابقة؛ الترحيلات المتأخرة معلّمة بوضوح.</span></p>}
+        {dailyReport.rows.length>0&&dailyInvoiceCount>0&&dailyCounts.match+dailyCounts.late===dailyInvoiceCount&&dailySapCounts.posted===dailyInvoiceCount&&
+          <p><span className="badge match"><CheckCircle2 size={14}/> جميع فواتير اليوم مطابقة ماليًا وترحيلاتها مثبتة في SAP حتى تاريخ الفحص؛ الترحيلات المتأخرة معلّمة.</span></p>}
         {dailySkuTotals.length>0&&<details className="lieutenant-stock-details">
           <summary>إجمالي الأصناف لجميع فواتير اليوم ({dailySkuTotals.length} صنف)</summary>
           <p className="hint">تجميع بالكود المعتمد للمؤسسة وبالحبة. الكميات التفصيلية غير المسجلة تُعرض بشرطة (—)، ولا تغيّر اعتماد الفواتير المحفوظ.</p>
@@ -787,7 +812,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         {!dailyReport.rows.length?<p className="hint">لا توجد فواتير زرقاء مؤرّخة في هذا اليوم ضمن السجلات التي أمكن قراءتها.</p>:
         <div className="table-scroll"><table>
           <thead><tr><th>الفاتورة الزرقاء</th><th>الفرع</th><th>تاريخ الفاتورة</th>
-            <th>ترحيلات SAP المرتبطة</th><th>تاريخ الترحيل</th><th>الحالة</th><th>تفاصيل الأصناف والفرق</th>
+            <th>ترحيلات SAP المرتبطة</th><th>تاريخ الترحيل</th><th>اعتماد الفاتورة</th><th>إثبات SAP حتى تاريخ الفحص</th><th>تفاصيل الأصناف والفرق</th>
           </tr></thead>
           <tbody>{dailyReport.rows.map((result,index)=><tr key={result.recordId+'|'+result.number+'|'+index}>
             <td dir="ltr"><strong>{result.cashVan?'كاش فان — بلا فاتورة زرقاء':result.number||'غير مثبت'}</strong></td>
@@ -801,7 +826,12 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
                {result.cashVan&&!!result.reverseNumbers?.length&&
                  <small style={{display:'block'}}>رقم الترحيل العكسي: <b dir="ltr">{result.reverseNumbers.join('، ')}</b></small>}
              </span></td>
-            <td><details><summary>{result.cashVan?'عرض تسوية الكاش فان':'عرض الأصناف ('+result.items.length+')'}</summary>
+            <td>{result.cashVan?'—':<span className={'badge '+(
+               result.sapStatus==='posted'?'match':
+               result.sapStatus==='partial'||result.sapStatus==='reversed'?'difference':'review')}>
+               {sapDayNames[result.sapStatus||'missing']}
+             </span>}</td>
+             <td><details><summary>{result.cashVan?'عرض تسوية الكاش فان':'عرض الأصناف ('+result.items.length+')'}</summary>
               {result.notes.length>0&&<ul>{result.notes.map(note=><li key={note}>{note}</li>)}</ul>}
               {result.items.length>0&&<table><thead><tr>
                 <th>رقم المؤسسة</th><th>الصنف</th><th>كمية الفاتورة (حبة)</th>
@@ -814,7 +844,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
               </tr>)}</tbody></table>}
             </details></td>
           </tr>)}</tbody></table></div>}
-        <p className="hint">الشرطة (—) تعني أن الكمية التفصيلية غير مسجلة، ولا تعني صفرًا. تبقى الفاتورة «مطابقة» حسب اعتمادك المالي المحفوظ، مع إظهار تاريخ ترحيل SAP والملاحظات في التفاصيل.</p>
+        <p className="hint">الشرطة (—) تعني أن الكمية التفصيلية غير مسجلة، ولا تعني صفرًا. الاعتماد المالي لا يتغيّر؛ «إثبات SAP» يخص وجود الحركات الصافية ضمن فترة الفحص، وليس مطابقة الكميات التفصيلية لصفحات قديمة لم تُحفظ.</p>
         <p className="hint">الفحص للقراءة فقط ويحترم اعتمادك المحفوظ، ولا يعدّل الفواتير أو أرشيف SAP. الفواتير غير المعتمدة تُفحص حسب الأصناف والكميات المتاحة. حركة SAP بتاريخ الترحيل، وليس بتاريخ الفاتورة.</p>
       </>}
     </section>
