@@ -85,6 +85,38 @@ const notEnough=audit([record([paper],[saved])],
 assert.equal(notEnough[0].state,'review',
   'If the SAP source does not reach audit cutoff, missing quantity is unverified');
 
+// SAP stock posting, not the blue-invoice date, determines the receipt.
+const cartons=audit([record([paper],[saved])],
+  [live('2617001','2026-11-03',[line('DAR00005',5,'Carton')])],'2026-11-03');
+assert.equal(cartons[0].state,'late');
+assert.equal(cartons[0].items[0].posted,100,'Carton quantity must use the recorded SAP pack definition');
+
+// Signed SAP corrections are not rejected as ordinary negative invoice rows.
+const signed=live('2617004','2026-11-05',[line('DAR00005',-20)],{signedAdjustment:true});
+signed.remarks='Inventory transfer no. 2617001 has been canceled';
+const beforeCorrection=audit([record([paper],[saved])],[src,signed],'2026-11-03');
+assert.equal(beforeCorrection[0].state,'late','Future correction must not backdate its stock effect');
+const afterCorrection=audit([record([paper],[saved])],[src,signed],'2026-11-05');
+assert.equal(afterCorrection[0].state,'short');
+assert.equal(afterCorrection[0].items[0].posted,80);
+assert.equal(afterCorrection[0].items[0].difference,20);
+
+// A partial reverse with an explicit original number reduces coverage.
+const reverse=live('2617010','2026-11-05',[line('DAR00005',20,'Piece','011','001')],{reverse:true});
+reverse.remarks='عكس ترحيل 2617001';
+const afterReverse=audit([record([paper],[saved])],[src,reverse],'2026-11-05');
+assert.equal(afterReverse[0].state,'short');
+assert.equal(afterReverse[0].items[0].posted,80);
+
+// CANCELED=Y is today's flag; a dated SAP cancellation on the 5th must not
+// cause a false historical shortage on the 3rd.
+const laterCanceled=live('2617001','2026-11-03',[line('DAR00005',100)],{cancellationState:'canceled'});
+const cancelDocument=live('2617020','2026-11-05',[line('DAR00005',100,'Piece','011','001')],
+  {cancellationState:'cancellation',reverse:true});
+cancelDocument.remarks='Inventory transfer no. 2617001 has been canceled';
+assert.equal(audit([record([paper],[saved])],[laterCanceled,cancelDocument],'2026-11-03')[0].state,'late');
+assert.equal(audit([record([paper],[saved])],[laterCanceled,cancelDocument],'2026-11-05')[0].state,'pending');
+
 const missingAmounts=record([{...paper,quantities:{},auditLines:''}],[saved]);
 assert.equal(audit([missingAmounts],[src],'2026-11-03')[0].state,'review',
   'Invoice amount alone is not quantity evidence');
