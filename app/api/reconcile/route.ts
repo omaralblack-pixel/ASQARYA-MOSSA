@@ -25,8 +25,15 @@ async function currentPageSortingCatalog():Promise<AuditCatalog>{
 }
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('lieutenant')){
  const [records,queue,openingStock]=await Promise.all([
-  db().prepare('SELECT id,branch,status,payload FROM reconciliations ORDER BY updated DESC').all(),
-  db().prepare('SELECT transfer_no,doc_date,payload,source_file,created FROM lieutenant_queue ORDER BY doc_date,transfer_no').all(),
+  // Keep reviewed SAP quantities to verify approval against the current file,
+  // while dropping bulky attachments and item-reference snapshots.
+  // Keep invalid payloads visible to the reader instead of crashing JSON SQL.
+  db().prepare(`SELECT id,branch,status,CASE WHEN json_valid(payload) THEN CASE
+   WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array' THEN json_object(
+    'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'paste',json_extract(value,'$.paste'))) FROM json_each(payload,'$.transfers'))),
+    'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END))) FROM json_each(payload,'$.invoices')))
+   ) ELSE payload END ELSE payload END AS payload FROM reconciliations ORDER BY updated DESC`).all(),
+  db().prepare('SELECT transfer_no FROM lieutenant_queue ORDER BY doc_date,transfer_no').all(),
   db().prepare('SELECT snapshot_date,warehouse,sap_code,item_name,unit,quantity,source,approved_at FROM lieutenant_opening_stock ORDER BY snapshot_date,sap_code,unit').all(),
  ]);
  return json({records:records.results,queue:queue.results,openingStock:openingStock.results});

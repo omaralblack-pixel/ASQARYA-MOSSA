@@ -45,6 +45,73 @@ const missingOpening=auditLieutenantStock(
 assert.equal(missingOpening[0].estimated,null,'Missing opening must NOT be assumed zero');
 assert.equal(missingOpening[0].difference,null,'Missing opening must NOT manufacture a variance');
 
+const asStock=(code,quantity,unit='Piece')=>({code,name:code,warehouse:'011',unit,quantity});
+const move=(number,quantity,unit='Piece',from='001',to='011',code='FVL00368')=>({
+  transfer:{id:number,number,date:'2026-11-02',paste:[
+    'Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse',
+    [code,code,quantity,unit,from,to].join('\t'),
+  ].join('\n')},branch:'',remarks:'',lineCount:1,reverse:from==='011',
+  cancellationState:'active',cancellationMentioned:false,issues:[],invoiceNumbers:[],
+});
+const covered=new Set(['2617100']);
+const entries=[move('2617100',96),move('2617101',24)];
+const coverageCode=compile('app/lib/lieutenant-coverage.ts')
+  .replace(/from ['"]\.\/reconcile['"]/, 'from "'+reconcileUrl+'"');
+const {lieutenantApprovals}=await import('data:text/javascript;base64,'+Buffer.from(coverageCode).toString('base64'));
+const record=(transfers,complete=true,status='match')=>({id:'approved-group',status,
+  payload:JSON.stringify({transfers,invoices:[{number:'2623014032',complete}]})});
+assert.equal(lieutenantApprovals(entries,[record([entries[0].transfer])]).approved.has('2617100'),true);
+const changedSource=move('2617100',100);
+const changedApproval=lieutenantApprovals([changedSource],[record([entries[0].transfer])]);
+assert.equal(changedApproval.approved.size,0,'A reused SAP number cannot approve changed quantities');
+assert.equal(changedApproval.warnings.has('2617100'),true);
+assert.equal(lieutenantApprovals(entries,[record([entries[0].transfer],false)]).approved.size,0,'Unconfirmed invoice paper cannot cover stock');
+assert.equal(lieutenantApprovals(entries,[record([entries[0].transfer],true,'difference')]).approved.size,0);
+const combined={...entries[0].transfer,number:'2617100 + 2617101',paste:move('2617100',120).transfer.paste};
+assert.equal(lieutenantApprovals(entries,[record([combined])]).approved.size,2,'Combined old cards require all source documents and matching total quantities');
+assert.equal(lieutenantApprovals([entries[0]],[record([combined])]).approved.size,0,'A missing part of a combined card cannot cover one document by assumption');
+const coverage=auditLieutenantStock([asStock('FVL00368',100)],[],entries,covered,'2026-11-01','2026-11-12')[0];
+assert.equal(coverage.incoming,120);
+assert.equal(coverage.approvedIncoming,96);
+assert.equal(coverage.uncoveredIncoming,24,'120 received vs 96 approved invoice coverage leaves 24 to follow up');
+assert.equal(coverage.quantity,100,'Actual stock is independent of invoice coverage');
+assert.equal(coverage.estimated,null,'Missing opening never turns invoice gap into an inventory variance');
+const reference=[{code:'12345678',sapCode:'FVL00368',cartonPieces:20,kgPerPiece:0.5,active:true}];
+const cartonMovements=[move('2617100',4.8,'Carton'),move('2617101',24)];
+const converted=auditLieutenantStock([asStock('FVL00368',100)],[asStock('FVL00368',5)],
+  cartonMovements,covered,'2026-11-01','2026-11-12',reference)[0];
+assert.equal(converted.incoming,120,'Known carton factor converts to the inventory unit before summing');
+assert.equal(converted.uncoveredIncoming,24);
+assert.equal(converted.estimated,125);
+assert.equal(converted.difference,-25);
+assert.equal(converted.converted,true);
+const unknownUnits=auditLieutenantStock([asStock('FVL00368',100)],[asStock('FVL00368',5)],
+  cartonMovements,covered,'2026-11-01','2026-11-12')[0];
+assert.equal(unknownUnits.movementComplete,false);
+assert.equal(unknownUnits.uncoveredIncoming,null,'Unknown carton factor must not manufacture zero invoice coverage');
+assert.equal(unknownUnits.difference,null,'Partial known movements must not produce an inventory variance');
+const conflicting=auditLieutenantStock([asStock('FVL00368',100)],[],cartonMovements,covered,
+  '2026-11-01','2026-11-12',[...reference,{...reference[0],cartonPieces:24}])[0];
+assert.equal(conflicting.movementComplete,false,'Conflicting carton definitions are never guessed');
+const kgMovements=[move('2617100',48,'KG'),move('2617101',12,'KG')];
+const kgConverted=auditLieutenantStock([asStock('FVL00368',100)],[],kgMovements,covered,
+  '2026-11-01','2026-11-12',reference)[0];
+assert.equal(kgConverted.uncoveredIncoming,24,'KG converts only through a known per-piece weight');
+const eligibility=auditLieutenantStock([asStock('FVL00368',100)],[],[
+  ...entries,move('2617102',10),move('2617103',10,'Piece','011','001'),move('2617104',8),
+],covered,'2026-11-01','2026-11-12',[],new Set(entries.map(row=>row.transfer.number)))[0];
+assert.equal(eligibility.incoming,138,'All valid physical receipts stay in the movement total');
+assert.equal(eligibility.requiredIncoming,120,'Settled reversals and Cash Van are excluded only from invoice requirements');
+assert.equal(eligibility.uncoveredIncoming,24);
+const absent=auditLieutenantStock([],[],entries,covered,'2026-11-01','2026-11-12')[0];
+assert.equal(absent.quantity,null,'A moving code absent from the closing sheet must remain visible without an assumed zero');
+assert.equal(absent.uncoveredIncoming,24);
+assert.equal(absent.difference,null);
+const damaged={...entries[0],issues:['Invalid source row']};
+assert.equal(auditLieutenantStock([asStock('FVL00368',100)],[],[damaged],covered,
+  '2026-11-01','2026-11-12')[0].uncoveredIncoming,null,'Unreadable movement rows must not disappear into zero');
+console.log('PASS: 120/96 invoice coverage, independent stock, safe unit conversions, missing stock/opening, and incomplete movements.');
+
 const ar=['رقم الترحيل','التاريخ','كود الصنف','اسم الصنف','من مستودع','إلى مستودع','الكمية','الوحدة','حالة الإلغاء','ملاحظات'].join('\t');
 const rows=[
  ['2617000','2026-11-01','FVL00016','جزر ريفي','002','011','11','Piece','N','2623014032'],
@@ -75,6 +142,45 @@ assert.equal(classifyLieutenantContent(en+'\n'+normal),'transfers');
 assert.equal(normalScan.issues.length,0);
 assert.equal(normalScan.transfers[0].branch,'21 — السرو');
 assert.equal(normalScan.transfers[0].cancellationState,'unknown','No CANCELED column means unknown, not active');
+
+const stockUrl='data:text/javascript;base64,'+Buffer.from(stockCode).toString('base64');
+const lieutenantUrl='data:text/javascript;base64,'+Buffer.from(lieutenantCode).toString('base64');
+const sourceCode=compile('app/lib/lieutenant-source.ts')
+  .replace(/from ['"]\.\/lieutenant-stock['"]/, 'from "'+stockUrl+'"')
+  .replace(/from ['"]\.\/lieutenant['"]/, 'from "'+lieutenantUrl+'"');
+const {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey}=await import('data:text/javascript;base64,'+Buffer.from(sourceCode).toString('base64'));
+const savedText=en+'\n'+normal;
+let archiveReads=0,sharedReads=0;
+const fallback=await restoreLieutenantSource([{key:'legacy',name:'011.txt',kind:'transfers'}],['21 — السرو'],
+  async()=>{archiveReads++;return balanceText},async()=>{sharedReads++;return {name:'November.txt',text:savedText}});
+assert.equal(fallback.key,sharedLieutenantKey,'A mislabeled stock file must not hide the shared saved transfers');
+assert.equal(fallback.scan.transfers.length,1);
+assert.equal(fallback.scan.transfers[0].branch,'21 — السرو');
+assert.equal(archiveReads,1);assert.equal(sharedReads,1);
+const noArchive=await restoreLieutenantSource([],[],async()=>{throw Error('must not read archive')},async()=>({name:'shared.txt',text:savedText}));
+assert.equal(noArchive.key,sharedLieutenantKey,'An empty archive still restores old saved SAP uploads');
+const archivePreferred=await restoreLieutenantSource([{key:'valid',name:'new.txt',kind:'transfers'}],[],
+  async()=>savedText,async()=>{throw Error('must not read shared file when an archived transfer is valid')});
+assert.equal(archivePreferred.key,'valid');
+const archiveOffline=await restoreLieutenantSource([{key:'offline',name:'old.txt',kind:'transfers'}],[],
+  async()=>{throw Error('offline')},async()=>({name:'shared.txt',text:savedText}));
+assert.equal(archiveOffline.key,sharedLieutenantKey);
+const onlyStock=await restoreLieutenantSource([],[],async()=>balanceText,async()=>({name:'stock.txt',text:balanceText})).catch(error=>error);
+assert.ok(onlyStock instanceof Error,'Stock snapshots must never be restored as transfer sources');
+await assert.rejects(()=>restoreLieutenantSource([],[],async()=>'',async()=>{throw Error('network unavailable')}),/network unavailable/);
+const snapshots=[
+  {key:'undated',name:'balance.txt',kind:'balance'},
+  {key:'future',name:'future.txt',kind:'balance',snapshotDate:'2026-11-30'},
+  {key:'old',name:'old.txt',kind:'balance',snapshotDate:'2026-11-10'},
+  {key:'current',name:'current.txt',kind:'balance',snapshotDate:'2026-11-12'},
+  {key:'opening',name:'opening.txt',kind:'opening',snapshotDate:'2026-11-01'},
+];
+const restoredStock=await restoreLieutenantStock(snapshots,'balance','2026-11-12',async()=>balanceText);
+assert.equal(restoredStock.file.key,'current','Restore the latest explicitly dated stock, never a future date or upload timestamp');
+const restoredOpening=await restoreLieutenantStock(snapshots,'opening','2026-11-01',async()=>openingText);
+assert.equal(restoredOpening.file.key,'opening');
+assert.equal(await restoreLieutenantStock(snapshots,'opening','2026-11-02',async()=>openingText),null,'An opening snapshot from another day cannot be reused');
+console.log('PASS: Read-only shared SAP recovery, archive priority, mislabeled balance protection, and network errors.');
 const wrong=[...rows[0]];wrong[7]='Crate';
 const invalid=parseLieutenantTransfers(ar+'\n'+wrong.join('\t'),[]);
 assert.ok(invalid.transfers[0].issues.some(x=>x.includes('وحدة')));
@@ -151,6 +257,29 @@ const canceledScan=parseLieutenantTransfers([canceledHeader,originalCancel.join(
 const canceledResolved=analyzeLieutenantMovements(canceledScan.transfers,'2026-11-30');
 assert.equal(canceledResolved.get('2617010').kind,'sap-canceled');
 assert.equal(canceledResolved.get('2617011').kind,'sap-cancel-doc');
+
+const signedRows=[
+ ['2617105','02/11/2026','','','','DAR00005','كريمة','60','Piece','001','011'],
+ ['2617106','03/11/2026','','','Inventory transfer no. 2617105 has been canceled','DAR00005','كريمة','-60.000','Piece','001','011'],
+ ['2617107','03/11/2026','','','تصحيح سالب','DAR00027','كريمة','−2.000','Piece','011','001'],
+];
+const signedScan=parseLieutenantTransfers([englishHeader,...signedRows.map(row=>row.join('\t'))].join('\n'),[]);
+assert.ok(signedScan.transfers.every(row=>row.issues.length===0),'Signed corrections from the actual shared SAP format are valid quantity data');
+assert.equal(signedScan.transfers[1].signedAdjustment,true);
+assert.equal(signedScan.transfers[1].cancellationState,'unknown','Signed data and Remarks do not forge SAP CANCELED proof');
+const signedResolved=analyzeLieutenantMovements(signedScan.transfers,'2026-11-12');
+assert.equal(signedResolved.get('2617105').kind,'cancellation-review','An exact signed correction is investigated instead of asking for a missing invoice');
+assert.equal(signedResolved.get('2617106').kind,'cancellation-review');
+assert.equal(signedResolved.get('2617107').kind,'cancellation-review','An unreferenced negative document never becomes a normal invoice import');
+assert.equal(analyzeLieutenantMovements(signedScan.transfers,'2026-11-02').get('2617105').kind,'normal','A later signed correction must not change an earlier cutoff');
+const signedAudit=auditLieutenantStock([asStock('DAR00005',0),asStock('DAR00027',2)],[],signedScan.transfers,
+ new Set(),'2026-11-01','2026-11-12',[],new Set());
+assert.equal(signedAudit[0].incoming,60);
+assert.equal(signedAudit[0].adjustment,-60);
+assert.equal(signedAudit[0].netTransfers,0,'Signed inbound correction subtracts once from physical stock');
+assert.equal(signedAudit[0].uncoveredIncoming,0,'A full signed cancellation pair is not a fake missing-invoice gap');
+assert.equal(signedAudit[1].adjustment,2,'Negative outbound correction adds back to physical stock');
+console.log('PASS: Signed SAP cancellation quantities, stock effects in both directions, review-only evidence, and historical cutoff.');
 
 const screen=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
 assert.ok(screen.includes("response.headers.get('content-type')"),'HTML responses need a friendly diagnostic');

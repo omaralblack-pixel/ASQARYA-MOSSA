@@ -5,7 +5,10 @@ import {AlertTriangle,CheckCircle2,Copy,FileArchive,FileUp,RefreshCw,Search,Shie
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenant';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
-import {invoiceDocumentNo,transferNumbers,type Draft,type Transfer} from '../lib/reconcile';
+import {invoiceDocumentNo,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
+import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
+import {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey,type LieutenantSourceFile} from '../lib/lieutenant-source';
+import {lieutenantApprovals} from '../lib/lieutenant-coverage';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
 import {auditLieutenantStock,classifyLieutenantContent,parseLieutenantStock,
   type StockItem,type LieutenantFileKind} from '../lib/lieutenant-stock';
@@ -43,25 +46,20 @@ const statusText:Record<ReviewStatus,string>={
 };
 const empty:RecordSnapshot={records:[],queue:[],openingStock:[]};
 const fileLimit=16*1024*1024;
+const stockUnit=(value:string)=>({Piece:'حبة',Carton:'كرتونة',KG:'كغم'}[value]||value);
 // Local calendar day, not UTC, because SAP stock is dated by posting day.
 function todayLocal():string{
   const value=new Date();
   return value.getFullYear()+'-'+String(value.getMonth()+1).padStart(2,'0')+'-'+
     String(value.getDate()).padStart(2,'0');
 }
-async function fetchArchivedTransfer(file:StoredFile,branches:string[]){
+async function fetchArchivedSource(file:LieutenantSourceFile){
   const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key),
     {cache:'no-store',redirect:'manual'});
   if(response.status===401||response.type==='opaqueredirect')
     throw Error('انتهت جلسة الدخول. سجّل دخولك من جديد.');
   if(!response.ok)throw Error('تعذّر قراءة ترحيلات الأرشيف: HTTP '+response.status);
-  const source=decodeLieutenantFile(await response.arrayBuffer(),file.name);
-  if(classifyLieutenantContent(source)!=='transfers')
-    throw Error('الملف '+file.name+' ليس كشف ترحيلات فعلًا.');
-  const result=parseLieutenantTransfers(source,branches);
-  if(!result.transfers.length)
-    throw Error('الملف '+file.name+' لا يحتوي ترحيلات 011 قابلة للقراءة.');
-  return result;
+  return decodeLieutenantFile(await response.arrayBuffer(),file.name);
 }
 async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
   let response:Response;
@@ -88,14 +86,16 @@ async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
 
 const completeStatuses=new Set<ReviewStatus>(['approved','reversed','reverse','sap-canceled','sap-cancel-doc']);
 const soldierEligible=(status:ReviewStatus)=>['missing','queued','unlinked','linked','paper'].includes(status);
-function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodEnd:string):ReviewRow[]{
+function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodEnd:string,approvals:ReturnType<typeof lieutenantApprovals>):ReviewRow[]{
   const movements=analyzeLieutenantMovements(transfers,periodEnd);
   const saved=new Map<string,{id:string;status:ReviewStatus;note:string}>();
   for(const record of snapshot.records){
     let draft:Draft;
-    try{draft=JSON.parse(record.payload) as Draft}catch{continue}
+    try{draft=JSON.parse(record.payload) as Draft;
+      if(!draft||!Array.isArray(draft.invoices)||!Array.isArray(draft.transfers))continue;
+    }catch{continue}
     const numbers=(draft.invoices||[]).map(inv=>invoiceDocumentNo(inv.number)).filter(Boolean);
-    const hasPaper=numbers.length>0&&(draft.invoices||[]).filter(inv=>invoiceDocumentNo(inv.number)).every(inv=>inv.complete);
+    const hasPaper=numbers.length>0&&(draft.invoices||[]).every(inv=>!!invoiceDocumentNo(inv.number)&&inv.complete);
     const matched=record.status==='match'&&hasPaper;
     const status:ReviewStatus=matched?'approved':numbers.length?
       hasPaper?'linked':'paper':'unlinked';
@@ -112,7 +112,8 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodE
     const movement=movements.get(number);
     if(movement&&movement.kind!=='normal')
       return {source,status:movement.kind,recordId:result?.id,note:movement.note};
-    if(result)return {source,status:result.status,recordId:result.id,note:result.note};
+    if(result)return {source,status:approvals.warnings.has(number)?'linked':result.status,
+      recordId:result.id,note:approvals.warnings.get(number)||result.note};
     if(queue.has(number))return {source,status:'queued',note:'محفوظ مستقلًا عن الفواتير؛ لم تُنشأ فاتورة تلقائية.'};
     return {source,status:'missing',note:'الترحيل موجود في ملف SAP، لكن ليس في السجل ولا قائمة الجندي.'};
   });
@@ -120,7 +121,7 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodE
 
 function MovementSummary({rows}:{rows:ReviewRow[]}){
   const movements=useMemo(()=>{
-    const totals=new Map<string,{code:string;unit:string;inward:number;outward:number}>();
+    const totals=new Map<string,{code:string;unit:string;inward:number;outward:number;adjustment:number}>();
     for(const {source} of rows){
       if(source.issues.length||['canceled','cancellation'].includes(source.cancellationState))continue;
       for(const line of source.transfer.paste.split('\n').slice(1)){
@@ -128,8 +129,11 @@ function MovementSummary({rows}:{rows:ReviewRow[]}){
         const qty=Number(quantity.replace(/,/g,''));
         if(!code||!Number.isFinite(qty))continue;
         const key=code+'|'+unit;
-        const item=totals.get(key)||{code,unit,inward:0,outward:0};
-        if(to==='011'&&from!=='011')item.inward+=qty;
+        const item=totals.get(key)||{code,unit,inward:0,outward:0,adjustment:0};
+        if(qty<0){
+          if(to==='011'&&from!=='011')item.adjustment+=qty;
+          else if(from==='011'&&to!=='011')item.adjustment-=qty;
+        }else if(to==='011'&&from!=='011')item.inward+=qty;
         else if(from==='011'&&to!=='011')item.outward+=qty;
         totals.set(key,item);
       }
@@ -140,14 +144,15 @@ function MovementSummary({rows}:{rows:ReviewRow[]}){
   return <details className="panel">
     <summary>صافي الحركة حسب كود SAP ووحدة الترحيل ({movements.length})</summary>
     <p className="hint">صافي أولي من الملف، وليس رصيد SAP موثّقًا. لم تدخل مستندات الإلغاء Y وC في هذا الجدول. لا نجمع KG مع Carton أو Piece، وتبقى التسويات وحالة الإلغاء وتواريخها بحاجة للتحقق من سجل حركة المخزون.</p>
-    <div className="table-scroll"><table><thead><tr><th>كود SAP</th><th>الوحدة</th><th>الوارد</th><th>الصادر</th><th>صافي الحركة</th></tr></thead><tbody>
-      {movements.map(row=><tr key={row.code+'|'+row.unit}><td dir="ltr">{row.code}</td><td>{row.unit}</td><td>{row.inward}</td><td>{row.outward}</td><td>{Number((row.inward-row.outward).toFixed(6))}</td></tr>)}
+    <div className="table-scroll"><table><thead><tr><th>كود SAP</th><th>الوحدة</th><th>الوارد</th><th>الصادر</th><th>أثر التصحيحات الموقّع</th><th>صافي الحركة</th></tr></thead><tbody>
+      {movements.map(row=><tr key={row.code+'|'+row.unit}><td dir="ltr">{row.code}</td><td>{row.unit}</td><td>{row.inward}</td><td>{row.outward}</td><td>{row.adjustment}</td><td>{Number((row.inward-row.outward+row.adjustment).toFixed(6))}</td></tr>)}
     </tbody></table></div>
   </details>;
 }
 
-export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
+export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpenRecord}:{
   branches:string[];
+  reference:Item[];
   onOpenTransfer:(transfer:Transfer,branch:string)=>void;
   onOpenRecord:(id:string)=>void;
 }){
@@ -174,9 +179,20 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const [message,setMessage]=useState('');
-  const [autoLoading,setAutoLoading]=useState(false);
+  const [autoLoading,setAutoLoading]=useState(true);
+  const [sharedSource,setSharedSource]=useState<SavedSapImport|null>(null);
   const [transferSourceName,setTransferSourceName]=useState('');
+  const [importProgress,setImportProgress]=useState('');
+  const [rowLimit,setRowLimit]=useState(50);
   const transferSelectedRef=useRef(false);
+  const closingSelectedRef=useRef(false);
+  const openingSelectedRef=useRef(false);
+  const periodEditedRef=useRef(false);
+  const unreadableRecords=useMemo(()=>snapshot.records.filter(record=>{
+    try{const value=JSON.parse(record.payload);return !value||!Array.isArray(value.invoices)||!Array.isArray(value.transfers)}
+    catch{return true}
+  }).length,[snapshot.records]);
+  const recordsReady=snapshotLoaded&&unreadableRecords===0;
 
   async function copyStockQuery(){
     if(!stockQuery)return;
@@ -207,6 +223,20 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     setFiles(current=>page?[...current,...next.files]:next.files);
     setNextPage(next.nextPage);
     return next.files;
+  }
+  async function restoreTransfers(candidates:StoredFile[],isActive=()=>true){
+    setAutoLoading(true);
+    try{
+      const source=await restoreLieutenantSource(candidates,branches,fetchArchivedSource,readSavedSapImport);
+      if(!isActive()||transferSelectedRef.current)return;
+      if(!source)return;
+      transferSelectedRef.current=true;
+      setSelectedTransfer(source.key);setTransferSourceName(source.name);
+      setSharedSource(source.shared||null);
+      setTransfers(source.scan.transfers);setIssues(source.scan.issues);
+      if(source.shared)setMessage('تمت استعادة كشف SAP المحفوظ: '+source.scan.transfers.length+
+        ' ترحيلًا. الملف متاح للمقارنة دون إعادة رفعه. لم تُنشأ فاتورة أو تُعتمد بيانات.');
+    }finally{if(isActive())setAutoLoading(false);}
   }
   async function deleteArchive(file:StoredFile){
     if(!window.confirm('حذف الملف "'+file.name+'" نهائيًا من أرشيف الملازم أول؟ لن تُحذف الفواتير أو الترحيلات أو المطابقات المحفوظة، لكن نسخة الملف الأصلية لن تعود متاحة من الأرشيف.'))return;
@@ -267,9 +297,10 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         const parsed=parseLieutenantStock(text,actualKind);
         const stock={key,date,items:parsed.items,issues:parsed.issues};
         if(actualKind==='balance'){
+          closingSelectedRef.current=true;
           setClosing(stock);
           if(date){setTo(date);setStockDate(null);setStockCopyMessage('');}
-        }else setOpening(stock);
+        }else{openingSelectedRef.current=true;setOpening(stock);}
         setMessage('تم فتح '+fileKinds[actualKind]+': '+parsed.items.length+
           ' صنفًا للمستودع 011.'+(date?' تاريخ اللقطة: '+date+'.':
           ' تاريخ هذه النسخة القديمة غير محدد؛ أعد رفعها مع اختيار تاريخ صحيح لتفعيل المقارنة.')+
@@ -282,6 +313,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       }
       const parsed=parseLieutenantTransfers(text,branches);
       transferSelectedRef.current=true;
+      setSharedSource(null);
       setTransferSourceName(file.name);
       setSelectedTransfer(key);
       setTransfers(parsed.transfers);setIssues(parsed.issues);
@@ -299,47 +331,43 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       ]);
       if(!active)return;
       const errors:string[]=[];
-      if(archive.status==='fulfilled'){
-        setFiles(archive.value.files);setNextPage(archive.value.nextPage);
-        // Restore read-only source data. Do not enqueue or create an invoice.
-        const candidates=archive.value.files.filter(file=>file.kind==='transfers');
-        if(candidates.length){
-          setAutoLoading(true);
-          let loaded=false;
-          try{
-            for(const candidate of candidates){
-              if(!active||transferSelectedRef.current)break;
-              try{
-                const result=await fetchArchivedTransfer(candidate,branches);
-                if(!active||transferSelectedRef.current)break;
-                transferSelectedRef.current=true;
-                setSelectedTransfer(candidate.key);
-                setTransferSourceName(candidate.name);
-                setTransfers(result.transfers);setIssues(result.issues);
-                loaded=true;
-                break;
-              }catch{/* Older files may be misclassified; skip only this candidate. */}
-            }
-            if(active&&!loaded&&!transferSelectedRef.current)
-              errors.push('لا يوجد ملف ترحيلات قابل للقراءة بين الملفات المسجّلة كترحيلات. افتح ملف SAP الصحيح من الأرشيف.');
-          }finally{if(active)setAutoLoading(false);}
-        }
-      }else{
-        errors.push(archive.reason instanceof Error?archive.reason.message:'تعذّر تحميل أرشيف الملازم أول.');
-      }
       if(state.status==='fulfilled'){
         setSnapshot(state.value);setSnapshotLoaded(true);
       }else{
         errors.push(state.reason instanceof Error?state.reason.message:'تعذّر تحميل بيانات المطابقة.');
       }
-      if(errors.length)setError(errors.join(' '));
+      if(archive.status==='fulfilled'){
+        setFiles(archive.value.files);setNextPage(archive.value.nextPage);
+      }else{
+        errors.push(archive.reason instanceof Error?archive.reason.message:'تعذّر تحميل أرشيف الملازم أول.');
+      }
+      const archivedFiles=archive.status==='fulfilled'?archive.value.files:[];
+      const sources=await Promise.allSettled([
+        restoreTransfers(archivedFiles,()=>active),
+        restoreLieutenantStock(archivedFiles,'balance',todayLocal(),fetchArchivedSource).then(result=>{
+          if(!active||!result||closingSelectedRef.current)return;
+          closingSelectedRef.current=true;
+          setClosing({key:result.file.key,date:result.file.snapshotDate!,...result.stock});
+          setSelected(result.file.key);
+          if(!periodEditedRef.current){setTo(result.file.snapshotDate!);setStockDate(null);}
+        }),
+        restoreLieutenantStock(archivedFiles,'opening',from,fetchArchivedSource).then(result=>{
+          if(!active||!result||openingSelectedRef.current)return;
+          openingSelectedRef.current=true;
+          setOpening({key:result.file.key,date:result.file.snapshotDate!,...result.stock});
+        }),
+      ]);
+      for(const result of sources)if(result.status==='rejected')
+        errors.push(result.reason instanceof Error?result.reason.message:'تعذّر استعادة أحد ملفات الرقابة.');
+      if(active&&errors.length)setError(errors.join(' '));
     }
     void init();
     return()=>{active=false};
   },[]);
 
-  const rows=useMemo(()=>makeRows(transfers,snapshot,to).filter(row=>
-    row.source.transfer.date>=from&&row.source.transfer.date<=to),[transfers,snapshot,from,to]);
+  const approvals=useMemo(()=>lieutenantApprovals(transfers,snapshot.records),[transfers,snapshot.records]);
+  const rows=useMemo(()=>makeRows(transfers,snapshot,to,approvals).filter(row=>
+    row.source.transfer.date>=from&&row.source.transfer.date<=to),[transfers,snapshot,from,to,approvals]);
   const pending=rows.filter(row=>!completeStatuses.has(row.status));
   const visible=rows.filter(row=>(filter==='all'||(filter==='pending'?!completeStatuses.has(row.status):row.status===filter))&&
     (!query||[row.source.transfer.number,row.source.branch,row.source.remarks,row.note].some(value=>value.includes(query))));
@@ -349,20 +377,14 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     review:rows.filter(row=>row.status==='review'||row.status==='cashvan-pending'||row.status==='cancellation-review').length,
     pending:pending.length,
   }),[rows,pending.length]);
-  const approvedTransferNumbers=useMemo(()=>{
-    const approved=new Set<string>();
-    for(const record of snapshot.records){
-      if(record.status!=='match')continue;
-      let draft:Draft;
-      try{draft=JSON.parse(record.payload) as Draft}catch{continue}
-      const invoices=draft.invoices||[];
-      if(!invoices.length||!invoices.every(row=>!!invoiceDocumentNo(row.number)&&row.complete))continue;
-      for(const transfer of draft.transfers||[])
-        for(const num of transferNumbers(transfer.number||''))approved.add(num);
-    }
-    return approved;
-  },[snapshot.records]);
-  const canCompare=!!closing?.date&&closing.date===to&&!!selectedTransfer&&from<=to;
+  const approvedTransferNumbers=approvals.approved;
+  const periodValid=!!sapStockBalanceQuery(from)&&!!sapStockBalanceQuery(to)&&from<=to&&to<=todayLocal();
+  const canCompare=!!closing?.date&&closing.date===to&&!!selectedTransfer&&periodValid;
+  const invoiceRequiredNumbers=useMemo(()=>{
+    const movements=analyzeLieutenantMovements(transfers,to);
+    return new Set(transfers.filter(row=>!row.reverse&&movements.get(row.transfer.number)?.kind==='normal')
+      .map(row=>row.transfer.number));
+  },[transfers,to]);
   const stockRows=useMemo(()=>{
     if(!closing?.items.length)return [];
     const byKey=new Map<string,StockItem>();
@@ -375,15 +397,26 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       for(const item of opening.items)if(!byKey.has(item.code+'|'+item.unit))
         byKey.set(item.code+'|'+item.unit,item);
     return auditLieutenantStock(closing.items,[...byKey.values()],
-      canCompare?transfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to);
-  },[closing,opening,snapshot.openingStock,from,to,transfers,approvedTransferNumbers,canCompare]);
+      canCompare?transfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to,
+      reference,invoiceRequiredNumbers);
+  },[closing,opening,snapshot.openingStock,from,to,transfers,approvedTransferNumbers,canCompare,reference,invoiceRequiredNumbers]);
+  const coverageReady=canCompare&&recordsReady;
+  const uncoveredItems=stockRows.filter(item=>item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001);
+  const incompleteItems=stockRows.filter(item=>!item.movementComplete);
+  const [stockQueryText,setStockQueryText]=useState('');
+  const [stockFilter,setStockFilter]=useState('all');
+  const visibleStockRows=stockRows.filter(item=>(!coverageReady||stockFilter==='all'||
+    (stockFilter==='uncovered'?item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001:
+    stockFilter==='incomplete'?!item.movementComplete:item.movementComplete&&item.requiredIncoming>0&&item.uncoveredIncoming===0))&&
+    (!stockQueryText||(item.code+' '+item.name).toLowerCase().includes(stockQueryText.trim().toLowerCase())));
 
   async function enqueue(source:LieutenantTransfer[],key:string){
     // Cash Van, the exact reverse, SAP-canceled and cancellation documents
     // are inventory-control cases, not missing blue invoices.
-    const movements=analyzeLieutenantMovements(source,'9999-12-31');
-    const valid=source.filter(row=>!row.issues.length&&movements.get(row.transfer.number)?.kind==='normal');
-    const skipped=source.length-valid.length;
+    const movements=analyzeLieutenantMovements(source,to);
+    const inPeriod=source.filter(row=>row.transfer.date>=from&&row.transfer.date<=to);
+    const valid=inPeriod.filter(row=>!row.issues.length&&movements.get(row.transfer.number)?.kind==='normal');
+    const skipped=inPeriod.length-valid.length;
     let added=0,existing=0;
     const batches:Array<Array<{number:string;date:string;paste:string;branch:string;remarks:string;reverse:boolean;cancellationMentioned:boolean;cancellationState:string;invoiceNumbers:string[]}>>=[];
     let batch:typeof batches[number]=[];
@@ -400,7 +433,8 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         throw Error('الترحيل '+data.number+' كبير جدًا لإرساله بدفعة واحدة؛ ملف SAP محفوظ بالأرشيف ويمكن مراجعة هذا الترحيل بشكل منفصل.');
     }
     if(batch.length)batches.push(batch);
-    for(const payload of batches){
+    for(const [index,payload] of batches.entries()){
+      setImportProgress('جارٍ تحديث ترحيلات الفترة: دفعة '+(index+1)+' من '+batches.length+'…');
       const result=await checkedJson<{added:number;existing:number}>('/api/reconcile',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'lieutenantImport',sourceFile:key,transfers:payload}),
@@ -408,6 +442,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       added+=result.added;existing+=result.existing;
     }
     await refreshSnapshot();
+    setImportProgress('');
     return {added,existing,skipped};
   }
 
@@ -449,8 +484,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         const parsed=parseLieutenantStock(text,detected);
         const stock={key:stored.key,date,items:parsed.items,issues:parsed.issues};
         if(detected==='balance'){
+          closingSelectedRef.current=true;
           setClosing(stock);setTo(date);setStockDate(null);setStockCopyMessage('');
-        }else setOpening(stock);
+        }else{openingSelectedRef.current=true;setOpening(stock);}
         setMessage(saved+'تمت قراءة '+parsed.items.length+' صنفًا من '+fileKinds[detected]+
           ' بتاريخ '+date+'. لم تُنشأ فاتورة أو يُرسل شيء للجندي.'+reclassified+warning);
         return;
@@ -462,6 +498,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       }
       const result=parseLieutenantTransfers(text,branches);
       transferSelectedRef.current=true;
+      setSharedSource(null);
       setSelectedTransfer(stored.key);
       setTransferSourceName(file.name);
       setTransfers(result.transfers);setIssues(result.issues);
@@ -481,7 +518,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       }
     }catch(cause){
       setError(cause instanceof Error?cause.message:'تعذّر حفظ ملف الملازم أول.');
-    }finally{setBusy(false)}
+    }finally{setBusy(false);setImportProgress('')}
   }
 
   async function stampStockDate(stock:StockSnapshot,stockKind:'balance'|'opening'){
@@ -520,11 +557,22 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     if(!selectedTransfer||!transfers.length)return;
     setBusy(true);setError('');
     try{
-      const result=await enqueue(transfers,selectedTransfer);
+      let sourceKey=selectedTransfer;
+      if(sourceKey===sharedLieutenantKey&&sharedSource){
+        // Freeze a separate copy before import; never replace current.json.
+        const stored=await checkedJson<{key:string}>('/api/lieutenant-files',{
+          method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8',
+            'X-File-Name':encodeURIComponent(sharedSource.name),'X-File-Kind':'transfers'},
+          body:new TextEncoder().encode(sharedSource.text),
+        });
+        sourceKey=stored.key;setSelectedTransfer(sourceKey);setSharedSource(null);
+        await refreshFiles();
+      }
+      const result=await enqueue(transfers,sourceKey);
       setMessage('اكتمل تحديث الرقابة: '+result.added+' ترحيلًا جديدًا؛ '+result.existing+
         ' محفوظًا مسبقًا؛ '+result.skipped+' مستبعدًا من جندي الفواتير (عكسي/كاش فان/ملغى أو غير صالح).');
     }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر تحديث الفحص.')}
-    finally{setBusy(false)}
+    finally{setBusy(false);setImportProgress('')}
   }
 
   return <div>
@@ -532,6 +580,17 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       <h1>الملازم أول — مراقبة الترحيلات والفواتير</h1>
       <p>كل ملفات SAP محفوظة في أرشيف Supabase؛ يرسل الترحيلات غير المسجلة للجندي دون إنشاء فاتورة أو اعتمادها.</p></div>
       <ShieldCheck size={32}/></div>
+    <section className="panel" aria-label="فترة رقابة المستودع 011">
+      <div className="section-title"><div><h2>الفترة المطلوبة للمقارنة</h2>
+        <p>ابدأ من أول الشهر، واختر نهاية الفترة بنفس تاريخ كشف رصيد SAP. تتحدث الترحيلات والمقارنة حسب هذه الفترة.</p></div></div>
+      <div className="form-grid">
+        <label>من تاريخ<input type="date" value={from} max={todayLocal()} onChange={event=>{periodEditedRef.current=true;setFrom(event.target.value);setRowLimit(50)}}/></label>
+        <label>إلى تاريخ<input type="date" value={to} max={todayLocal()} onChange={event=>{
+          periodEditedRef.current=true;setTo(event.target.value);setStockDate(null);setStockCopyMessage('');setRowLimit(50);
+        }}/></label>
+      </div>
+      {!periodValid&&<p className="banner warn" role="alert">اختر تاريخ بداية ونهاية صحيحين؛ تاريخ البداية لا يتجاوز النهاية، والنهاية لا تتجاوز اليوم.</p>}
+    </section>
     <section className="panel" aria-label="الأرصدة الافتتاحية المعتمدة">
       <div className="section-title"><div><h2>الأرصدة الافتتاحية المعتمدة — المستودع 011</h2>
         <p>الرصيد المسجل قبل أول حركة في تاريخ البداية. يُحتسب في التدقيق ولا يُسجل كترحيل أو فاتورة.</p></div></div>
@@ -553,7 +612,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       </div></div>
       <div className="table-controls sap-stock-query-controls">
         <label>تاريخ الرصيد — نهاية اليوم<input type="date" dir="ltr" value={stockQueryDate}
-          onChange={event=>{setStockDate(event.target.value);setStockCopyMessage('')}}/></label>
+          max={todayLocal()} onChange={event=>{periodEditedRef.current=true;setStockDate(event.target.value);setStockCopyMessage('')}}/></label>
         <button type="button" className="button primary" disabled={!stockQuery} onClick={()=>void copyStockQuery()}>
           <Copy size={16}/> نسخ الكويري</button>
         {stockDate!==null&&stockDate!==to&&<button type="button" className="button secondary" onClick={()=>{
@@ -582,7 +641,13 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         </label>
         <button className="button secondary" disabled={busy} type="button" onClick={async()=>{
           setBusy(true);setError('');
-          try{await Promise.all([refreshFiles(),refreshSnapshot()])}
+          try{
+            const results=await Promise.allSettled([refreshFiles(),refreshSnapshot()]);
+            if(results[0].status==='fulfilled'&&!selectedTransfer)
+              await restoreTransfers(results[0].value);
+            const failed=results.filter((result):result is PromiseRejectedResult=>result.status==='rejected');
+            if(failed.length)setError(failed.map(result=>result.reason instanceof Error?result.reason.message:'تعذّر التحديث.').join(' '));
+          }
           catch(cause){setError(cause instanceof Error?cause.message:'تعذّر التحديث.')}
           finally{setBusy(false)}
         }}><RefreshCw size={16}/> تحديث الأرشيف</button>
@@ -598,18 +663,31 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
             aria-label={'حذف '+file.name+' من الأرشيف'} onClick={()=>void deleteArchive(file)}>
             <Trash2 size={14}/> حذف</button></td>
         </tr>)}</tbody></table></div>:<p className="hint">لم يُرفع ملف بعد إلى أرشيف الملازم أول.</p>}
-      {nextPage!==null&&<button type="button" disabled={busy} className="button secondary" onClick={()=>void refreshFiles(nextPage)}>إظهار ملفات أقدم</button>}
+      {nextPage!==null&&<button type="button" disabled={busy} className="button secondary" onClick={async()=>{
+        setBusy(true);setError('');
+        try{await refreshFiles(nextPage)}catch(cause){setError(cause instanceof Error?cause.message:'تعذّر تحميل الملفات الأقدم.')}
+        finally{setBusy(false)}
+      }}>إظهار ملفات أقدم</button>}
       {error&&<p role="alert" className="banner error"><AlertTriangle size={16}/> {error}</p>}
       {message&&<p role="status" className="banner info">{message}</p>}
+      {importProgress&&<p role="status" className="banner info">{importProgress}</p>}
+      {opening&&<div className="banner info"><div>
+        كشف افتتاحي مفتوح: {opening.items.length} صنفًا · تاريخ الرصيد: {opening.date||'غير محدد'}.
+        {!opening.date&&<button type="button" className="button secondary small" disabled={busy}
+          onClick={()=>void stampStockDate(opening,'opening')}>تثبيت تاريخ الافتتاحي على {from}</button>}
+        {opening.issues.map(note=><p className="red" key={note}>{note}</p>)}
+      </div></div>}
     </section>
     <section className="panel" aria-label="مقارنة رصيد 011 الفعلي">
       <div className="section-title"><div><h2>رصيد 011 الفعلي — مقارنة الترحيلات والفواتير</h2>
-        <p>اللقطة من كويري OINM، والترحيلات من كشف SAP، والكميات المعتمدة من الفواتير الزرقاء المحفوظة.</p></div></div>
+        <p>اختر الفترة من أول الشهر حتى تاريخ الرصيد. تُقارن الترحيلات بالفواتير المشيّكة والمعتمدة، ويظهر رصيد SAP الفعلي لكل صنف بشكل مستقل.</p></div></div>
       {!closing?<p className="hint">ارفع كشف الرصيد الفعلي أو افتحه من أرشيف الملازم أول لعرض الأصناف ومقارنتها.</p>:<>
         <div className="stats">
           <div className="stat"><span>أصناف كشف الرصيد</span><strong>{closing.items.length}</strong></div>
           <div className="stat"><span>تاريخ الرصيد</span><strong>{closing.date||'غير محدد'}</strong></div>
           <div className="stat"><span>الترحيلات المحمّلة</span><strong>{transfers.length}</strong></div>
+          <div className="stat"><span>أصناف بحاجة فواتير معتمدة</span><strong>{coverageReady?uncoveredItems.length:'—'}</strong></div>
+          <div className="stat"><span>أصناف تحتاج مراجعة البيانات</span><strong>{canCompare?incompleteItems.length:'—'}</strong></div>
         </div>
         {!closing.date&&<button className="button secondary" type="button" disabled={busy}
           onClick={()=>void stampStockDate(closing,'balance')}>
@@ -622,7 +700,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
               (autoLoading?'جارٍ استعادة ترحيلات SAP المحفوظة من الأرشيف...':
               'كشف الرصيد جاهز، لكن ملف ترحيلات SAP غير مفتوح. افتح ملف الحركات من الأرشيف، وليس كشف الرصيد مرة ثانية.'):
             to!==closing.date?'تاريخ نهاية الفترة ('+to+') لا يطابق تاريخ كشف الرصيد ('+closing.date+').':
-            from>to?'تاريخ البداية بعد تاريخ النهاية.':'تحقق من ملف الترحيلات والفترة.'}
+            !periodValid?'اختر فترة صحيحة لا تنتهي بتاريخ مستقبلي.':'تحقق من ملف الترحيلات والفترة.'}
             {closing.date&&to!==closing.date&&<button type="button" className="button secondary small"
               onClick={()=>{setTo(closing.date);setStockDate(null);setStockCopyMessage('')}}>
               مطابقة «إلى تاريخ» مع {closing.date}
@@ -632,52 +710,76 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         {closing.issues.length>0&&<div className="banner warn" role="alert">
           <strong>ملاحظات كشف الرصيد ({closing.issues.length}):</strong>
           <ul>{closing.issues.slice(0,10).map((note,i)=><li key={i}>{note}</li>)}</ul></div>}
-        {!snapshotLoaded&&<p className="banner warn">قاعدة المطابقات لم تُحمّل؛ عمود الفواتير المعتمدة غير متاح حاليًا، وليس صفرًا.</p>}
-        <p className="hint">«المتوقع» = الرصيد الافتتاحي المعتمد + صافي الترحيلات فقط، وليس بديلًا عن سجل جميع حركات OINM. إذا كان الرصيد الافتتاحي ناقصًا أو اختلفت الوحدات، لا يُفترض صفر ولا يُختلق فرق. الكميات المرتبطة بالفواتير هي وارد الترحيلات المعتمدة المؤكد ورقها، ولا تُستخدم بدل الرصيد.</p>
-        <div className="table-scroll"><table><thead><tr>
-          <th>كود SAP</th><th>اسم الصنف</th><th>الوحدة</th><th>الافتتاحي</th>
-          <th>وارد الترحيلات</th><th>صادر / عكسي</th><th>صافي الترحيلات</th>
-          <th>وارد فواتيره معتمدة</th><th>المتوقع من الترحيلات</th><th>رصيد SAP الفعلي</th><th>الفرق التفسيري</th>
-        </tr></thead><tbody>{stockRows.map(item=><tr key={item.code+'|'+item.unit}>
-          <td dir="ltr"><b>{item.code}</b></td><td>{item.name}</td><td>{item.unit}</td>
-          <td dir="ltr">{canCompare&&item.opening!==null?item.opening.toFixed(3):'—'}</td>
-          <td dir="ltr">{canCompare?item.incoming.toFixed(3):'—'}</td>
-          <td dir="ltr">{canCompare?item.outgoing.toFixed(3):'—'}</td>
-          <td dir="ltr">{canCompare?item.netTransfers.toFixed(3):'—'}</td>
-          <td dir="ltr">{canCompare&&snapshotLoaded?item.approvedIncoming.toFixed(3):'—'}</td>
-          <td dir="ltr">{canCompare&&item.estimated!==null?item.estimated.toFixed(3):'—'}</td>
-          <td dir="ltr"><strong>{item.quantity.toFixed(3)}</strong></td>
-          <td dir="ltr">{canCompare&&item.difference!==null?item.difference.toFixed(3):'—'}</td>
+        {!recordsReady&&<p className="banner warn">قاعدة المطابقات لم تُقرأ بالكامل؛ عمود الفواتير المعتمدة غير متاح حاليًا، وليس صفرًا.</p>}
+        <p className="hint">«غير مغطى بفواتير معتمدة» = الوارد الذي يحتاج فاتورة − الوارد المغطى بفواتير مشيّكة ومعتمدة ومؤكد ورقها. لا تدخل حركات الكاش فان أو الإلغاء أو العكسي المسوّى بالكامل ضمن المطلوب له فواتير. هذه المقارنة لا تثبت أن الفاتورة رُحّلت على SAP.</p>
+        <p className="hint">«المتوقع من الترحيلات» = الافتتاحي + الوارد − الصادر + أثر التصحيحات الموقّع. مطابقة رصيد المستودع النهائية تحتاج جميع حركات المخزون OINM، بما فيها البيع والتسويات. تُوحّد الوحدات فقط بشدّات وأوزان معرفة في مرجع الأصناف؛ البيانات الناقصة تظهر «—» ولا تُحسب صفرًا.</p>
+        <div className="table-controls no-print">
+          <label>بحث في الأصناف<input type="search" value={stockQueryText} onChange={event=>setStockQueryText(event.target.value)} placeholder="كود SAP أو اسم الصنف"/></label>
+          <label>عرض الأصناف<select value={stockFilter} disabled={!coverageReady} onChange={event=>setStockFilter(event.target.value)}>
+            <option value="all">كل الأصناف</option><option value="uncovered">بحاجة فواتير معتمدة</option>
+            <option value="covered">مغطاة بفواتير معتمدة</option><option value="incomplete">بيانات تحتاج مراجعة</option>
+          </select></label>
+        </div>
+        <div className="table-scroll"><table className="lieutenant-stock-table"><thead><tr>
+          <th>الصنف</th><th>الوحدة</th><th>رصيد SAP الفعلي</th><th>صافي الترحيلات</th>
+          <th>وارد يحتاج فاتورة</th><th>مرتبط بفواتير معتمدة</th><th>غير مغطى بفواتير معتمدة</th><th>حالة تغطية الفواتير</th>
+        </tr></thead><tbody>{visibleStockRows.map(item=><tr key={item.code+'|'+item.unit}>
+          <td className="name-cell"><b dir="ltr">{item.code}</b><small>{item.name}</small></td><td>{stockUnit(item.unit)}</td>
+          <td dir="ltr"><strong>{item.quantity===null?'—':item.quantity.toFixed(3)}</strong></td>
+          <td dir="ltr">{canCompare&&item.movementComplete?item.netTransfers.toFixed(3):'—'}</td>
+          <td dir="ltr">{canCompare&&item.movementComplete?item.requiredIncoming.toFixed(3):'—'}</td>
+          <td dir="ltr">{coverageReady&&item.movementComplete?item.approvedIncoming.toFixed(3):'—'}</td>
+          <td dir="ltr">{coverageReady&&item.uncoveredIncoming!==null?item.uncoveredIncoming.toFixed(3):'—'}</td>
+          <td>{!coverageReady?'بانتظار اكتمال مصادر المقارنة':!item.movementComplete?'بيانات ناقصة':
+            item.requiredIncoming===0?'لا يوجد وارد يحتاج فاتورة':item.uncoveredIncoming===0?'مغطى بفواتير معتمدة':'بحاجة متابعة'}
+            {item.converted&&<small style={{display:'block'}}>وُحّدت الكميات حسب مرجع الأصناف</small>}
+            {item.issues.map(note=><small className="red" style={{display:'block'}} key={note}>{note}</small>)}
+          </td>
         </tr>)}</tbody></table></div>
+        {!visibleStockRows.length&&<p className="hint">لا توجد أصناف بهذه الفلاتر.</p>}
+        <details className="lieutenant-stock-details"><summary>تفاصيل الافتتاحي والوارد والعكسي والتصحيحات</summary>
+          <p className="hint">الفرق التفسيري هو رصيد SAP − (الافتتاحي + صافي الترحيلات). لا يمثل حكمًا نهائيًا على صحة رصيد المستودع دون سجل جميع حركات المخزون.</p>
+          <div className="table-scroll"><table><thead><tr>
+            <th>كود SAP</th><th>الوحدة</th><th>الافتتاحي</th><th>الوارد</th><th>الصادر / العكسي</th>
+            <th>أثر التصحيحات الموقّع</th><th>المتوقع من الترحيلات</th><th>رصيد SAP الفعلي</th><th>الفرق التفسيري</th>
+          </tr></thead><tbody>{visibleStockRows.map(item=><tr key={item.code+'|'+item.unit}>
+            <td dir="ltr">{item.code}</td><td>{stockUnit(item.unit)}</td>
+            <td dir="ltr">{canCompare&&item.opening!==null?item.opening.toFixed(3):'—'}</td>
+            <td dir="ltr">{canCompare&&item.movementComplete?item.incoming.toFixed(3):'—'}</td>
+            <td dir="ltr">{canCompare&&item.movementComplete?item.outgoing.toFixed(3):'—'}</td>
+            <td dir="ltr">{canCompare&&item.movementComplete?item.adjustment.toFixed(3):'—'}</td>
+            <td dir="ltr">{canCompare&&item.estimated!==null?item.estimated.toFixed(3):'—'}</td>
+            <td dir="ltr">{item.quantity===null?'—':item.quantity.toFixed(3)}</td>
+            <td dir="ltr">{canCompare&&item.difference!==null?item.difference.toFixed(3):'—'}</td>
+          </tr>)}</tbody></table></div>
+        </details>
       </>}
     </section>
     <section className="panel">
       <div className="section-title"><div><h2>تدقيق الفترة المطلوبة</h2>
         <p>الفترة تحدد نتائج التقرير، ولا تحذف أو تخفي أي ترحيل من قاعدة البيانات.</p></div></div>
-      <div className="form-grid">
-        <label>من تاريخ<input type="date" value={from} onChange={event=>setFrom(event.target.value)}/></label>
-        <label>إلى تاريخ<input type="date" value={to} onChange={event=>{
-          setTo(event.target.value);setStockDate(null);setStockCopyMessage('');
-        }}/></label>
-        <label>البحث<input type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder="رقم الترحيل أو الفرع"/></label>
-      </div>
+      <p className="hint">الفترة المختارة: <b dir="ltr">{from} — {to}</b> · غيّر الفترة من أعلى الشاشة.</p>
       <div className="table-controls">
-        <button className="button primary" disabled={busy||!transfers.length||from>to}
+        <label>البحث<input type="search" value={query} onChange={event=>{setQuery(event.target.value);setRowLimit(50)}} placeholder="رقم الترحيل أو الفرع"/></label>
+        <button className="button primary" disabled={busy||autoLoading||!transfers.length||!periodValid}
           onClick={()=>void auditAgain()}><Search size={16}/> تحديث الفحص وإرسال الناقص للجندي</button>
-        <select aria-label="فلترة ترحيلات الملازم أول" value={filter} onChange={event=>setFilter(event.target.value)}>
+        <select aria-label="فلترة ترحيلات الملازم أول" value={filter} onChange={event=>{setFilter(event.target.value);setRowLimit(50)}}>
           <option value="pending">المطلوبة فقط (بدون العكسي المسوّى)</option>
           <option value="all">الكل</option>
           {Object.entries(statusText).map(([key,text])=><option key={key} value={key}>{text}</option>)}
         </select>
       </div>
+      {!recordsReady&&<p className="banner warn" role="alert">{unreadableRecords?
+        'هناك '+unreadableRecords+' سجل مطابقة غير قابل للقراءة. لا يمكن تأكيد تغطية الفواتير قبل مراجعته.':
+        'حالات الفواتير لم تُحمّل بعد؛ لا تُعتبر الترحيلات مفقودة أو غير معتمدة قبل اكتمال القراءة. استخدم «تحديث الأرشيف» لإعادة المحاولة.'}</p>}
       {selectedTransfer&&<p className="hint">مصدر الترحيلات الحالي: <strong>{transferSourceName}</strong>
         — {transfers.length} ترحيلًا من الملف. إذا كانت الترحيلات موزعة على عدة ملفات، استخدم كشفًا شاملًا للفترة.
         فتح الأرشيف للقراءة فقط ولا ينشئ فواتير.</p>}
       <div className="stats">
-        <div className="stat"><span>ترحيلات الفترة</span><strong>{rows.length}</strong></div>
-        <div className="stat"><span>مطابقة ومعتمدة</span><strong>{counts.approved}</strong></div>
-        <div className="stat"><span>بانتظار الجندي</span><strong>{counts.queued}</strong></div>
-        <div className="stat"><span>تحتاج متابعة</span><strong>{counts.pending}</strong></div>
+        <div className="stat"><span>ترحيلات الفترة</span><strong>{selectedTransfer&&periodValid?rows.length:'—'}</strong></div>
+        <div className="stat"><span>مطابقة ومعتمدة</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.approved:'—'}</strong></div>
+        <div className="stat"><span>بانتظار الجندي</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.queued:'—'}</strong></div>
+        <div className="stat"><span>تحتاج متابعة</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.pending:'—'}</strong></div>
       </div>
       {issues.length>0&&<div className="banner warn" role="alert"><AlertTriangle size={17}/>
         <div><strong>{issues.length} ملاحظة على قراءة SAP:</strong>
@@ -690,21 +792,24 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         !transfers.length?<p className="hint">هذا الملف ليس كشف ترحيلات صالحًا للمراجعة، أو لم يُفتح كشف ترحيلات بعد.</p>:
       <div className="table-scroll"><table><thead><tr>
         <th>رقم الترحيل</th><th>التاريخ</th><th>الفرع</th><th>اتجاه الحركة</th><th>الحالة</th><th>تفاصيل</th><th>فتح</th>
-      </tr></thead><tbody>{visible.map(row=><tr key={row.source.transfer.number}>
+      </tr></thead><tbody>{visible.slice(0,rowLimit).map(row=><tr key={row.source.transfer.number}>
         <td dir="ltr"><b>{row.source.transfer.number}</b></td>
         <td dir="ltr">{row.source.transfer.date}</td><td>{row.source.branch||'غير محدد'}</td>
         <td>{row.source.reverse?'صادر من 011':'وارد إلى 011'}</td>
         <td><span className={'badge '+(completeStatuses.has(row.status)?'match':row.status==='review'||row.status==='missing'?'difference':'review')}>
           {completeStatuses.has(row.status)?<CheckCircle2 size={13}/>:<AlertTriangle size={13}/>}
-          {statusText[row.status]}</span>
+          {recordsReady?statusText[row.status]:'حالة الفاتورة غير متاحة'}</span>
           {row.source.cancellationState==='canceled'&&<small style={{display:'block'}}>حالة SAP: ترحيل ملغى (Y)</small>}
           {row.source.cancellationState==='cancellation'&&<small style={{display:'block'}}>حالة SAP: مستند إلغاء (C)</small>}
           {row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>حالة الإلغاء غير مذكورة</small>}
           {row.source.cancellationMentioned&&row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>Remarks تذكر إلغاء دون إثبات</small>}</td>
-        <td>{row.note}</td>
+        <td>{recordsReady?row.note:'تعذّر قراءة سجل المطابقات بالكامل؛ لا يمكن تحديد تغطية هذا الترحيل بعد.'}</td>
         <td>{row.recordId?<button type="button" className="button secondary small" onClick={()=>onOpenRecord(row.recordId!)}>فتح الفاتورة</button>:
-          <button type="button" className="button secondary small" disabled={!soldierEligible(row.status)||!!row.source.issues.length} onClick={()=>onOpenTransfer(row.source.transfer,row.source.branch)}>{soldierEligible(row.status)?'إرسال للجندي':'ليس لفاتورة زرقاء'}</button>}</td>
+          <button type="button" className="button secondary small" disabled={!recordsReady||!soldierEligible(row.status)||!!row.source.issues.length} onClick={()=>onOpenTransfer(row.source.transfer,row.source.branch)}>{soldierEligible(row.status)?'إرسال للجندي':'ليس لفاتورة زرقاء'}</button>}</td>
       </tr>)}</tbody></table></div>}
+      {visible.length>rowLimit&&<button type="button" className="button secondary" onClick={()=>setRowLimit(value=>value+100)}>
+        إظهار ترحيلات إضافية ({Math.min(rowLimit,visible.length)} من {visible.length})
+      </button>}
       {selectedTransfer&&transfers.length>0&&!visible.length&&<p className="hint">لا توجد ترحيلات بهذه الفلاتر.</p>}
       {counts.review>0&&<p className="hint">هناك {counts.review} حركة تحتاج تدقيق العكسي أو الإلغاء أو بيانات المصدر. العكسي المطابق ليس إلغاء SAP؛ لا يُرسل كاش فان للجندي لمجرد عدم وجود فاتورة زرقاء.</p>}
     </section>

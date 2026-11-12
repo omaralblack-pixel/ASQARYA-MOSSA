@@ -13,6 +13,7 @@ export type LieutenantTransfer={
   reverse:boolean;
   cancellationState:CancellationState;
   cancellationMentioned:boolean;
+  signedAdjustment?:boolean;
   issues:string[];
   invoiceNumbers:string[];
 };
@@ -61,7 +62,7 @@ const cancellation=(raw:string):CancellationState=>{
   return 'unknown';
 };
 const invoices=(remarks:string)=>[...new Set(remarks.match(/\b\d{10}\b/g)||[])];
-type Group={meta:{date:string;branchCode:string;branchName:string;remarks:string;state:CancellationState};lines:string[];issues:string[];reverse:boolean};
+type Group={meta:{date:string;branchCode:string;branchName:string;remarks:string;state:CancellationState};lines:string[];issues:string[];reverse:boolean;signedAdjustment:boolean};
 const lineHeader=['Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'].join('\t');
 
 export function parseLieutenantTransfers(source:string,branches:string[]):LieutenantScan{
@@ -101,7 +102,7 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
       branchCode:read(cells,'branchCode'),branchName:read(cells,'branchName'),
       remarks:read(cells,'remarks'),state:cancellation(read(cells,'canceled')),
     };
-    const current=grouped.get(number)||{meta,lines:[],issues:[],reverse:false};
+    const current=grouped.get(number)||{meta,lines:[],issues:[],reverse:false,signedAdjustment:false};
     if(grouped.has(number)&&
       (meta.date!==current.meta.date||
        (meta.state!==current.meta.state&&meta.state!=='unknown'&&current.meta.state!=='unknown')))
@@ -110,14 +111,17 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
     if(current.meta.state==='unknown'&&meta.state!=='unknown')current.meta.state=meta.state;
     const code=read(cells,'code').toUpperCase();
     const description=read(cells,'name');
-    const qty=numeric(read(cells,'quantity'));
+    const quantity=digits(read(cells,'quantity')).replace(/^−/,'-');
+    const negative=quantity.startsWith('-');
+    const qty=numeric(negative?quantity.slice(1):quantity);
     const u=unit(read(cells,'unit'));
     if(from===to)current.issues.push('حركة 011 إلى 011 غير صالحة.');
     if(!/^[A-Z]{2,6}\d{3,10}$/.test(code))current.issues.push('كود SAP غير صالح: '+code);
     if(qty===null||qty<0||qty>100000000)current.issues.push('كمية غير صالحة للصنف '+code);
     if(!u)current.issues.push('وحدة SAP غير معروفة للصنف '+code+': '+read(cells,'unit'));
     current.reverse ||= from==='011';
-    current.lines.push([code,description,read(cells,'quantity'),u||read(cells,'unit'),from,to].join('\t'));
+    current.signedAdjustment ||= negative;
+    current.lines.push([code,description,quantity,u||read(cells,'unit'),from,to].join('\t'));
     grouped.set(number,current);
   }
   const transfers:LieutenantTransfer[]=[];
@@ -131,6 +135,7 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
       remarks,lineCount:group.lines.length,reverse:group.reverse,
       cancellationState:state,
       cancellationMentioned:/has been canceled|cancelled|ملغى|إلغاء/i.test(remarks),
+      signedAdjustment:group.signedAdjustment,
       issues:problems,invoiceNumbers:invoices(remarks),
     });
   }

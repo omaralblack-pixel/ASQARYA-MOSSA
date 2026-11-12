@@ -543,7 +543,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
- {tab==='lieutenant'&&<FirstLieutenant branches={branches}
+ {tab==='lieutenant'&&<FirstLieutenant branches={branches} reference={reference}
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
     onOpenTransfer={(transfer,branch)=>{
       const next=blank();

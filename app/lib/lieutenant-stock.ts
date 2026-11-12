@@ -1,16 +1,20 @@
 import type {LieutenantTransfer} from './lieutenant';
+import type {Item} from './reconcile';
 
 export type LieutenantFileKind='transfers'|'opening'|'balance'|'other';
 export type StockItem={code:string;name:string;warehouse:string;unit:string;quantity:number};
 export type StockRead={items:StockItem[];issues:string[]};
-export type StockAuditItem=StockItem&{
-  opening:number|null;incoming:number;outgoing:number;netTransfers:number;
+export type StockAuditItem=Omit<StockItem,'quantity'>&{
+  quantity:number|null;
+  opening:number|null;incoming:number;outgoing:number;adjustment:number;netTransfers:number;
   approvedIncoming:number;estimated:number|null;difference:number|null;
+  requiredIncoming:number;uncoveredIncoming:number|null;movementComplete:boolean;
+  converted:boolean;issues:string[];
 };
 const clean=(value:string)=>value.replace(/^\uFEFF/,'').toLowerCase()
   .replace(/[\s._\-:،#]+/g,'').trim();
 const fields={
-  code:['رقم الصنف','كود الصنف','item no.','item no','itemcode'],
+  code:['رقم الصنف','كود الصنف','رقم المادة','item no.','item no','itemcode'],
   name:['اسم الصنف','وصف الصنف','item description','itemname'],
   warehouse:['المستودع','warehouse','whs'],
   unit:['وحدة المخزون','الوحدة','inventory uom','invntryuom','uom code','uom'],
@@ -66,7 +70,7 @@ export function parseLieutenantStock(source:string,kind:'opening'|'balance'):Sto
   for(let i=first+1;i<lines.length;i++){
     if(!lines[i].trim())continue;
     const row=lines[i].split('\t');
-    if(clean(at(row,'code'))===clean('رقم الصنف'))continue;
+    if(fields.code.some(alias=>clean(at(row,'code'))===clean(alias)))continue;
     const code=at(row,'code').toUpperCase();
     const warehouse=normalizeWarehouse(at(row,'warehouse'));
     const unit=normalizeUnit(at(row,'unit'));
@@ -88,42 +92,99 @@ export function parseLieutenantStock(source:string,kind:'opening'|'balance'):Sto
   return {items,issues};
 }
 
-/** The estimate only uses transfers and is NOT the complete OINM inventory journal.
- * Never infer a zero opening balance or convert between SAP UoMs implicitly.
+/** An estimate from transfers, not the complete OINM journal. Unit conversions
+ * require one unambiguous factor in the user's item reference; otherwise the
+ * comparison stays incomplete. Missing stock/opening data never means zero.
  */
 export function auditLieutenantStock(
   closing:StockItem[],opening:StockItem[],transfers:LieutenantTransfer[],
   approvedTransferNumbers:ReadonlySet<string>,from:string,to:string,
+  reference:Item[]=[],invoiceRequiredNumbers?:ReadonlySet<string>,
 ):StockAuditItem[]{
-  const starts=new Map(opening.filter(row=>row.warehouse==='011').map(row=>[row.code+'|'+row.unit,row.quantity]));
-  const movement=new Map<string,{incoming:number;outgoing:number;approvedIncoming:number}>();
+  const definitions=reference.filter(row=>row.active).flatMap(row=>[row,...(row.sapAliases||[])]);
+  const convert=(qty:number,code:string,sourceUnit:string,targetUnit:string):number|null=>{
+    if(sourceUnit===targetUnit)return qty;
+    const factors=definitions.filter(row=>row.sapCode===code).flatMap(row=>{
+      const piece=(unit:string)=>unit==='Piece'?1:unit==='Carton'?row.cartonPieces:
+        unit==='KG'&&row.kgPerPiece&&row.kgPerPiece>0?1/row.kgPerPiece:null;
+      const a=piece(sourceUnit),b=piece(targetUnit);
+      return a&&a>0&&b&&b>0?[a/b]:[];
+    });
+    if(!factors.length||factors.some(value=>Math.abs(value-factors[0])>0.000001))return null;
+    return qty*factors[0];
+  };
+  const items=new Map<string,StockItem>();
+  for(const row of closing)items.set(row.code+'|'+normalizeUnit(row.unit),{...row,unit:normalizeUnit(row.unit)});
+  const actualKeys=new Set(items.keys());
+  // Include codes absent from the stock sheet, rather than silently dropping
+  // their opening balance or movement from the report.
+  const addMissing=(code:string,name:string,unit:string)=>{
+    if(![...items.values()].some(row=>row.code===code))
+      items.set(code+'|'+unit,{code,name,warehouse:'011',unit,quantity:0});
+  };
+  for(const row of opening.filter(row=>row.warehouse==='011'))addMissing(row.code,row.name,normalizeUnit(row.unit));
   for(const source of transfers){
-    if(source.issues.length||source.transfer.date<from||source.transfer.date>to||
+    if(source.transfer.date&&(source.transfer.date<from||source.transfer.date>to))continue;
+    for(const line of source.transfer.paste.split('\n').slice(1)){
+      const [code,name,,unit]=line.split('\t');
+      if(code&&unit)addMissing(code.toUpperCase(),name,normalizeUnit(unit));
+    }
+  }
+  const movement=new Map<string,{incoming:number;outgoing:number;adjustment:number;approvedIncoming:number;requiredIncoming:number;converted:boolean;issues:Set<string>}>();
+  for(const source of transfers){
+    if(source.transfer.date&&(source.transfer.date<from||source.transfer.date>to)||
       source.cancellationState==='canceled'||source.cancellationState==='cancellation')continue;
     for(const line of source.transfer.paste.split('\n').slice(1)){
       const [code,,rawQty,rawUnit,rawFrom,rawTo]=line.split('\t');
       const qty=number(rawQty||'');
       const unit=normalizeUnit(rawUnit||'');
       const fromWh=normalizeWarehouse(rawFrom||''),toWh=normalizeWarehouse(rawTo||'');
-      if(!code||!unit||!Number.isFinite(qty)||qty<0)continue;
-      const key=code.toUpperCase()+'|'+unit;
-      const item=movement.get(key)||{incoming:0,outgoing:0,approvedIncoming:0};
-      if(toWh==='011'&&fromWh!=='011'){
-        item.incoming+=qty;
-        if(approvedTransferNumbers.has(source.transfer.number))item.approvedIncoming+=qty;
-      }else if(fromWh==='011'&&toWh!=='011')item.outgoing+=qty;
-      movement.set(key,item);
+      for(const target of [...items.values()].filter(row=>row.code===code.toUpperCase())){
+        const key=target.code+'|'+target.unit;
+        const item=movement.get(key)||{incoming:0,outgoing:0,adjustment:0,approvedIncoming:0,requiredIncoming:0,converted:false,issues:new Set<string>()};
+        movement.set(key,item);
+        if(source.issues.length||!source.transfer.date||!unit||!Number.isFinite(qty)){
+          item.issues.add('الترحيل '+source.transfer.number+' يحتوي بيانات تحتاج مراجعة؛ الكميات غير مكتملة.');
+          continue;
+        }
+        const converted=convert(qty,target.code,unit,target.unit);
+        if(converted===null){
+          item.issues.add('تحويل '+unit+' إلى '+target.unit+' غير معرّف بشكل موحّد للصنف.');
+          continue;
+        }
+        item.converted ||= unit!==target.unit;
+        if(qty<0){
+          if(toWh==='011'&&fromWh!=='011')item.adjustment+=converted;
+          else if(fromWh==='011'&&toWh!=='011')item.adjustment-=converted;
+        }else if(toWh==='011'&&fromWh!=='011'){
+          item.incoming+=converted;
+          if(!invoiceRequiredNumbers||invoiceRequiredNumbers.has(source.transfer.number)){
+            item.requiredIncoming+=converted;
+            if(approvedTransferNumbers.has(source.transfer.number))item.approvedIncoming+=converted;
+          }
+        }else if(fromWh==='011'&&toWh!=='011')item.outgoing+=converted;
+      }
     }
   }
-  return closing.map(row=>{
+  return [...items.values()].map(row=>{
     const key=row.code+'|'+row.unit;
-    const delta=movement.get(key)||{incoming:0,outgoing:0,approvedIncoming:0};
-    const openingValue=starts.get(key)??null;
-    const net=round(delta.incoming-delta.outgoing);
-    const estimated=openingValue===null?null:round(openingValue+net);
-    return {...row,opening:openingValue,incoming:round(delta.incoming),
-      outgoing:round(delta.outgoing),netTransfers:net,
-      approvedIncoming:round(delta.approvedIncoming),estimated,
-      difference:estimated===null?null:round(row.quantity-estimated)};
+    const delta=movement.get(key)||{incoming:0,outgoing:0,adjustment:0,approvedIncoming:0,requiredIncoming:0,converted:false,issues:new Set<string>()};
+    const starts=opening.filter(item=>item.warehouse==='011'&&item.code===row.code)
+      .map(item=>convert(item.quantity,row.code,normalizeUnit(item.unit),row.unit));
+    const openingValue=starts.length&&starts.every(value=>value!==null)&&
+      starts.every(value=>Math.abs(value!-starts[0]!)<0.000001)?round(starts[0]!):null;
+    if(starts.length&&openingValue===null)delta.issues.add('الرصيد الافتتاحي بوحدة مختلفة أو بتعريفات متعارضة.');
+    const net=round(delta.incoming-delta.outgoing+delta.adjustment);
+    const complete=delta.issues.size===0;
+    const estimated=openingValue===null||!complete?null:round(openingValue+net);
+    const actual=actualKeys.has(key)?row.quantity:null;
+    const notes=[...delta.issues];
+    if(actual===null)notes.push('الصنف غير موجود بكشف رصيد SAP؛ لا يُفترض أن رصيده صفر.');
+    return {...row,quantity:actual,opening:openingValue,incoming:round(delta.incoming),
+      outgoing:round(delta.outgoing),adjustment:round(delta.adjustment),netTransfers:net,
+      requiredIncoming:round(delta.requiredIncoming),approvedIncoming:round(delta.approvedIncoming),
+      uncoveredIncoming:complete?round(delta.requiredIncoming-delta.approvedIncoming):null,
+      movementComplete:complete,converted:delta.converted,issues:notes,estimated,
+      difference:estimated===null||actual===null?null:round(actual-estimated)};
   });
 }

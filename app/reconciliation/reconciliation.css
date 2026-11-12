@@ -1,5 +1,11 @@
 @scope (.recon-app) {
 
+.lieutenant-stock-table th{white-space:normal;min-width:72px;line-height:1.7}
+.lieutenant-stock-table .name-cell{min-width:150px;max-width:220px}
+.lieutenant-stock-table td:last-child{min-width:125px;max-width:220px;line-height:1.8}
+.lieutenant-stock-details{margin-top:18px}
+.lieutenant-stock-details summary{cursor:pointer;font-weight:600;color:#315f73}
+
 .sap-stock-query{border-color:#9dc5d5}
 .sap-stock-query-controls{align-items:flex-end}
 .sap-stock-query-controls>label{width:220px;max-width:100%}

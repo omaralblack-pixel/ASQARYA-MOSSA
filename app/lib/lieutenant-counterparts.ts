@@ -14,13 +14,13 @@ const reverseReference=/(?:عكس(?:ي)?(?:\s+ترحيل)?|ترحيل\s+عكسي
 export function isCashVanTransfer(source:LieutenantTransfer):boolean{
   return cashVan.test(source.remarks)||cashVan.test(source.branch);
 }
-function signature(source:LieutenantTransfer,flip=false):string{
+function signature(source:LieutenantTransfer,flip=false,absolute=false):string{
   if(source.issues.length)return '';
   const parts=source.transfer.paste.replace(/\r/g,'').split('\n').slice(1).map(line=>{
     const [code,,rawQty,rawUnit,from,to]=line.split('\t');
     const qty=Number((rawQty||'').replace(/,/g,''));
-    if(!code||!rawUnit||!from||!to||!Number.isFinite(qty)||qty<0)return '';
-    return [code.toUpperCase(),qty.toFixed(6),rawUnit.toLowerCase(),flip?to:from,flip?from:to].join('|');
+    if(!code||!rawUnit||!from||!to||!Number.isFinite(qty)||qty<0&&!absolute)return '';
+    return [code.toUpperCase(),(absolute?Math.abs(qty):qty).toFixed(6),rawUnit.toLowerCase(),flip?to:from,flip?from:to].join('|');
   });
   return !parts.length||parts.some(part=>!part)?'':parts.sort().join('||');
 }
@@ -33,7 +33,7 @@ function compare(incoming:LieutenantTransfer,outgoing:LieutenantTransfer):boolea
 }
 const active=(source:LieutenantTransfer)=>
   source.cancellationState!=='canceled'&&source.cancellationState!=='cancellation'&&
-  !officialCancellation.test(source.remarks);
+  !source.signedAdjustment&&!officialCancellation.test(source.remarks);
 
 export function analyzeLieutenantMovements(
   transfers:LieutenantTransfer[],periodEnd:string,
@@ -71,6 +71,27 @@ export function analyzeLieutenantMovements(
   for(const source of transfers){
     if(source.cancellationState==='canceled')
       resolved.set(source.transfer.number,{kind:'sap-canceled',note:'حالة SAP: ملغى (Y)'});
+  }
+
+  // The shared SAP query represents correction documents as signed quantities
+  // in the original direction. Their stock effect is valid; a negative sign
+  // and Remarks do not, on their own, prove CANCELED=Y/C in SAP.
+  for(const correction of transfers){
+    if(!correction.signedAdjustment||correction.cancellationState==='canceled'||correction.cancellationState==='cancellation')continue;
+    const originalNo=correction.remarks.match(officialCancellation)?.[1];
+    const original=originalNo?byNumber.get(originalNo):undefined;
+    const allNegative=correction.transfer.paste.split('\n').slice(1)
+      .every(line=>Number((line.split('\t')[2]||'').replace(/,/g,''))<0);
+    const matches=original&&allNegative&&!original.signedAdjustment&&
+      (!original.branch||!correction.branch||original.branch===correction.branch)&&
+      original.transfer.date<=correction.transfer.date&&!!signature(original)&&
+      signature(original)===signature(correction,false,true);
+    resolved.set(correction.transfer.number,{kind:'cancellation-review',counterpart:originalNo,
+      note:'حركة تصحيح سالبة؛ يُحتسب أثرها الموقّع في المخزون، وتحتاج حالة الإلغاء للتحقق على SAP. لا تحتاج فاتورة زرقاء مستقلة.'});
+    if(matches&&original&&!resolved.has(original.transfer.number)&&correction.transfer.date<=periodEnd)
+      resolved.set(original.transfer.number,{kind:'cancellation-review',counterpart:correction.transfer.number,
+        note:'يقابله تصحيح سالب مطابق بالكامل رقم '+correction.transfer.number+
+          ' بتاريخ '+correction.transfer.date+'؛ تحقّق من حالة الإلغاء على SAP قبل طلب فاتورة له.'});
   }
 
   // First honor an explicitly referenced reverse, but only when all original
