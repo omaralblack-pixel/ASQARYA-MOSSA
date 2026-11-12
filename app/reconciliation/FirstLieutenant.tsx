@@ -528,7 +528,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [stockFilter,setStockFilter]=useState('all');
   const stockEvidence=useMemo(()=>stockDifferenceEvidence(transfers,from,to),[transfers,from,to]);
   const visibleStockRows=stockRows.filter(item=>(!coverageReady||stockFilter==='all'||
-    (stockFilter==='uncovered'?item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001:
+    (stockFilter==='difference'?item.difference!==null&&Math.abs(item.difference)>0.000001:
+    stockFilter==='uncovered'?item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001:
     stockFilter==='incomplete'?!item.movementComplete:item.movementComplete&&item.requiredIncoming>0&&item.uncoveredIncoming===0))&&
     (!stockQueryText||(item.code+' '+item.name).toLowerCase().includes(stockQueryText.trim().toLowerCase())));
 
@@ -903,6 +904,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <div className="stat"><span>الترحيلات المحمّلة</span><strong>{transfers.length}</strong></div>
           <div className="stat"><span>أصناف بحاجة فواتير معتمدة</span><strong>{coverageReady?uncoveredItems.length:'—'}</strong></div>
           <div className="stat"><span>أصناف تحتاج مراجعة البيانات</span><strong>{canCompare?incompleteItems.length:'—'}</strong></div>
+          <div className="stat"><span>أصناف فيها فرق بالأرصدة</span><strong>{canCompare?stockRows.filter(item=>item.difference!==null&&Math.abs(item.difference)>0.000001).length:'—'}</strong></div>
         </div>
         {!closing.date&&<button className="button secondary" type="button" disabled={busy}
           onClick={()=>void stampStockDate(closing,'balance')}>
@@ -931,7 +933,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         <div className="table-controls no-print">
           <label>بحث في الأصناف<input type="search" value={stockQueryText} onChange={event=>setStockQueryText(event.target.value)} placeholder="كود SAP أو اسم الصنف"/></label>
           <label>عرض الأصناف<select value={stockFilter} disabled={!coverageReady} onChange={event=>setStockFilter(event.target.value)}>
-            <option value="all">كل الأصناف</option><option value="uncovered">بحاجة فواتير معتمدة</option>
+            <option value="all">كل الأصناف</option><option value="difference">فروقات الأرصدة فقط</option><option value="uncovered">بحاجة فواتير معتمدة</option>
             <option value="covered">مغطاة بفواتير معتمدة</option><option value="incomplete">بيانات تحتاج مراجعة</option>
           </select></label>
         </div>
@@ -963,10 +965,10 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
                 </div>
                 <div className={'lieutenant-balance-metric lieutenant-balance-difference '+
                   (negative?'is-short':positive?'is-extra':'is-match')}>
-                  <span>الفرق بالأرصدة (SAP − المتوقع)</span>
+                  <span>الفرق</span>
                   <strong dir="ltr">{gap===null?'—':(gap>0.000001?'+':'')+gap.toFixed(3)}</strong>
                   <small>{gap===null?'البيانات غير مكتملة':negative?'نقص برصيد SAP':
-                    positive?'زيادة برصيد SAP':'مطابق'}</small>
+                    positive?'زيادة برصيد SAP':'مطابق'} · SAP − المتوقع</small>
                 </div>
               </div>
               <div className="lieutenant-balance-secondary">
@@ -1013,7 +1015,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <p className="hint">الفرق التفسيري هو رصيد SAP − (الافتتاحي + صافي الترحيلات). لا يمثل حكمًا نهائيًا على صحة رصيد المستودع دون سجل جميع حركات المخزون.</p>
           <div className="table-scroll"><table><thead><tr>
             <th>كود SAP</th><th>الوحدة</th><th>الافتتاحي</th><th>الوارد</th><th>الصادر / العكسي</th>
-            <th>أثر التصحيحات الموقّع</th><th>المتوقع من الترحيلات</th><th>رصيد SAP الفعلي</th><th>الفرق التفسيري</th><th>سبب الفرق / ما يلزم إثباته</th>
+            <th>أثر التصحيحات الموقّع</th><th>المتوقع من الترحيلات</th><th>رصيد SAP الفعلي</th><th>الفرق</th><th>تفسير الفرق</th>
           </tr></thead><tbody>{visibleStockRows.map(item=><tr key={item.code+'|'+item.unit}>
             <td dir="ltr">{item.code}</td><td>{stockUnit(item.unit)}</td>
             <td dir="ltr">{canCompare&&item.opening!==null?item.opening.toFixed(3):'—'}
