@@ -527,8 +527,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [stockQueryText,setStockQueryText]=useState('');
   const [stockFilter,setStockFilter]=useState('all');
   const stockEvidence=useMemo(()=>stockDifferenceEvidence(transfers,from,to),[transfers,from,to]);
-  const visibleStockRows=stockRows.filter(item=>(!coverageReady||stockFilter==='all'||
+  const visibleStockRows=stockRows.filter(item=>(!canCompare||stockFilter==='all'||
     (stockFilter==='difference'?item.difference!==null&&Math.abs(item.difference)>0.000001:
+    !coverageReady?true:
     stockFilter==='uncovered'?item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001:
     stockFilter==='incomplete'?!item.movementComplete:item.movementComplete&&item.requiredIncoming>0&&item.uncoveredIncoming===0))&&
     (!stockQueryText||(item.code+' '+item.name).toLowerCase().includes(stockQueryText.trim().toLowerCase())));
@@ -932,9 +933,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         <p className="hint">«المتوقع من الترحيلات» = الافتتاحي + الوارد − الصادر + أثر التصحيحات الموقّع. الصنف الغائب عن كشف الافتتاحي المعتمد لنفس تاريخ البداية يُحسب افتتاحيه صفرًا. إذا كان كشف الافتتاحي غير متوفر أو فيه أخطاء أو تعارض تحويل وحدات، تبقى القيمة «—» ولا يُفترض الصفر. مطابقة رصيد المستودع النهائية تحتاج جميع حركات OINM، بما فيها البيع والتسويات.</p>
         <div className="table-controls no-print">
           <label>بحث في الأصناف<input type="search" value={stockQueryText} onChange={event=>setStockQueryText(event.target.value)} placeholder="كود SAP أو اسم الصنف"/></label>
-          <label>عرض الأصناف<select value={stockFilter} disabled={!coverageReady} onChange={event=>setStockFilter(event.target.value)}>
-            <option value="all">كل الأصناف</option><option value="difference">فروقات الأرصدة فقط</option><option value="uncovered">بحاجة فواتير معتمدة</option>
-            <option value="covered">مغطاة بفواتير معتمدة</option><option value="incomplete">بيانات تحتاج مراجعة</option>
+          <label>عرض الأصناف<select value={stockFilter} disabled={!canCompare} onChange={event=>setStockFilter(event.target.value)}>
+            <option value="all">كل الأصناف</option><option value="difference">فروقات الأرصدة فقط</option><option value="uncovered" disabled={!coverageReady}>بحاجة فواتير معتمدة</option>
+            <option value="covered" disabled={!coverageReady}>مغطاة بفواتير معتمدة</option><option value="incomplete">بيانات تحتاج مراجعة</option>
           </select></label>
         </div>
         <div className="lieutenant-balance-list">
@@ -978,6 +979,13 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
                 <div><span>غير مغطى بفواتير معتمدة</span><b dir="ltr">{coverageReady?qty(item.uncoveredIncoming):'—'}</b></div>
               </div>
               <div className="lieutenant-balance-notes">
+                {gap!==null&&Math.abs(gap)>0.000001&&<p>
+                  <strong>فحص سبب الفرق: </strong>
+                  {reversed.length>0||canceled.length>0?
+                    'ظهر '+reversed.length+' سطر عكسي و'+canceled.length+
+                    ' سطر إلغاء/ملغى في كشف SAP. افتح تفاصيل المستندات للتأكد من أثرها.':
+                    'لا يوجد عكسي أو إلغاء ظاهر لهذا الصنف في فترة كشف SAP الحالية؛ سبب الفرق غير مثبت.'}
+                </p>}
                 <strong>حالة الفواتير: </strong>
                 {!coverageReady?'بانتظار اكتمال مصادر المقارنة':
                   !item.movementComplete?'بيانات ناقصة':
