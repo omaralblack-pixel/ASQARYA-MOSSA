@@ -25,13 +25,21 @@ assert.deepEqual(result.count,{received:1,pending:0,missing:0,review:0});
 assert.deepEqual(result.blockers,[]);
 assert.deepEqual(serialColumns(result.rows[0].transfers),['2611001','2611002','2611003','2611004']);
 result=evaluateSerial([row(5,'2624002303','186.401')],[correct]);
-assert.equal(result.rows[0].state,'review','Difference of 1 fils must not become green');
+assert.equal(result.rows[0].state,'received_difference','One-fils discrepancy is received but stays yellow');
+assert.equal(result.count.received,1,'A received invoice with a difference belongs in received total');
+assert.equal(result.count.review,0,'Amount difference alone must not count as unreceived/review');
 result=evaluateSerial([row(5,'2624002303','186.400')],[record('g1',[invoice('2624002303','186.400',false)],base)]);
 assert.equal(result.rows[0].state,'pending','Unchecked paper must stay pink');
+result=evaluateSerial([row(5,'2624002303','186.401')],[record('g1',[invoice('2624002303','186.400',false)],base)]);
+assert.equal(result.rows[0].state,'pending','Amount difference must never conceal unconfirmed paper');
+assert.ok(serialReviewNote(result.rows[0]).includes('ورق الفاتورة غير مؤكد'));
 result=evaluateSerial([row(5,'9999999999','1.000')],[correct]);
 assert.equal(result.rows[0].state,'missing');
 result=evaluateSerial([row(5,'2624002303','186.400')],[record('g1',[invoice('2624002303','186.400')],base,{summary:{status:'review'}})]);
 assert.equal(result.rows[0].state,'review','Unapproved reconciliation cannot be received');
+result=evaluateSerial([row(5,'2624002303','186.401')],[record('g1',[invoice('2624002303','186.400')],base,{summary:{status:'review'}})]);
+assert.equal(result.rows[0].state,'review','Discrepancy does not override an unapproved reconciliation');
+assert.ok(serialReviewNote(result.rows[0]).includes('المطابقة المحفوظة غير معتمدة'));
 result=evaluateSerial([row(5,'2624002303','186.400'),row(7,'2624002303','186.400')],[correct]);
 assert.ok(result.blockers.some(e=>e.includes('مكرر')));
 result=evaluateSerial([row(5,'2624002303','186.400')],[correct,record('g2',[invoice('2624002303','186.400')],base)]);
@@ -156,8 +164,8 @@ const unapprovedOld=record('g-old-review',[
 assert.ok(evaluateSerial([row(5,'2624002303','186.400')],[unapprovedOld]).blockers
  .some(e=>e.includes('لا يمكن ربط')),
  'Only already MATCH records receive historical exception');
-assert.equal(evaluateSerial([row(5,'2624002303','186.401')],[legacyRecord]).rows[0].state,'review',
- 'One-fils mismatch in Saja still requires review');
+assert.equal(evaluateSerial([row(5,'2624002303','186.401')],[legacyRecord]).rows[0].state,'received_difference',
+ 'One-fils mismatch in an approved legacy invoice is received with a yellow remark');
 assert.ok(evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002303','186.400')],[legacyRecord]).blockers
  .some(e=>e.includes('مكرر')),
  'Invoice duplicates remain critical errors');
@@ -170,13 +178,15 @@ result=evaluateSerial([row(5,'2624002303','186.401')],[correct]);
 assert.equal(result.rows[0].omarNumber,'2624002303');
 assert.equal(result.rows[0].omarAmount,'186.400');
 assert.equal(result.rows[0].amount,'186.401');
-assert.equal(result.rows[0].state,'review');
+assert.equal(result.rows[0].state,'received_difference');
+assert.equal(result.count.received,1);
 const guessedSaja={...row(5,'2660506908','186.400'),originalTransfers:['2611001']};
 result=evaluateSerial([guessedSaja],[correct]);
-assert.equal(result.rows[0].state,'review','A number discrepancy must never become green');
+assert.equal(result.rows[0].state,'received_difference','A uniquely transfer-linked number discrepancy is received in yellow');
+assert.equal(result.count.received,1,'Unique SAP transfer evidence counts a paper-confirmed invoice as received');
 assert.equal(result.rows[0].number,'2660506908','Preserve the original Saja guess');
 assert.equal(result.rows[0].omarNumber,'2624002303','Show Omar official invoice number via unique transfer');
-assert.ok(result.rows[0].reason.includes('اختلاف رقم الفاتورة'));
+assert.ok(serialReviewNote(result.rows[0]).includes('فرق رقم الفاتورة'));
 const second=record('another',[invoice('2629999999','12.000')],[transfer('2611001','DAR00001','001','011')]);
 result=evaluateSerial([guessedSaja],[correct,second]);
 assert.equal(result.rows[0].state,'missing','Ambiguous transfer ownership must not guess Omar invoice');
@@ -192,7 +202,9 @@ assert.equal(serialReviewNote(wrongNumber),'فرق رقم الفاتورة: عم
 const bothWrong=evaluateSerial([{...guessedSaja,amount:'186.420'}],[correct]).rows[0];
 assert.ok(serialReviewNote(bothWrong).includes('فرق رقم الفاتورة: عمر'));
 assert.ok(serialReviewNote(bothWrong).includes('فرق المبلغ: عمر 186.400'));
+assert.equal(bothWrong.state,'received_difference','Both discrepancies remain one received yellow invoice');
+assert.equal(evaluateSerial([{...guessedSaja,amount:'186.420'}],[correct]).count.received,1);
 assert.equal(serialReviewNote(evaluateSerial([row(5,'9999999999','2.000')],[correct]).rows[0]),'غير موجودة في سجل المطابقة؛ لا يمكن استنتاج وصول الورق من غياب التسجيل');
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
-console.log('PASS: Omar/Saja numbers and amounts are preserved side by side; uncertain links remain unresolved');
-console.log('PASS: serial soldier retains approved old group matching without page numbers, while enforcing amount, duplicates and new records');
+console.log('PASS: confirmed arrival is counted despite amount/number differences while uncertain links remain unresolved');
+console.log('PASS: serial soldier retains approved old group matching without page numbers, preserves discrepancy notes, and enforces uniqueness and pending states');
