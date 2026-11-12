@@ -176,7 +176,7 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
         return reply(400, "طلب حذف الملف غير صالح.");
       }
       if (typeof key !== "string" ||
-        !/^lieutenant\\/(?:transfers|opening|balance|other)__[a-f0-9]{32}__[^/\\\\]{1,120}$/.test(key)) {
+        !/^lieutenant[/](?:transfers|opening|balance|other)__[a-f0-9]{32}__[^/\\]{1,120}$/.test(key)) {
         return reply(400, "معرّف ملف الأرشيف غير صالح.");
       }
       const result = await fetch(base + "/" + bucket, {
