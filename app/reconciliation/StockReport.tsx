@@ -5,6 +5,7 @@ import {Download,RefreshCw} from 'lucide-react';
 import {digits} from '../lib/reconcile';
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 import {stockHeaders,stockReport} from '../lib/stock-report';
+import {tableWorkbook} from '../lib/invoice-workbook';
 
 const formatQuantity=new Intl.NumberFormat('en-US',{minimumFractionDigits:3,maximumFractionDigits:6});
 const searchable=(value:string)=>digits(value).trim().toLowerCase();
@@ -27,6 +28,7 @@ export default function StockReport(){
   const selectedPeriod=selectedFrom&&selectedTo?selectedFrom+' — '+selectedTo:'';
   const query=searchable(search);
   const visible=report?.items.filter(row=>searchable(row.sapCode+' '+row.name).includes(query))??[];
+  const cancellationOnly=report?.items.some(row=>row.cancellation!==0&&row.incoming===0&&row.reverse===0)??false;
 
   async function reload(){
     setLoading(true);
@@ -47,7 +49,6 @@ export default function StockReport(){
   async function download(){
     if(!file||invalidRange||!report?.items.length||report.issues.length)return;
     try{
-      const {tableWorkbook}=await import('../lib/invoice-workbook');
       const rows=[
         ['صافي الترحيلات إلى مستودع 011'],
         ['الفترة المختارة حسب تاريخ الترحيل',selectedPeriod],
@@ -58,14 +59,24 @@ export default function StockReport(){
         stockHeaders,
         ...report.items.map(row=>[row.sapCode,row.name,row.unit,row.incoming,row.reverse,row.cancellation,row.net]),
       ];
-      const url=URL.createObjectURL(tableWorkbook(rows,'صافي الترحيل 011',[24,68,14,19,19,17,19],7));
-      const link=document.createElement('a');
-      link.href=url;
-      link.download='SAP_011_Net_Transfers_'+selectedFrom+'_to_'+selectedTo+'.xlsx';
-      link.click();
-      setTimeout(()=>URL.revokeObjectURL(url),1000);
-    }catch{
-      setError('تعذّر تنزيل كشف Excel. حاول مرة ثانية.');
+      const workbook=tableWorkbook(rows,'صافي الترحيل 011',[24,68,14,19,19,17,19],7);
+      if(!workbook.size)throw new Error('ملف Excel الناتج فارغ.');
+      const url=URL.createObjectURL(workbook);
+      try{
+        const link=document.createElement('a');
+        link.href=url;
+        link.download='SAP_011_Net_Transfers_'+selectedFrom+'_to_'+selectedTo+'.xlsx';
+        document.body.appendChild(link);
+        try{link.click();}finally{link.remove();}
+        setError('');
+      }finally{
+        // Some browsers still read the object URL after the click handler returns.
+        setTimeout(()=>URL.revokeObjectURL(url),30_000);
+      }
+    }catch(cause){
+      console.error('Warehouse 011 Excel export failed',cause);
+      const reason=cause instanceof Error?cause.message:'';
+      setError('تعذّر تنزيل كشف Excel.'+(reason?' السبب: '+reason:' راجع إعدادات تنزيل الملفات في المتصفح.'));
     }
   }
 
@@ -95,6 +106,7 @@ export default function StockReport(){
         {invalidRange&&<p className="banner error" role="alert">تاريخ البداية بعد تاريخ النهاية. عدّل الفترة حتى يظهر صافي الترحيلات الصحيح.</p>}
         {report&&<p>الفترة المختارة <b dir="ltr">{selectedPeriod}</b> · {report.codes} كود SAP · {report.documents} مستند ترحيل</p>}
         <p className="hint">الصافي = الوارد − العكسي + أثر الإلغاء. الرقم السالب في أثر الإلغاء يخصم من الصافي، والموجب يضيف إليه.</p>
+        {cancellationOnly&&<p className="hint">تنبيه: بعض أصناف الفترة فيها أثر إلغاء فقط دون وارد أو عكسي في نفس الفترة. الصافي هنا صافي حركة، وليس الرصيد الفعلي في المستودع 011؛ قد يكون أصل الحركة في تاريخ خارج الفترة المختارة.</p>}
         {!!report?.issues.length&&<details className="banner error">
           <summary>الكشف غير مكتمل. راجع {report.issues.length} ملاحظة قبل تنزيله.</summary>
           {report.issues.map((issue,index)=><p key={index}>{issue}</p>)}
