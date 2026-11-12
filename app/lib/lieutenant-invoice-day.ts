@@ -1,10 +1,10 @@
-import {convert,numeric,parseTransfer,sapReferences,soldierLineKey,transferNumbers,
+import {convert,invoiceDocumentNo,numeric,parseTransfer,sapReferences,soldierLineKey,transferNumbers,
   type Draft,type Item,type TransferLine} from './reconcile';
 import type {CollectedInvoice} from './invoice-collector';
 import type {LieutenantTransfer} from './lieutenant';
-import {analyzeLieutenantMovements} from './lieutenant-counterparts';
+import {analyzeLieutenantMovements,isCashVanTransfer} from './lieutenant-counterparts';
 
-export type DayInvoiceState='match'|'late'|'pending'|'short'|'extra'|'review';
+export type DayInvoiceState='match'|'late'|'pending'|'short'|'extra'|'review'|'cashvan-settled'|'cashvan-pending';
 export type DayInvoiceRecord={id:string;branch:string;status:string;payload:string};
 export type DayInvoiceData={
   rows:CollectedInvoice[];records:DayInvoiceRecord[];
@@ -15,6 +15,7 @@ export type DayInvoiceResult={
   recordId:string;number:string;branch:string;invoiceDate:string;asOf:string;
   transferNumbers:string[];postedDates:string[];state:DayInvoiceState;
   financiallyMatchedGroup:boolean;items:DayItemResult[];notes:string[];
+  cashVan?:boolean;reverseNumbers?:string[];
 };
 export type DayInvoiceReport={rows:DayInvoiceResult[];sourceLastDate:string;};
 const epsilon=0.000001;
@@ -134,6 +135,47 @@ export function auditInvoicesForDay(
     const savedStatus=registered?.status||
       (draft as (Draft&{summary?:{status?:string}})|undefined)?.summary?.status;
     const financiallyMatchedGroup=savedStatus==='match';
+    // Cash Van is a stock movement that must be settled by reverse/cancellation,
+    // NOT a missing blue invoice. Do not demand paper lines or fabricate zeroes.
+    // Only apply when SAP itself identifies the incoming movement as Cash Van
+    // and there is no valid saved blue invoice number.
+    const allNumbers=[...new Set([
+      ...row.transferNumbers,...row.unresolvedTransferNumbers,...row.groupConfirmedTransfers,
+    ])];
+    const cashSources=allNumbers.map(number=>bySource.get(number)).filter(
+      (item):item is LieutenantTransfer=>!!item&&isCashVanTransfer(item)&&!item.reverse);
+    if(!invoiceDocumentNo(row.number)&&cashSources.length>0){
+      const cashNotes=['هذه حركة كاش فان وليست فاتورة زرقاء؛ المطلوب عكسي مطابق أو إلغاء SAP موثق.'];
+      const reverseNumbers=[...new Set(cashSources.flatMap(item=>{
+        const movement=movements.get(item.transfer.number);
+        return movement?.kind==='reversed'||movement?.kind==='cashvan-pending'?
+          movement.counterparts||[movement.counterpart].filter((value):value is string=>!!value):[];
+      }))];
+      const allPresent=allNumbers.length===cashSources.length;
+      const settled=allPresent&&cashSources.every(item=>{
+        const movement=movements.get(item.transfer.number);
+        return item.transfer.date<=asOf&&(
+          movement?.kind==='reversed'||
+          movement?.kind==='sap-canceled'&&!!movement.counterpartDate&&
+            movement.counterpartDate<=asOf);
+      });
+      for(const item of cashSources){
+        const movement=movements.get(item.transfer.number);
+        if(movement?.note)cashNotes.push(item.transfer.number+': '+movement.note);
+        if(item.transfer.date>asOf)
+          cashNotes.push('الترحيل '+item.transfer.number+' بعد تاريخ الفحص '+asOf+'.');
+      }
+      if(!allPresent)
+        cashNotes.push('بعض الترحيلات المرتبطة غير موجودة أو ليست كاش فان مؤكدًا في كشف SAP؛ لا يمكن اعتماد تسوية المجموعة.');
+      if(!settled)
+        cashNotes.push('التسوية الكاملة غير مثبتة حتى '+asOf+'؛ لا تعتبرها ملغاة أو مسوّاة قبل إثبات كل الكميات.');
+      return {recordId:row.recordId,number:row.number,branch:row.branch,
+        invoiceDate:row.date,asOf,transferNumbers:allNumbers,
+        postedDates:[...new Set(cashSources.map(item=>item.transfer.date)
+          .filter(date=>!!date&&date<=asOf))].sort(),
+        state:settled?'cashvan-settled':'cashvan-pending',financiallyMatchedGroup:false,
+        items:[],notes:cashNotes,cashVan:true,reverseNumbers};
+    }
     if(!invoice)notes.push('الفاتورة غير موجودة في سجل المجموعة.');
     if(!invoice?.complete)notes.push('الفاتورة الورقية غير مؤكدة الاكتمال.');
     if(duplicateNumbers.get(row.branch+'|'+row.number)!>1)
