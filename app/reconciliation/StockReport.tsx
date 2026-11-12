@@ -125,7 +125,7 @@ export default function StockReport(){
           </label>
         </div>
         {view==='invoices'?
-          <InvoiceComparison file={file} selectedFrom={selectedFrom} selectedTo={selectedTo} invalidRange={invalidRange}/>:
+          <InvoiceComparison file={file!} selectedFrom={selectedFrom} selectedTo={selectedTo} invalidRange={invalidRange}/>:
           <>
         <div className="table-controls">
           <div className="search"><input type="search" aria-label="البحث في كشف الترحيلات" placeholder="ابحث بكود SAP أو اسم الصنف" value={search} onChange={e=>setSearch(e.target.value)}/></div>
