@@ -240,7 +240,6 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         errors.push(state.reason instanceof Error?state.reason.message:'تعذّر تحميل بيانات المطابقة.');
       }
       if(errors.length)setError(errors.join(' '));
-      }
     }
     void init();
     return()=>{active=false};
