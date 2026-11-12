@@ -35,7 +35,9 @@ jobs:
             node "$test"
           done
       - name: First lieutenant 011 regression tests
-        run: node scripts/test-lieutenant.mjs
+        run: |
+          node scripts/test-lieutenant.mjs
+          node scripts/test-lieutenant-invoice-day.mjs
       - name: SAP 011 closing stock query regression tests
         run: node scripts/test-sap-stock-query.mjs
       - name: Storage, invoice registry and uniqueness checks
