@@ -178,7 +178,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     return next.files;
   }
   async function deleteArchive(file:StoredFile){
-    if(!window.confirm('حذف الملف "'+file.name+'" نهائيًا من أرشيف الملازم أول؟\\n\\nلن تُحذف الفواتير أو الترحيلات أو المطابقات المحفوظة، لكن نسخة الملف الأصلية لن تعود متاحة من الأرشيف.'))return;
+    if(!window.confirm('حذف الملف "'+file.name+'" نهائيًا من أرشيف الملازم أول؟ لن تُحذف الفواتير أو الترحيلات أو المطابقات المحفوظة، لكن نسخة الملف الأصلية لن تعود متاحة من الأرشيف.'))return;
     setBusy(true);setError('');setMessage('');
     try{
       const result=await checkedJson<{deleted:boolean;key:string}>('/api/lieutenant-files',{
