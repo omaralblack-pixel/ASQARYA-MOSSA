@@ -10,11 +10,11 @@ export type DayInvoiceData={
   rows:CollectedInvoice[];records:DayInvoiceRecord[];
   unreadableRecords:number;undatedInvoices:number;inferredDates:number;
 };
-export type DayItemResult={code:string;name:string;expected:number;posted:number;difference:number};
+export type DayItemResult={code:string;name:string;expected:number|null;posted:number|null;difference:number|null};
 export type DayInvoiceResult={
   recordId:string;number:string;branch:string;invoiceDate:string;asOf:string;
   transferNumbers:string[];postedDates:string[];state:DayInvoiceState;
-  items:DayItemResult[];notes:string[];
+  financiallyMatchedGroup:boolean;items:DayItemResult[];notes:string[];
 };
 export type DayInvoiceReport={rows:DayInvoiceResult[];sourceLastDate:string;};
 const epsilon=0.000001;
@@ -127,6 +127,10 @@ export function auditInvoicesForDay(
       if(!draft?.invoices?.length||!draft.transfers)throw Error('invalid');
     }catch{notes.push('تعذّر قراءة تفاصيل الفاتورة المحفوظة.');}
     const invoice=draft?.invoices.find(item=>item.id===row.invoiceId);
+    // A saved group-level financial match is not proof of the item quantities
+    // or the allocation of a shared SAP transfer to an individual invoice.
+    const financiallyMatchedGroup=registered?.status==='match'||
+      (draft as (Draft&{summary?:{status?:string}})|undefined)?.summary?.status==='match';
     if(!invoice)notes.push('الفاتورة غير موجودة في سجل المجموعة.');
     if(!invoice?.complete)notes.push('الفاتورة الورقية غير مؤكدة الاكتمال.');
     if(duplicateNumbers.get(row.branch+'|'+row.number)!>1)
@@ -135,23 +139,29 @@ export function auditInvoicesForDay(
       notes.push('المجموعة متعددة الصفحات وفيها ترحيلات لم يثبت توزيع بنودها على هذه الفاتورة.');
     const paper=invoice?paperQuantities(invoice):{totals:new Map<string,number>(),issues:['بيانات الفاتورة غير متاحة.']};
     notes.push(...paper.issues);
+    // Missing/partially readable paper quantities are unknown, NEVER zero.
+    const paperKnown=!!invoice?.complete&&paper.issues.length===0&&paper.totals.size>0;
     const references=draft?.referenceSnapshot?.length?draft.referenceSnapshot:currentReference;
     if(!references.length)notes.push('مرجع ربط أصناف المؤسسة بأكواد SAP غير متاح.');
     const posted=new Map<string,number>();
     let anyTransfer=false;
     const nums=[...new Set(row.transferNumbers)];
+    let postedKnown=!!invoice&&!row.unresolvedTransferNumbers.length&&
+      !row.groupConfirmedTransfers.length;
     const page=draft?.invoices.findIndex(item=>item.id===row.invoiceId)??-1;
     for(const number of nums){
       const current=bySource.get(number);
       if(!current){
         // No SAP posting can be inferred from a saved invoice number alone.
+        postedKnown=false;
+        notes.push('الترحيل '+number+' غير موجود في كشف SAP الحالي.');
         continue;
       }
       if(current.issues.length){
-        notes.push('الترحيل '+number+' غير مكتمل في ملف SAP.');continue;
+        postedKnown=false;notes.push('الترحيل '+number+' غير مكتمل في ملف SAP.');continue;
       }
       if(!current.transfer.date){
-        notes.push('الترحيل '+number+' بلا تاريخ SAP مثبت.');continue;
+        postedKnown=false;notes.push('الترحيل '+number+' بلا تاريخ SAP مثبت.');continue;
       }
       if(current.transfer.date>asOf)continue;
       const state=movements.get(number);
@@ -167,7 +177,7 @@ export function auditInvoicesForDay(
       if(state?.kind==='reversed')continue; // Full exact reverse within cutoff; net incoming is zero.
       const parsed=sourceLines(current);
       if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length){
-        notes.push('تعذّر تدقيق بنود الترحيل '+number+'.');continue;
+        postedKnown=false;notes.push('تعذّر تدقيق بنود الترحيل '+number+'.');continue;
       }
       // Multiple numbered documents in one legacy card cannot supply trustworthy
       // row-level page allocations. Single-invoice groups still audit all docs.
@@ -176,12 +186,13 @@ export function auditInvoicesForDay(
       if(draft&&draft.invoices.length>1){
         const cards=draft.transfers.filter(item=>transferNumbers(item.number||'').includes(number));
         if(cards.length!==1||transferNumbers(cards[0].number||'').length!==1){
-          notes.push('توزيع الترحيل '+number+' بين صفحات الفواتير غير مثبت.');continue;
+          postedKnown=false;notes.push('توزيع الترحيل '+number+' بين صفحات الفواتير غير مثبت.');continue;
         }
         transferId=cards[0].id;
         const saved=parseTransfer(cards[0].paste,{allowReverse:true});
         if(saved.issues.length||saved.excluded.length||
           signature(saved.lines)!==signature(parsed.lines)){
+          postedKnown=false;
           notes.push('بنود الترحيل '+number+' تغيّرت عن النسخة التي وُزّعت على صفحات الفواتير.');continue;
         }
         savedLines=saved.lines;
@@ -192,17 +203,18 @@ export function auditInvoicesForDay(
         if(!invoice){notes.push('بيانات الفاتورة غير متاحة.');break;}
         const item=refFor(references,line.sapCode,invoice);
         if(!item){
+          postedKnown=false;
           notes.push('لا يوجد ربط وحيد مؤكد للصنف SAP '+line.sapCode+' بهذه الفاتورة.');continue;
         }
         let pieces:number;
         try{pieces=convert(line,item)}
-        catch{notes.push('شدّة أو وزن تحويل '+line.sapCode+' إلى الحبة غير معرّف.');continue}
-        if(!Number.isFinite(pieces)){notes.push('كمية محوّلة غير صالحة للصنف '+line.sapCode);continue}
+        catch{postedKnown=false;notes.push('شدّة أو وزن تحويل '+line.sapCode+' إلى الحبة غير معرّف.');continue}
+        if(!Number.isFinite(pieces)){postedKnown=false;notes.push('كمية محوّلة غير صالحة للصنف '+line.sapCode);continue}
         if(draft&&draft.invoices.length>1){
           const savedLine=savedLines?.[index];
-          if(!savedLine){notes.push('توزيع سطر SAP غير مكتمل للترحيل '+number);continue}
+          if(!savedLine){postedKnown=false;notes.push('توزيع سطر SAP غير مكتمل للترحيل '+number);continue}
           const parts=pageParts(draft,transferId,savedLine,pieces,item.code);
-          if(!parts){notes.push('توزيع سطر '+line.sapCode+' بين الفواتير غير مثبت.');continue}
+          if(!parts){postedKnown=false;notes.push('توزيع سطر '+line.sapCode+' بين الفواتير غير مثبت.');continue}
           pieces=parts[String(page+1)]||0;
         }
         if(pieces>epsilon){
@@ -218,10 +230,10 @@ export function auditInvoicesForDay(
           if(!correction.transfer.date||correction.transfer.date>asOf||correction.issues.length)continue;
           const adjusted=correctionLines(correction);
           if(adjusted.issues.length||adjusted.excluded.length||!adjusted.lines.length){
-            notes.push('حركة التصحيح '+correction.transfer.number+' غير قابلة للتحقق.');continue;
+            postedKnown=false;notes.push('حركة التصحيح '+correction.transfer.number+' غير قابلة للتحقق.');continue;
           }
           const hasPositive=adjusted.lines.some(line=>line.quantity>=0);
-          if(hasPositive){notes.push('حركة التصحيح '+correction.transfer.number+' ليست حركة خصم صافية.');continue;}
+          if(hasPositive){postedKnown=false;notes.push('حركة التصحيح '+correction.transfer.number+' ليست حركة خصم صافية.');continue;}
           const originalAmounts=new Map<string,number>();
           for(const line of parsed.lines){
             if(line.quantity<=0)continue;
@@ -239,32 +251,38 @@ export function auditInvoicesForDay(
             spent.set(key,used);
             if(!originalAmounts.has(key)||used>originalAmounts.get(key)!+epsilon)valid=false;
           }
-          if(!valid){notes.push('التصحيح '+correction.transfer.number+' لا يتطابق مع الصنف والاتجاه والكمية الأصلية.');continue;}
+          if(!valid){postedKnown=false;notes.push('التصحيح '+correction.transfer.number+' لا يتطابق مع الصنف والاتجاه والكمية الأصلية.');continue;}
           for(const line of adjusted.lines){
             const item=invoice?refFor(references,line.sapCode,invoice):null;
-            if(!item){notes.push('تعريف صنف تصحيح '+line.sapCode+' غير مكتمل.');continue;}
+            if(!item){postedKnown=false;notes.push('تعريف صنف تصحيح '+line.sapCode+' غير مكتمل.');continue;}
             try{
               const absolute={...line,quantity:Math.abs(line.quantity)};
               const pieces=convert(absolute,item);
               posted.set(item.code,(posted.get(item.code)||0)-pieces);
-            }catch{notes.push('شدّة تصحيح '+line.sapCode+' غير معرّفة.');}
+            }catch{postedKnown=false;notes.push('شدّة تصحيح '+line.sapCode+' غير معرّفة.');}
           }
           postedDates.add(correction.transfer.date);
         }
-      }else if((corrective.get(number)||[]).some(correction=>correction.transfer.date<=asOf))
+      }else if((corrective.get(number)||[]).some(correction=>correction.transfer.date<=asOf)){
+        postedKnown=false;
         notes.push('يوجد عكسي أو تصحيح جزئي لترحيل متعدد الصفحات؛ يلزم تحديد الصفحة المتأثرة قبل اعتماد كميتها.');
+      }
     }
     const codes=new Set([...paper.totals.keys(),...posted.keys()]);
     const items=[...codes].sort().map(code=>{
       const item=references.find(ref=>ref.code===code);
-      const expected=round(paper.totals.get(code)||0),actual=round(posted.get(code)||0);
+      const expected=paperKnown?round(paper.totals.get(code)||0):null;
+      const actual=postedKnown?round(posted.get(code)||0):null;
       return {code,name:item?.name||'صنف مؤسسة غير معرّف',
-        expected,posted:actual,difference:round(expected-actual)};
+        expected,posted:actual,
+        difference:expected!==null&&actual!==null?round(expected-actual):null};
     });
+    if(financiallyMatchedGroup&&(!paperKnown||!postedKnown))
+      notes.push('المطابقة المالية محفوظة للمجموعة، لكن هذا لا يثبت أصناف وكميات الفاتورة بشكل مستقل.');
     let state:DayInvoiceState='match';
     if(notes.length)state='review';
-    else if(items.some(item=>item.difference< -epsilon))state='extra';
-    else if(items.some(item=>item.difference>epsilon))
+    else if(items.some(item=>item.difference!==null&&item.difference< -epsilon))state='extra';
+    else if(items.some(item=>item.difference!==null&&item.difference>epsilon))
       state=anyTransfer?'short':'pending';
     else if([...postedDates].some(date=>date>row.date))state='late';
     // If the supplied SAP export stops before the requested as-of date,
@@ -276,7 +294,8 @@ export function auditInvoicesForDay(
     }
     return {recordId:row.recordId,number:row.number,branch:row.branch,
       invoiceDate:row.date,asOf,transferNumbers:[...new Set([...nums,...row.unresolvedTransferNumbers,...row.groupConfirmedTransfers])],
-      postedDates:[...postedDates].sort(),state,items,notes:[...new Set(notes)]};
+      postedDates:[...postedDates].sort(),state,financiallyMatchedGroup:!!financiallyMatchedGroup,
+      items,notes:[...new Set(notes)]};
   });
   return {rows,sourceLastDate};
 }
