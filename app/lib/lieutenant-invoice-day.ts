@@ -4,7 +4,7 @@ import type {CollectedInvoice} from './invoice-collector';
 import type {LieutenantTransfer} from './lieutenant';
 import {analyzeLieutenantMovements} from './lieutenant-counterparts';
 
-export type DayInvoiceState='match'|'late'|'pending'|'short'|'extra'|'review';
+export type DayInvoiceState='match'|'late'|'pending'|'short'|'extra'|'financial'|'financial-late'|'review';
 export type DayInvoiceRecord={id:string;branch:string;status:string;payload:string};
 export type DayInvoiceData={
   rows:CollectedInvoice[];records:DayInvoiceRecord[];
@@ -141,6 +141,12 @@ export function auditInvoicesForDay(
     notes.push(...paper.issues);
     // Missing/partially readable paper quantities are unknown, NEVER zero.
     const paperKnown=!!invoice?.complete&&paper.issues.length===0&&paper.totals.size>0;
+    // An old accepted group may have no paper SKU quantities saved at all.
+    // This is different from a malformed or partly recorded paper invoice.
+    // Keep financial approval visible, without treating it as quantity proof.
+    const noPaperQuantities=!!invoice&&!(invoice.auditLines||'').trim()&&
+      !Object.values(invoice.quantities||{}).some(quantity=>String(quantity??'').trim());
+    const financialOnly=!!financiallyMatchedGroup&&noPaperQuantities;
     const references=draft?.referenceSnapshot?.length?draft.referenceSnapshot:currentReference;
     if(!references.length)notes.push('مرجع ربط أصناف المؤسسة بأكواد SAP غير متاح.');
     const posted=new Map<string,number>();
@@ -280,7 +286,16 @@ export function auditInvoicesForDay(
     if(financiallyMatchedGroup&&(!paperKnown||!postedKnown))
       notes.push('المطابقة المالية محفوظة للمجموعة، لكن هذا لا يثبت أصناف وكميات الفاتورة بشكل مستقل.');
     let state:DayInvoiceState='match';
-    if(notes.length)state='review';
+    if(financialOnly){
+      // This category makes NO claim of an item-level match. Any unresolved,
+      // canceled, late or missing SAP evidence remains visible in the notes.
+      state=postedKnown&&anyTransfer&&[...postedDates].some(date=>date>row.date)
+        ?'financial-late':'financial';
+      if(!anyTransfer&&nums.some(number=>(bySource.get(number)?.transfer.date||'')>asOf))
+        notes.push('الترحيل مرتبط بالمجموعة لكن تاريخ SAP بعد تاريخ الفحص؛ لم يثبت وصوله حتى هذا اليوم.');
+      if(!anyTransfer&&row.groupConfirmedTransfers.length)
+        notes.push('الترحيلات معتمدة ماليًا على مستوى المجموعة فقط؛ توزيعها على هذه الفاتورة غير مثبت.');
+    }else if(notes.length)state='review';
     else if(items.some(item=>item.difference!==null&&item.difference< -epsilon))state='extra';
     else if(items.some(item=>item.difference!==null&&item.difference>epsilon))
       state=anyTransfer?'short':'pending';
