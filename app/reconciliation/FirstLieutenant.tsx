@@ -1,7 +1,7 @@
 'use client';
 
 import {useEffect,useMemo,useRef,useState,type ChangeEvent} from 'react';
-import {AlertTriangle,CheckCircle2,Copy,FileArchive,FileUp,RefreshCw,Search,ShieldCheck} from 'lucide-react';
+import {AlertTriangle,CheckCircle2,Copy,FileArchive,FileUp,RefreshCw,Search,ShieldCheck,Trash2} from 'lucide-react';
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenant';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
@@ -177,6 +177,25 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     setNextPage(next.nextPage);
     return next.files;
   }
+  async function deleteArchive(file:StoredFile){
+    if(!window.confirm('حذف الملف "'+file.name+'" نهائيًا من أرشيف الملازم أول؟\\n\\nلن تُحذف الفواتير أو الترحيلات أو المطابقات المحفوظة، لكن نسخة الملف الأصلية لن تعود متاحة من الأرشيف.'))return;
+    setBusy(true);setError('');setMessage('');
+    try{
+      const result=await checkedJson<{deleted:boolean;key:string}>('/api/lieutenant-files',{
+        method:'DELETE',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({key:file.key}),
+      });
+      if(!result.deleted||result.key!==file.key)throw Error('الخادم لم يؤكد حذف الملف المحدد.');
+      if(selected===file.key){
+        setSelected('');setTransfers([]);setIssues([]);
+      }
+      await refreshFiles();
+      setMessage('تم حذف "'+file.name+'" من أرشيف الملفات فقط. الترحيلات والفواتير المحفوظة لم تتغير.');
+    }catch(cause){
+      setError(cause instanceof Error?cause.message:'تعذّر حذف الملف من الأرشيف.');
+    }finally{setBusy(false)}
+  }
   async function readArchive(file:StoredFile){
     setError('');
     setMessage('');
@@ -204,15 +223,23 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   useEffect(()=>{
     let active=true;
     async function init(){
-      try{
-        const [archive,state]=await Promise.all([
-          checkedJson<{files:StoredFile[];nextPage:number|null}>('/api/lieutenant-files?page=0'),
-          checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1'),
-        ]);
-        if(!active)return;
-        setFiles(archive.files);setNextPage(archive.nextPage);setSnapshot(state);
-      }catch(cause){
-        if(active)setError(cause instanceof Error?cause.message:'تعذّر تحميل بيانات الملازم أول.');
+      const [archive,state]=await Promise.allSettled([
+        checkedJson<{files:StoredFile[];nextPage:number|null}>('/api/lieutenant-files?page=0'),
+        checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1'),
+      ]);
+      if(!active)return;
+      const errors:string[]=[];
+      if(archive.status==='fulfilled'){
+        setFiles(archive.value.files);setNextPage(archive.value.nextPage);
+      }else{
+        errors.push(archive.reason instanceof Error?archive.reason.message:'تعذّر تحميل أرشيف الملازم أول.');
+      }
+      if(state.status==='fulfilled'){
+        setSnapshot(state.value);
+      }else{
+        errors.push(state.reason instanceof Error?state.reason.message:'تعذّر تحميل بيانات المطابقة.');
+      }
+      if(errors.length)setError(errors.join(' '));
       }
     }
     void init();
@@ -378,11 +405,14 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
           finally{setBusy(false)}
         }}><RefreshCw size={16}/> تحديث الأرشيف</button>
       </div>
-      {files.length?<div className="table-scroll"><table><thead><tr><th>الملف المحفوظ</th><th>نوعه</th><th>تاريخ الحفظ</th><th>فتح</th></tr></thead>
+      {files.length?<div className="table-scroll"><table><thead><tr><th>الملف المحفوظ</th><th>نوعه</th><th>تاريخ الحفظ</th><th>فتح</th><th>حذف</th></tr></thead>
         <tbody>{files.map(file=><tr key={file.key}><td dir="auto">{file.name}</td>
           <td>{fileKinds[file.kind]||file.kind}</td><td dir="ltr">{file.created?.slice(0,16).replace('T',' ')||'—'}</td>
           <td><button type="button" disabled={busy} className="button secondary small" onClick={()=>void readArchive(file)}>
             <FileArchive size={14}/>{selected===file.key?'مفتوح':'فتح من الأرشيف'}</button></td>
+          <td><button type="button" disabled={busy} className="button secondary small"
+            aria-label={'حذف '+file.name+' من الأرشيف'} onClick={()=>void deleteArchive(file)}>
+            <Trash2 size={14}/> حذف</button></td>
         </tr>)}</tbody></table></div>:<p className="hint">لم يُرفع ملف بعد إلى أرشيف الملازم أول.</p>}
       {nextPage!==null&&<button type="button" disabled={busy} className="button secondary" onClick={()=>void refreshFiles(nextPage)}>إظهار ملفات أقدم</button>}
       {error&&<p role="alert" className="banner error"><AlertTriangle size={16}/> {error}</p>}
