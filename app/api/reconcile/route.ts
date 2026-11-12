@@ -52,6 +52,23 @@ export async function GET(req:Request){try{await ensureSchema();const u=new URL(
   return json({...collected,records:records.results
     .filter(record=>wanted.has(record.id))
     .map(record=>({id:record.id,branch:record.branch,status:record.status,payload:record.payload}))});
+}if(u.searchParams.has('stockInvoiceFrom')||u.searchParams.has('stockInvoiceTo')){
+  // Read-only comparison mode in "Net transfers to 011". Invoice dates
+  // deliberately remain independent of SAP posting dates.
+  const from=u.searchParams.get('stockInvoiceFrom')||'';
+  const to=u.searchParams.get('stockInvoiceTo')||'';
+  if(dateValue(from)!==from||dateValue(to)!==to)
+    return json({error:'اختر فترة فواتير زرقاء صحيحة.'},400);
+  const records=await db().prepare(
+    'SELECT id,branch,status,doc_date,payload FROM reconciliations ORDER BY updated DESC'
+  ).all<{id:string;branch:string;status:string;doc_date:string;payload:string}>();
+  try{
+    const collected=collectInvoicesByDate(records.results,from,to);
+    const wanted=new Set(collected.rows.map(row=>row.recordId));
+    const selected=records.results.filter(record=>wanted.has(record.id))
+      .map(record=>({id:record.id,branch:record.branch,status:record.status,payload:record.payload}));
+    return json({...collected,records:selected,reference:await refs()});
+  }catch(cause){return json({error:cause instanceof Error?cause.message:'تعذّر تجميع الفواتير.'},400)}
 }if(u.searchParams.has('invoiceListFrom')||u.searchParams.has('invoiceListTo')){
  const from=u.searchParams.get('invoiceListFrom')||'';
  const to=u.searchParams.get('invoiceListTo')||'';
