@@ -115,6 +115,40 @@ assert.deepEqual(gardenzReport.rows.map(serialInvoiceColumns),
  [['2615824','2615907'],['2615824','2615907']],
  'Never leave historical Gardenz invoices blank when saved group transfers are known');
 assert.deepEqual(gardenzReport.count,{received:2,pending:0,missing:0,review:0});
+// Historical Al-Eis pattern: three confirmed 01-Nov invoices share two
+// transfers, but one invoice page has zero directly assigned item rows.
+// Group transfers must be visible without fabricating page-specific ownership.
+const aisOld=record('ais-old',[
+ {...invoice('2660506906','241.800'),date:'2026-11-01'},
+ {...invoice('2660506907','1238.780'),date:'2026-11-01'},
+ {...invoice('2660506908','801.850'),date:'2026-11-01'},
+],[
+ transfer('2615820','DAR00001','001','011'),
+ transfer('2615821','DAR00002','002','011'),
+],{pages:{'s:DAR00001':'1','s:DAR00002':'2'}});
+const aisResult=evaluateSerial([
+ row(14,'2660506906','241.800'),row(15,'2660506907','1238.780'),row(16,'2660506908','801.850'),
+],[aisOld]);
+assert.equal(aisResult.blockers.length,0,
+ 'An approved old invoice with no assigned item rows must not be reported as transferless');
+assert.deepEqual(aisResult.count,{received:3,pending:0,missing:0,review:0});
+assert.deepEqual(aisResult.rows[2].transfers,[],
+ 'Page 3 must not receive invented page-specific transfer ownership');
+assert.deepEqual(serialInvoiceColumns(aisResult.rows[2]),['2615820','2615821'],
+ 'Page 3 may list the approved group transfers as group-level associations');
+const aisNew=record('ais-new',[
+ {...invoice('2660506906','241.800'),date:'2026-11-12'},
+ {...invoice('2660506907','1238.780'),date:'2026-11-12'},
+ {...invoice('2660506908','801.850'),date:'2026-11-12'},
+],[
+ transfer('2615820','DAR00001','001','011'),
+ transfer('2615821','DAR00002','002','011'),
+],{pages:{'s:DAR00001':'1','s:DAR00002':'2'}});
+assert.equal(evaluateSerial([
+ row(14,'2660506906','241.800'),row(15,'2660506907','1238.780'),row(16,'2660506908','801.850')
+],[aisNew]).rows[2].state,'review',
+ 'The old-group exception must never silently approve a new invoice without page evidence');
+
 const unapprovedOld=record('g-old-review',[
  {...invoice('2624002303','186.400'),date:'2026-11-09'},
  {...invoice('2624002304','591.160'),date:'2026-11-09'}
