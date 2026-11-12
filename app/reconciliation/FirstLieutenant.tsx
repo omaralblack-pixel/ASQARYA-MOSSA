@@ -407,8 +407,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       const total=totals.get(item.code)||{
         code:item.code,name:item.name,expected:0,posted:0,uncertain:false,
       };
-      total.expected+=item.expected;total.posted+=item.posted;
-      total.uncertain ||= invoice.state==='review';
+      total.expected+=(item.expected??0);total.posted+=(item.posted??0);
+      total.uncertain ||= invoice.state==='review'||item.expected===null||item.posted===null;
       totals.set(item.code,total);
     }
     return [...totals.values()].sort((a,b)=>a.uncertain===b.uncertain?
@@ -683,7 +683,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <div className="stat"><span>مطابقة — متأخرة</span><strong>{dailyCounts.late}</strong></div>
           <div className="stat"><span>بانتظار ترحيل</span><strong>{dailyCounts.pending}</strong></div>
           <div className="stat"><span>نقص أو زيادة</span><strong>{dailyCounts.short+dailyCounts.extra}</strong></div>
-          <div className="stat"><span>بيانات غير مكتملة</span><strong>{dailyCounts.review}</strong></div>
+          <div className="stat"><span>كميات غير مثبتة / مراجعة</span><strong>{dailyCounts.review}</strong></div>
         </div>
         {dailyReport.rows.length>0&&dailyCounts.match+dailyCounts.late===dailyReport.rows.length&&
           <p><span className="badge match"><CheckCircle2 size={14}/> جميع فواتير اليوم مطابقة بالكميات؛ الترحيلات المتأخرة معلّمة بوضوح.</span></p>}
@@ -715,7 +715,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
             <td><span className={'badge '+(
               result.state==='match'||result.state==='late'?'match':
               result.state==='short'||result.state==='extra'?'difference':'review')}>
-              {dailyStateNames[result.state]}</span></td>
+              {result.state==='review'&&result.financiallyMatchedGroup?
+                'مطابقة مالية محفوظة للمجموعة — فحص الكميات غير مكتمل':dailyStateNames[result.state]}</span></td>
             <td><details><summary>عرض الأصناف ({result.items.length})</summary>
               {result.notes.length>0&&<ul>{result.notes.map(note=><li key={note}>{note}</li>)}</ul>}
               {result.items.length>0&&<table><thead><tr>
@@ -723,12 +724,13 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
                 <th>المرحل إلى 011 حتى الفحص (حبة)</th><th>الفرق (فاتورة − SAP)</th>
               </tr></thead><tbody>{result.items.map(item=><tr key={item.code}>
                 <td dir="ltr">{item.code}</td><td>{item.name}</td>
-                <td dir="ltr">{item.expected.toFixed(3)}</td>
-                <td dir="ltr">{item.posted.toFixed(3)}</td>
-                <td dir="ltr">{item.difference.toFixed(3)}</td>
+                <td dir="ltr">{item.expected===null?'—':item.expected.toFixed(3)}</td>
+                <td dir="ltr">{item.posted===null?'—':item.posted.toFixed(3)}</td>
+                <td dir="ltr">{item.difference===null?'—':item.difference.toFixed(3)}</td>
               </tr>)}</tbody></table>}
             </details></td>
           </tr>)}</tbody></table></div>}
+        <p className="hint">الشرطة (—) تعني أن الكمية غير مثبتة، ولا تعني صفرًا. المطابقة المالية المحفوظة للمجموعة لا تثبت توزيع كل صنف على الفواتير.</p>
         <p className="hint">الفحص للقراءة فقط؛ لا يعتمد فاتورة أو يعدّل أرشيف SAP. إذا كانت شدّة الصنف أو صفحة الفاتورة غير معرّفة، تظهر «بيانات غير مكتملة» بدل نسبة كمية غير مؤكدة. حركة SAP بتاريخ الترحيل، وليس بتاريخ الفاتورة.</p>
       </>}
     </section>
