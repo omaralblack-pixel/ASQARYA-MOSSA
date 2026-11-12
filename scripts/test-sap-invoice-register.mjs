@@ -88,6 +88,12 @@ assert.ok(instant.includes('مطابق ماليًا — إجمالي المجم�
 const serialScreen=fs.readFileSync('app/reconciliation/SerialSoldier.tsx','utf8');
 assert.ok(serialScreen.includes("missing:'غير مسجلة بالمشروع'"),
   'Missing project registrations must not be called physically missing paper');
+assert.ok(instant.includes("const latestRecords = await refreshRecords();"),
+  'Last-four-digit lookup must refresh D1 records before concluding no suggestions exist');
+assert.ok(instant.includes('هذا بحث مبدئي، وليس إثباتًا'),
+  'Empty autocomplete must not be presented as proof of missing invoice paper');
+assert.ok(instant.includes('فتحته كفاتورة جديدة غير محفوظة'),
+  'Full-number lookup should disclose when a new draft is not a saved invoice');
 console.log('PASS: Invoice search checks all statuses, SAP-only results stay distinct, financial matches do not imply page allocations.');
 
 console.log('PASS: permanent SAP invoice comparison deduplicates transfers, excludes reverse/canceled, and retains paper receipt distinctions');
