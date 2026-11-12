@@ -112,7 +112,7 @@ function ensureStyles(files:Archive){
  const doc=readXml(files['xl/styles.xml']);
  const fills=find(doc,'fills'),xfs=find(doc,'cellXfs');
  if(!fills||!xfs)throw Error('أنماط Excel الأصلية غير مكتملة.');
- const palette:Record<SerialState,string>={received:'FFD8F3DC',pending:'FFFAD5E5',missing:'FFFAD5E5',review:'FFFFF0BF'};
+ const palette:Record<SerialState,string>={received:'FFD8F3DC',received_difference:'FFFFF0BF',pending:'FFFAD5E5',missing:'FFFAD5E5',review:'FFFFF0BF'};
  const fillsByState=new Map<SerialState,number>();
  for(const [state,color] of Object.entries(palette) as [SerialState,string][]){
   if(state==='missing'){fillsByState.set(state,fillsByState.get('pending')!);continue;}
