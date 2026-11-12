@@ -321,6 +321,9 @@ export async function handleInstitution(request: Request, env: Cloudflare.Env): 
   if (url.pathname === "/logout" && request.method === "POST") {
     return redirect(request, "/login", `${sessionCookie}=; ${cookieAttributes}; Max-Age=0`);
   }
+  if (url.pathname === "/api/reconcile" && !env.DB) {
+    return reply(503, "خدمة مطابقة الفواتير غير متاحة: قاعدة بيانات Cloudflare D1 (DB) غير مربوطة بهذا النشر. أرشيف Supabase محفوظ ومستقل.");
+  }
   if (url.pathname === "/api/sap-import") return savedImport(request, env);
   if (url.pathname === "/api/lieutenant-files") return lieutenantFiles(request, env);
 }
