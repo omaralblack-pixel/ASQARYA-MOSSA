@@ -141,6 +141,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   const [transfers,setTransfers]=useState<LieutenantTransfer[]>([]);
   const [issues,setIssues]=useState<string[]>([]);
   const [snapshot,setSnapshot]=useState<RecordSnapshot>(empty);
+  const [snapshotLoaded,setSnapshotLoaded]=useState(false);
   const [from,setFrom]=useState('2026-11-01');
   const [to,setTo]=useState('2026-11-30');
   const [stockDate,setStockDate]=useState<string|null>(null);
@@ -175,6 +176,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   async function refreshSnapshot(){
     const state=await checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1');
     setSnapshot(state);
+    setSnapshotLoaded(true);
     return state;
   }
   async function refreshFiles(page=0){
@@ -214,21 +216,27 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       const text=decodeLieutenantFile(bytes,file.name);
       const actualKind=classifyLieutenantContent(text);
       let key=file.key;
-      let date=file.snapshotDate||'';
+      let date=actualKind===file.kind?(file.snapshotDate||''):'';
+      let correctionWarning='';
       if(actualKind!==file.kind){
         // Copy misclassified legacy originals to the correct archive without
         // deleting the original or manufacturing a stock snapshot date.
-        const fixed=await checkedJson<{key:string}>('/api/lieutenant-files',{
-          method:'POST',headers:{
-            'Content-Type':'application/octet-stream','X-File-Name':encodeURIComponent(file.name),
-            'X-File-Kind':actualKind,'X-Snapshot-Date':date,
-          },body:bytes,
-        });
-        key=fixed.key;
-        await refreshFiles();
+        try{
+          const fixed=await checkedJson<{key:string}>('/api/lieutenant-files',{
+            method:'POST',headers:{
+              'Content-Type':'application/octet-stream','X-File-Name':encodeURIComponent(file.name),
+              'X-File-Kind':actualKind,
+            },body:bytes,
+          });
+          key=fixed.key;
+          await refreshFiles();
+        }catch{
+          correctionWarning=' تعذّر حفظ نسخة بالتصنيف الجديد؛ الملف القديم باقٍ ويمكن إعادة رفعه.';
+        }
       }
       setSelected(key);setKind(actualKind);
-      const repaired=key!==file.key?' تم حفظ نسخة مصنّفة بشكل صحيح، وبقي الملف الأصلي كما هو.':'';
+      const repaired=(key!==file.key?' تم حفظ نسخة مصنّفة بشكل صحيح، وبقي الملف الأصلي كما هو.':'')+
+        correctionWarning;
       if(actualKind==='balance'||actualKind==='opening'){
         const parsed=parseLieutenantStock(text,actualKind);
         const stock={key,date,items:parsed.items,issues:parsed.issues};
@@ -267,7 +275,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         errors.push(archive.reason instanceof Error?archive.reason.message:'تعذّر تحميل أرشيف الملازم أول.');
       }
       if(state.status==='fulfilled'){
-        setSnapshot(state.value);
+        setSnapshot(state.value);setSnapshotLoaded(true);
       }else{
         errors.push(state.reason instanceof Error?state.reason.message:'تعذّر تحميل بيانات المطابقة.');
       }
@@ -418,6 +426,36 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     }finally{setBusy(false)}
   }
 
+  async function stampStockDate(stock:StockSnapshot,stockKind:'balance'|'opening'){
+    const date=stockKind==='balance'?stockQueryDate:from;
+    if(!sapStockBalanceQuery(date)){
+      setError('اختر تاريخ لقطة صالحًا من حقول التاريخ.');return;
+    }
+    if(!window.confirm('هل هذا الكشف من SAP يمثل '+(stockKind==='balance'?'الرصيد الفعلي بنهاية':'الرصيد قبل أول حركة بتاريخ')+
+      ' '+date+'؟ سيتم حفظ نسخة مؤرخة جديدة دون حذف القديمة.'))return;
+    const file=files.find(row=>row.key===stock.key);
+    if(!file){setError('حدث قائمة الأرشيف أولًا، ثم حاول تثبيت التاريخ.');return;}
+    setBusy(true);setError('');
+    try{
+      const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(stock.key),
+        {cache:'no-store',redirect:'manual'});
+      if(!response.ok)throw Error('تعذّر فتح الملف الأصلي لتثبيت التاريخ.');
+      const stored=await checkedJson<{key:string}>('/api/lieutenant-files',{
+        method:'POST',headers:{
+          'Content-Type':'application/octet-stream',
+          'X-File-Name':encodeURIComponent(file.name),
+          'X-File-Kind':stockKind,'X-Snapshot-Date':date,
+        },body:await response.arrayBuffer(),
+      });
+      const changed={...stock,key:stored.key,date};
+      if(stockKind==='balance')setClosing(changed);else setOpening(changed);
+      setSelected(stored.key);await refreshFiles();
+      setMessage('تم تثبيت تاريخ '+date+' في نسخة جديدة من أرشيف '+fileKinds[stockKind]+
+        '. بقي الملف القديم محفوظًا دون تغيير.');
+    }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر تثبيت تاريخ الرصيد.');}
+    finally{setBusy(false);}
+  }
+
   async function auditAgain(){
     if(!selectedTransfer||!transfers.length)return;
     setBusy(true);setError('');
@@ -513,12 +551,17 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
           <div className="stat"><span>تاريخ الرصيد</span><strong>{closing.date||'غير محدد'}</strong></div>
           <div className="stat"><span>الترحيلات المحمّلة</span><strong>{transfers.length}</strong></div>
         </div>
+        {!closing.date&&<button className="button secondary" type="button" disabled={busy}
+          onClick={()=>void stampStockDate(closing,'balance')}>
+          تثبيت تاريخ هذا الرصيد على {stockQueryDate} وحفظ نسخة مؤرخة
+        </button>}
         {!canCompare&&<p role="alert" className="banner warn"><AlertTriangle size={16}/>
           لا يمكن احتساب المقارنة: افتح ملف الترحيلات، واضبط «إلى تاريخ» على تاريخ كشف الرصيد ({closing.date||'غير مسجل في النسخة القديمة'}).
           لا نفترض تاريخ الرصيد من تاريخ حفظ الملف.</p>}
         {closing.issues.length>0&&<div className="banner warn" role="alert">
           <strong>ملاحظات كشف الرصيد ({closing.issues.length}):</strong>
           <ul>{closing.issues.slice(0,10).map((note,i)=><li key={i}>{note}</li>)}</ul></div>}
+        {!snapshotLoaded&&<p className="banner warn">قاعدة المطابقات لم تُحمّل؛ عمود الفواتير المعتمدة غير متاح حاليًا، وليس صفرًا.</p>}
         <p className="hint">«المتوقع» = الرصيد الافتتاحي المعتمد + صافي الترحيلات فقط، وليس بديلًا عن سجل جميع حركات OINM. إذا كان الرصيد الافتتاحي ناقصًا أو اختلفت الوحدات، لا يُفترض صفر ولا يُختلق فرق. الكميات المرتبطة بالفواتير هي وارد الترحيلات المعتمدة المؤكد ورقها، ولا تُستخدم بدل الرصيد.</p>
         <div className="table-scroll"><table><thead><tr>
           <th>كود SAP</th><th>اسم الصنف</th><th>الوحدة</th><th>الافتتاحي</th>
@@ -530,7 +573,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
           <td dir="ltr">{canCompare?item.incoming.toFixed(3):'—'}</td>
           <td dir="ltr">{canCompare?item.outgoing.toFixed(3):'—'}</td>
           <td dir="ltr">{canCompare?item.netTransfers.toFixed(3):'—'}</td>
-          <td dir="ltr">{canCompare?item.approvedIncoming.toFixed(3):'—'}</td>
+          <td dir="ltr">{canCompare&&snapshotLoaded?item.approvedIncoming.toFixed(3):'—'}</td>
           <td dir="ltr">{canCompare&&item.estimated!==null?item.estimated.toFixed(3):'—'}</td>
           <td dir="ltr"><strong>{item.quantity.toFixed(3)}</strong></td>
           <td dir="ltr">{canCompare&&item.difference!==null?item.difference.toFixed(3):'—'}</td>
