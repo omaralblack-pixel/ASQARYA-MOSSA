@@ -20,19 +20,25 @@ export default function SerialSoldier(){
  const [error,setError]=useState('');
  const [day,setDay]=useState('');
  const [updated,setUpdated]=useState('');
+ const allRows=useMemo(()=>{
+   const rows=report?[...report.rows,...report.projectOnly]:[];
+   return [...rows.filter(row=>row.origin==='project'),...rows.filter(row=>row.origin!=='project')];
+ },[report]);
+ const projectOnlyCount=allRows.filter(row=>row.origin==='project').length;
  const daily=useMemo(()=>{
-   const map=new Map<string,{total:number;received:number;differences:number;pending:number;missing:number;review:number}>();
-   for(const row of report?.rows||[]){
+   const map=new Map<string,{total:number;received:number;differences:number;pending:number;missing:number;review:number;projectOnly:number}>();
+   for(const row of allRows){
      const date=row.date||'تاريخ غير معروف';
-     const result=map.get(date)||{total:0,received:0,differences:0,pending:0,missing:0,review:0};
+     const result=map.get(date)||{total:0,received:0,differences:0,pending:0,missing:0,review:0,projectOnly:0};
      result.total++;
-     if(row.state==='received_difference'){result.received++;result.differences++;}
+     if(row.origin==='project')result.projectOnly++;
+     else if(row.state==='received_difference'){result.received++;result.differences++;}
      else result[row.state]++;
      map.set(date,result);
    }
    return [...map].sort(([a],[b])=>a.localeCompare(b));
- },[report]);
- const filtered=(report?.rows||[]).filter(row=>!day||row.date===day);
+ },[allRows]);
+ const filtered=allRows.filter(row=>!day||row.date===day);
  async function checkExcel(nextFile:File){
    setFile(nextFile);setReport(null);setBuffer(null);setIssues([]);setError('');setDay('');setBusy(true);
    try{
@@ -42,7 +48,7 @@ export default function SerialSoldier(){
      const parsed=readSerialWorkbook(content);
      setIssues(parsed.errors);
      const saved=await getSaved();
-     const result=evaluateSerial(parsed.rows,saved);
+     const result=evaluateSerial(parsed.rows,saved,parsed.period);
      result.blockers=[...new Set([...parsed.errors,...result.blockers])];
      setReport(result);setBuffer(content);setUpdated(new Date().toLocaleString('ar-JO'));
    }catch(e){setError(e instanceof Error?e.message:'تعذر تحليل الملف.');}
@@ -60,7 +66,7 @@ export default function SerialSoldier(){
      const parsed=readSerialWorkbook(buffer);
      setIssues(parsed.errors);
      const saved=await getSaved();
-     const fresh=evaluateSerial(parsed.rows,saved);
+     const fresh=evaluateSerial(parsed.rows,saved,parsed.period);
      fresh.blockers=[...new Set([...parsed.errors,...fresh.blockers])];
      setReport(fresh);
      // A review copy is always available for a readable XLSX; validation issues stay visible.
@@ -81,6 +87,7 @@ export default function SerialSoldier(){
    <section className="panel no-print">
      <h2><FileSpreadsheet size={21} style={{verticalAlign:'middle',marginLeft:8}}/>كشف سجى الأصلي</h2>
      <p className="hint">المصدر المعتمد: الشيت «للطباعة»؛ رقم الفاتورة D، المبلغ F، ترحيلات رئيسي K ونواشف L، والتعديلات M وما بعدها. تبقى أرقام سجى ومبالغها الأصلية كما هي. عند وجود اختلاف فقط، يظهر رقمك أو مبلغك الصحيح في ملاحظة بجانب الصف المعني، دون تعديل قاعدة المشروع.</p>
+     <p className="hint">الفواتير المسجلة بالمشروع والناقصة من كشف سجى تُضاف في نفس الشيت بالأزرق، مع رقمها وتاريخها وفرعها ومبلغها وترحيلاتها، وملاحظة «موجودة بالمشروع وغير موجودة بكشف سجى». تشمل المقارنة فترة الكشف المكتوبة في عنوان ملف سجى.</p>
      <label style={{display:'block',marginBottom:14}}>اختيار Excel سجى (.xlsx)
        <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={e=>{const f=e.target.files?.[0];if(f)void checkExcel(f);e.target.value='';}}/>
      </label>
@@ -97,37 +104,39 @@ export default function SerialSoldier(){
      <section className="panel">
        <div className="section-title"><CheckCircle2 size={20}/><div><h2>نتيجة الفحص</h2><p>التصنيف يفصل وصول الورق عن اختلاف الرقم أو المبلغ؛ تُسجل الفروقات بالملاحظات وتُحسب الفواتير المؤكد وصولها ضمن الواصلة. تؤخذ الترحيلات من حركات المستودعات الفعلية.</p></div></div>
        <div className="stats">
-         <div className="stat"><span>جميع فواتير سجى</span><strong>{report.rows.length}</strong></div>
+         <div className="stat"><span>جميع فواتير سجى</span><strong>{report.rows.filter(row=>row.origin!=='project').length}</strong></div>
+         <div className="stat" style={{backgroundColor:'#cce5ff'}}><span>بالمشروع فقط — بالأزرق</span><strong>{projectOnlyCount}</strong></div>
          <div className="stat"><span>الفواتير الواصلة (شاملة الفروقات)</span><strong>{report.count.received}</strong></div>
-         <div className="stat"><span>منها واصلة مع فرق</span><strong>{report.rows.filter(row=>row.state==='received_difference').length}</strong></div>
+         <div className="stat"><span>منها واصلة مع فرق</span><strong>{report.rows.filter(row=>row.origin!=='project'&&row.state==='received_difference').length}</strong></div>
          <div className="stat"><span>غير مسجلة / ورق غير مؤكد</span><strong>{report.count.missing+report.count.pending}</strong></div>
          <div className="stat"><span>تحتاج مراجعة</span><strong>{report.count.review}</strong></div>
        </div>
+       {report.period&&<p className="hint">فترة مقارنة فواتير المشروع: <b dir="ltr">{report.period.from}</b> إلى <b dir="ltr">{report.period.to}</b>. الأزرق يعني أن الفاتورة موجودة عندك وغير موجودة بكشف سجى.</p>}
        {report.blockers.length>0&&<div role="alert" className="review-list" style={{marginTop:15}}>
          <h3><AlertTriangle size={18} style={{verticalAlign:'middle'}}/> {report.blockers.length} أخطاء تحتاج مراجعة — التنزيل متاح</h3>
          <p>الملف الناتج نسخة للمراجعة مع جميع الفروقات. لا تتحول الأخطاء إلى مطابقة معتمدة، ولا يتم تعديل البيانات المحفوظة. «غير مسجلة» تعني غياب رقم الفاتورة عن سجلات المشروع ولا تثبت غياب ورقها. سجلات الفواتير القديمة المطابقة مستثناة من شرط الصفحات فقط.</p>
          <div style={{maxHeight:260,overflowY:'auto'}}>{report.blockers.map((b,i)=><p key={i}>{b}</p>)}</div>
        </div>}
-       {report.legacyWarnings.length>0&&<details className="review-list" style={{marginTop:14}}><summary>ترحيلات مجموعات قديمة معتمدة دون اشتراط أرقام الصفحات ({report.legacyWarnings.length})</summary><div style={{maxHeight:240,overflowY:'auto'}}>{report.legacyWarnings.map((item,i)=><p key={i}>{item}</p>)}</div></details>}
+       {report.legacyWarnings.length>0&&<details className="review-list" style={{marginTop:14}}><summary>ملاحظات السجل وربط المجموعات القديمة ({report.legacyWarnings.length})</summary><div style={{maxHeight:240,overflowY:'auto'}}>{report.legacyWarnings.map((item,i)=><p key={i}>{item}</p>)}</div></details>}
        {(report.count.review>0||report.rows.some(row=>row.state==='received_difference'))&&<p className="amber">اختلاف المبلغ أو رقم الفاتورة لا يلغي وصول الورق المؤكد: تُحسب الفاتورة واصلة وتُظلل بالأصفر ويُكتب الفرق في الملاحظات. أما عدم تأكيد الورق أو المطابقة المحفوظة أو وجود مشكلة ربط فعلية فيبقى بحاجة مراجعة أو تأكيد. التنزيل متاح دائمًا.</p>}
      </section>
      <section className="panel">
        <h2>ملخص فواتير كل يوم</h2>
-       <div className="table-scroll"><table><thead><tr><th>التاريخ</th><th>الإجمالي</th><th>واصل (شامل الفروقات)</th><th>منها بفرق</th><th>غير مسجلة بالمشروع</th><th>غير مؤكد</th><th>مراجعة</th></tr></thead>
-       <tbody>{daily.map(([date,c])=><tr key={date}><td dir="ltr">{date}</td><td>{c.total}</td><td>{c.received}</td><td>{c.differences}</td><td>{c.missing}</td><td>{c.pending}</td><td>{c.review}</td></tr>)}</tbody></table></div>
+       <div className="table-scroll"><table><thead><tr><th>التاريخ</th><th>الإجمالي</th><th>واصل (شامل الفروقات)</th><th>منها بفرق</th><th>بالمشروع فقط — أزرق</th><th>غير مسجلة بالمشروع</th><th>غير مؤكد</th><th>مراجعة</th></tr></thead>
+       <tbody>{daily.map(([date,c])=><tr key={date}><td dir="ltr">{date}</td><td>{c.total}</td><td>{c.received}</td><td>{c.differences}</td><td style={{backgroundColor:'#cce5ff'}}>{c.projectOnly}</td><td>{c.missing}</td><td>{c.pending}</td><td>{c.review}</td></tr>)}</tbody></table></div>
      </section>
      <section className="panel">
        <div className="table-controls"><h2>تفاصيل الفواتير</h2>
          <label>فلترة حسب اليوم <select aria-label="تصفية فواتير جندي السيريل حسب التاريخ" value={day} onChange={e=>setDay(e.target.value)}><option value="">كل الأيام</option>{daily.map(([date])=><option key={date} value={date}>{date}</option>)}</select></label>
        </div>
-       <p className="hint">يُعرض أول 200 صف هنا لتسهيل التصفح، بينما يشمل ملف التصدير جميع الفواتير من دون استثناء.</p>
-       <div className="table-scroll"><table><thead><tr><th>صف Excel</th><th>رقم الفاتورة</th><th>مبلغ سجى</th><th>الحالة</th><th>رئيسي 001→011</th><th>نواشف 002→011</th><th>تعديلات / عكسي</th><th>ملاحظات</th></tr></thead>
+       <p className="hint">تظهر الفواتير الزرقاء أولًا هنا، وتُضاف بعد فواتير سجى في ملف التنزيل. يُعرض أول 200 صف للتصفح، ويشمل التصدير جميع الفواتير.</p>
+       <div className="table-scroll"><table><thead><tr><th>صف Excel</th><th>رقم الفاتورة</th><th>المبلغ</th><th>الحالة</th><th>رئيسي 001→011</th><th>نواشف 002→011</th><th>تعديلات / عكسي</th><th>ملاحظات</th></tr></thead>
        <tbody>{filtered.slice(0,200).map((item:SerialRow)=>{
          const associated=[...item.transfers,...item.unassignedTransfers];
          const cols=associated.filter(x=>x.kind==='main'||x.kind==='dry');
          const adjustments=associated.filter(x=>x.kind==='adjustment');
-         return <tr key={item.row} style={{backgroundColor:color[item.state]}}>
-           <td>{item.row}</td><td dir="ltr">{item.number||'—'}</td><td dir="ltr">{item.amount||'—'}</td><td>{label[item.state]}</td>
+         return <tr key={item.row} style={{backgroundColor:item.origin==='project'?'#cce5ff':color[item.state]}}>
+           <td>{item.row<0?'يُضاف للكشف':item.row}</td><td dir="ltr">{item.number||'—'}</td><td dir="ltr">{item.amount||'—'}</td><td>{item.origin==='project'?'بالمشروع فقط — غير موجودة بكشف سجى':label[item.state]}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='main').map(t=>t.number).join('، ')||'—'}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='dry').map(t=>t.number).join('، ')||'—'}</td>
            <td dir="ltr">{adjustments.map(t=>t.number).join('، ')||'—'}</td><td>{serialReviewNote(item)||'—'}</td>

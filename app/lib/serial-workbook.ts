@@ -1,6 +1,6 @@
 import {strFromU8,strToU8,unzipSync,zipSync} from 'fflate';
-import {digits} from './reconcile';
-import {serialInvoiceColumns, serialReviewNote, type SerialInput, type SerialReport, type SerialState} from './serial-soldier';
+import {digits,dateValue as invoiceDateValue,fils} from './reconcile';
+import {PROJECT_ONLY_NOTE,serialInvoiceColumns,serialReviewNote,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
 
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -58,9 +58,9 @@ function dateValue(raw:string) {
  if(raw&&Number.isFinite(n)&&n>20000&&n<100000){
   return new Date(Date.UTC(1899,11,30)+Math.round(n)*86400000).toISOString().slice(0,10);
  }
- return raw;
+ return invoiceDateValue(raw)||raw;
 }
-function rowsFrom(p:Package):{rows:SerialInput[]; errors:string[]}{
+function rowsFrom(p:Package):{rows:SerialInput[]; errors:string[];period:SerialPeriod|null}{
  const d=p.doc,errors:string[]=[];
  const data=find(d,'sheetData');
  if(!data)throw Error('لا توجد بيانات في شيت «للطباعة».');
@@ -73,6 +73,9 @@ function rowsFrom(p:Package):{rows:SerialInput[]; errors:string[]}{
     !text(getCell(title,'L3'),p.shared).includes('نواشف'))
    throw Error('أعمدة ملف سجى لا تطابق القالب المعتمد: D رقم الفاتورة، F قيمتها، K رئيسي، L نواشف.');
  const result:SerialInput[]=[];
+ const noteColumns=[...children(head,'c'),...children(title,'c')]
+  .filter(cell=>/(?:ملاحظ(?:ة|ات)?|remarks?|notes?)/i.test(text(cell,p.shared)))
+  .map(cell=>cellColumn(cell.getAttribute('r')||''));
  for(const row of rowList){
   const index=Number(row.getAttribute('r'));
   if(index<5||!Number.isInteger(index))continue;
@@ -85,10 +88,20 @@ function rowsFrom(p:Package):{rows:SerialInput[]; errors:string[]}{
   if(!amount)errors.push('صف '+index+': مبلغ الفاتورة '+(number||'غير معروف')+' مفقود.');
   const originalTransfers=Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+index),p.shared))
     .flatMap(raw=>raw.match(/\d{4,20}/g)||[]);
-  result.push({row:index,number,amount,date:dateValue(text(getCell(row,'C'+index),p.shared)),originalTransfers});
+  const projectOnly=noteColumns.some(col=>text(getCell(row,columnName(col)+index),p.shared).includes(PROJECT_ONLY_NOTE));
+  result.push({row:index,number,amount,date:dateValue(text(getCell(row,'C'+index),p.shared)),originalTransfers,
+   ...(projectOnly?{origin:'project' as const}:{})});
  }
  if(!result.length)errors.push('لم أعثر على أي فواتير صالحة في الشيت.');
- return {rows:result,errors};
+ // Saja's heading declares the reporting period even when some days have no rows.
+ const heading=digits(text(getCell(title,'B3'),p.shared));
+ const headingDates=(heading.match(/\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4}/g)||[])
+  .map(raw=>invoiceDateValue(raw.replace(/\./g,'/'))).filter((date):date is string=>!!date);
+ const rowDates=result.map(row=>invoiceDateValue(row.date)).filter((date):date is string=>!!date).sort();
+ const period=headingDates.length===2&&headingDates[0]<=headingDates[1]?
+  {from:headingDates[0],to:headingDates[1]}:
+  rowDates.length?{from:rowDates[0],to:rowDates[rowDates.length-1]}:null;
+ return {rows:result,errors,period};
 }
 export function readSerialWorkbook(input:ArrayBuffer) {
  const pkg=load(new Uint8Array(input));
@@ -112,9 +125,9 @@ function ensureStyles(files:Archive){
  const doc=readXml(files['xl/styles.xml']);
  const fills=find(doc,'fills'),xfs=find(doc,'cellXfs');
  if(!fills||!xfs)throw Error('أنماط Excel الأصلية غير مكتملة.');
- const palette:Record<SerialState,string>={received:'FFD8F3DC',received_difference:'FFFFF0BF',pending:'FFFAD5E5',missing:'FFFAD5E5',review:'FFFFF0BF'};
- const fillsByState=new Map<SerialState,number>();
- for(const [state,color] of Object.entries(palette) as [SerialState,string][]){
+ const palette:Record<SerialState|'project_only',string>={received:'FFD8F3DC',received_difference:'FFFFF0BF',pending:'FFFAD5E5',missing:'FFFAD5E5',review:'FFFFF0BF',project_only:'FFCCE5FF'};
+ const fillsByState=new Map<SerialState|'project_only',number>();
+ for(const [state,color] of Object.entries(palette) as [SerialState|'project_only',string][]){
   if(state==='missing'){fillsByState.set(state,fillsByState.get('pending')!);continue;}
   const index=children(fills,'fill').length;
   const fill=element(doc,'fill'),pattern=element(doc,'patternFill'),fg=element(doc,'fgColor'),bg=element(doc,'bgColor');
@@ -124,7 +137,7 @@ function ensureStyles(files:Archive){
  }
  fills.setAttribute('count',String(children(fills,'fill').length));
  const cache=new Map<string,string>();
- return {doc,apply:(style:string|null,state:SerialState)=>{
+ return {doc,apply:(style:string|null,state:SerialState|'project_only')=>{
    const original=style&&/^\d+$/.test(style)?Number(style):0;
    const key=original+'-'+state;
    if(cache.has(key))return cache.get(key)!;
@@ -173,6 +186,12 @@ function overwriteText(doc:Document,cell:Element,value:string){
  textNode.setAttribute('xml:space','preserve');
  setText(doc,textNode,value);inline.appendChild(textNode);cell.appendChild(inline);
 }
+function writeNumber(doc:Document,cell:Element,value:number){
+ if(find(cell,'f'))throw Error('لا يمكن استبدال معادلة في صف الإضافة.');
+ for(const part of [...cell.children])if(['v','is'].includes(part.localName))cell.removeChild(part);
+ cell.removeAttribute('t');
+ const number=element(doc,'v');setText(doc,number,String(value));cell.appendChild(number);
+}
 export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob {
  const pkg=load(new Uint8Array(input));
  const actual=rowsFrom(pkg);
@@ -183,6 +202,49 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
  const rowElements=new Map(children(data,'row').map(row=>[Number(row.getAttribute('r')),row]));
  const notes=notesColumn(rowElements,pkg,report);
  const last=Math.max(17,notes.column);
+ const allRows=[...report.rows];
+ const template=rowElements.get(actual.rows[actual.rows.length-1]?.row);
+ let nextRow=Math.max(4,...actual.rows.map(row=>row.row))+1;
+ let sequence=Math.max(0,...actual.rows.map(item=>Number(text(getCell(rowElements.get(item.row)!,'B'+item.row),pkg.shared))||0));
+ const safeBlank=(row:Element)=>children(row,'c').every(cell=>{
+  if(find(cell,'f'))return false;
+  const col=cellColumn(cell.getAttribute('r')||'');
+  return !text(cell,pkg.shared)||col===2&&/^\d+$/.test(text(cell,pkg.shared))||col===7;
+ });
+ for(const item of report.projectOnly||[]){
+  // Prefer the existing blank invoice slots, keeping totals and all source rows intact.
+  // If the template is full, append after its occupied rows instead of overwriting them.
+  if(rowElements.has(nextRow)&&!safeBlank(rowElements.get(nextRow)!))
+   nextRow=Math.max(...rowElements.keys())+1;
+  const rowNo=nextRow++;
+  let row=rowElements.get(rowNo);
+  if(!row){
+   row=element(d,'row');row.setAttribute('r',String(rowNo));
+   if(template)for(const name of ['ht','customHeight','s','customFormat']){
+    const value=template.getAttribute(name);if(value!==null)row.setAttribute(name,value);
+   }
+   const later=children(data,'row').find(existing=>Number(existing.getAttribute('r'))>rowNo);
+   if(later)data.insertBefore(row,later);else data.appendChild(row);
+   rowElements.set(rowNo,row);
+  }
+  for(let col=2;col<=last;col++){
+   const cell=ensureCell(d,row,col,rowNo);
+   const source=template?getCell(template,columnName(col)+actual.rows[actual.rows.length-1].row):undefined;
+   if(source?.hasAttribute('s'))cell.setAttribute('s',source.getAttribute('s')!);
+   // Keep the company's template values, without copying another invoice's data.
+   if((col===7||col===8)&&!text(cell,pkg.shared)&&source&&!find(source,'f')){
+    const content=text(source,pkg.shared);if(content)overwriteText(d,cell,content);
+   }
+  }
+  writeNumber(d,ensureCell(d,row,2,rowNo),++sequence);
+  const date=invoiceDateValue(item.date);
+  if(date)writeNumber(d,ensureCell(d,row,3,rowNo),Math.round((Date.parse(date+'T00:00:00Z')-Date.UTC(1899,11,30))/86400000));
+  overwriteText(d,ensureCell(d,row,4,rowNo),item.number);
+  overwriteText(d,ensureCell(d,row,5,rowNo),item.branch);
+  const amount=fils(item.omarAmount||item.amount);
+  if(amount!==null)writeNumber(d,ensureCell(d,row,6,rowNo),amount/1000);
+  allRows.push({...item,row:rowNo,origin:'project'});
+ }
  if(notes.added){
   for(const rowNo of [3,4]){
    const row=rowElements.get(rowNo);
@@ -204,7 +266,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
   const dim=find(d,'dimension');
   if(dim){
    const ref=dim.getAttribute('ref')||'A1:Q1';
-   dim.setAttribute('ref',ref.replace(/:[A-Z]+(\\d+)$/,':'+columnName(notes.column)+'$1'));
+   dim.setAttribute('ref',ref.replace(/:[A-Z]+(\d+)$/,':'+columnName(notes.column)+'$1'));
   }
  }
  // Use one shared wrapping style per fill, instead of creating a style for every row.
@@ -226,7 +288,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
   wrapStyles.set(style,String(index));
   return String(index);
  }
- for(const item of report.rows){
+ for(const item of allRows){
   const row=rowElements.get(item.row);
   if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في ملف سجى.');
   // A confirmed historical group belongs to every invoice in that saved group, even
@@ -257,7 +319,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
   const transferWarning=missingTransfers.length?
     'ترحيلات عمر لم تتسع لها خانات سجى: '+missingTransfers.join('، '):'';
   const note=[discrepancy,transferWarning].filter(Boolean).join(' | ');
-  const effectiveState=transferWarning?'review':item.state;
+  const effectiveState=item.origin==='project'?'project_only':transferWarning?'review':item.state;
   if(note){
    const cell=ensureCell(d,row,notes.column,item.row);
    if(!cell.getAttribute('s')){
@@ -280,6 +342,27 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
    const colored=styles.apply(cell.getAttribute('s'),effectiveState);
    cell.setAttribute('s',col===notes.column&&note?wrapped(colored):colored);
   }
+ }
+ if(report.projectOnly?.length){
+  const end=Math.max(...allRows.map(row=>row.row));
+  const dimension=find(d,'dimension');
+  if(dimension){
+   const old=dimension.getAttribute('ref')||'A1:Q1';
+   const match=old.match(/^([A-Z]+\d+):([A-Z]+)(\d+)$/);
+   dimension.setAttribute('ref',(match?.[1]||'A1')+':'+columnName(Math.max(last,cellColumn(match?.[2]||'Q')))+Math.max(end,Number(match?.[3]||1)));
+  }
+  const autoFilter=find(d,'autoFilter');
+  if(autoFilter)autoFilter.setAttribute('ref',(autoFilter.getAttribute('ref')||'').replace(/(:[A-Z]+)(\d+)$/,(_,col,row)=>col+Math.max(Number(row),end)));
+  const book=readXml(pkg.files['xl/workbook.xml']);
+  for(const name of book.getElementsByTagNameNS(NS,'definedName'))if(name.getAttribute('name')==='_xlnm.Print_Area'){
+   const area=(name.textContent||'').replace(/((?:'للطباعة'|للطباعة)!\$?[A-Z]+\$?\d+:\$?[A-Z]+\$?)(\d+)/g,
+    (_,prefix,row)=>prefix+Math.max(Number(row),end));
+   setText(book,name,area);
+  }
+  let calc=find(book,'calcPr');
+  if(!calc){calc=element(book,'calcPr');book.documentElement.appendChild(calc);}
+  calc.setAttribute('fullCalcOnLoad','1');calc.setAttribute('forceFullCalc','1');
+  pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(book));
  }
  pkg.files[pkg.name]=strToU8(new XMLSerializer().serializeToString(d));
  pkg.files['xl/styles.xml']=strToU8(new XMLSerializer().serializeToString(styles.doc));

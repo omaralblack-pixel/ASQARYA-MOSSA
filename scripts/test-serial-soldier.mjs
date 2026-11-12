@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 const compile=source=>ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
 const url=source=>'data:text/javascript;base64,'+Buffer.from(source).toString('base64');
 const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
-const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'");
+const collector=url(compile(fs.readFileSync('app/lib/invoice-collector.ts','utf8').replace("'./reconcile'","'"+rec+"'")));
+const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'")
+ .replace("'./invoice-collector'","'"+collector+"'");
 const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns}=await import(url(compile(source)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from,to)=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
@@ -205,6 +207,46 @@ assert.ok(serialReviewNote(bothWrong).includes('فرق المبلغ: عمر 186.
 assert.equal(bothWrong.state,'received_difference','Both discrepancies remain one received yellow invoice');
 assert.equal(evaluateSerial([{...guessedSaja,amount:'186.420'}],[correct]).count.received,1);
 assert.equal(serialReviewNote(evaluateSerial([row(5,'9999999999','2.000')],[correct]).rows[0]),'غير موجودة في سجل المطابقة؛ لا يمكن استنتاج وصول الورق من غياب التسجيل');
+// The missing direction: saved project invoices absent from Saja must be exported too.
+const dated=(number,amount,date='2026-11-09')=>({...invoice(number,amount),date,id:'i-'+number});
+const projectOnly=record('only-project',[dated('2629999988','12.345')],[
+ transfer('2619091','DAR00001','001','011'),transfer('2619092','DAR00002','002','011'),
+ transfer('2619093','DAR00003','009','011'),
+]);
+const snapshot=JSON.stringify(projectOnly);
+const joined=evaluateSerial([row(5,'2624002303','186.400')],[correct,projectOnly]);
+assert.equal(joined.rows.length,1,'Original Saja rows keep their original positions and validation');
+assert.deepEqual(joined.count,{received:1,pending:0,missing:0,review:0},'Project-only invoices must not inflate the received-from-Saja total');
+assert.equal(joined.projectOnly.length,1);
+assert.equal(joined.projectOnly[0].origin,'project');
+assert.equal(joined.projectOnly[0].number,'2629999988');
+assert.equal(joined.projectOnly[0].amount,'12.345');
+assert.equal(joined.projectOnly[0].date,'2026-11-09');
+assert.equal(joined.projectOnly[0].branch,'فرع تجريبي');
+assert.deepEqual(serialInvoiceColumns(joined.projectOnly[0]),['2619091','2619092','2619093']);
+assert.equal(serialReviewNote(joined.projectOnly[0]),'موجودة بالمشروع وغير موجودة بكشف سجى');
+assert.equal(JSON.stringify(projectOnly),snapshot,'Export must not create or modify saved invoices');
+const outside=record('outside',[dated('2629999977','3.000','2026-10-31')],[]);
+const nextDay=record('next-day',[dated('2629999966','0','2026-11-10')],[transfer('2619094','DAR00004','001','011')]);
+assert.equal(evaluateSerial([row(5,'2624002303','186.400')],[correct,outside,nextDay]).projectOnly.length,0,
+ 'Without a declared period, additions stay within the dates actually covered by Saja');
+const wholeMonth=evaluateSerial([row(5,'2624002303','186.400')],[correct,outside,nextDay],{from:'2026-11-01',to:'2026-11-30'});
+assert.deepEqual(wholeMonth.projectOnly.map(row=>row.number),['2629999966'],
+ 'The declared monthly period includes a project invoice on a day absent from Saja');
+assert.equal(wholeMonth.projectOnly[0].amount,'0','A real zero amount must not disappear');
+const originalBlue={...row(6,'2629999988','12.345'),origin:'project'};
+const repeated=evaluateSerial([row(5,'2624002303','186.400'),originalBlue],[correct,projectOnly]);
+assert.equal(repeated.projectOnly.length,0,'Re-uploading an export must not duplicate the blue invoice');
+assert.equal(repeated.rows[1].origin,'project','Existing generated rows must retain their blue origin');
+assert.equal(repeated.count.received,1,'A blue row must never become a Saja-provided invoice on repeat export');
+const linkedDated={...correct,payload:JSON.stringify({...JSON.parse(correct.payload),invoices:[dated('2624002303','186.400')]})};
+assert.equal(evaluateSerial([guessedSaja],[linkedDated]).projectOnly.length,0,
+ 'A Saja number typo uniquely linked by transfer must not append the same saved invoice again');
+const duplicateProject=record('duplicate-project',[dated('2629999988','12.345')],[transfer('2619095','DAR00001','001','011')]);
+const duplicateResult=evaluateSerial([row(5,'2624002303','186.400')],[correct,projectOnly,duplicateProject]);
+assert.equal(duplicateResult.projectOnly.length,2,'Conflicting saved invoices must stay visible instead of being silently discarded');
+assert.ok(duplicateResult.projectOnly.every(row=>serialReviewNote(row).includes('مكرر في سجلات المشروع')));
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: confirmed arrival is counted despite amount/number differences while uncertain links remain unresolved');
 console.log('PASS: serial soldier retains approved old group matching without page numbers, preserves discrepancy notes, and enforces uniqueness and pending states');
+console.log('PASS: project-only invoices, declared date ranges, repeat exports, transfer-linked typos, duplicate records and read-only export.');

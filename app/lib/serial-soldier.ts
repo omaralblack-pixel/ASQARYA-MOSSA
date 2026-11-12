@@ -1,12 +1,15 @@
 import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
+import {collectInvoicesByDate} from './invoice-collector';
 
 
-export type SerialInput = {row:number; number:string; amount:string; date:string; originalTransfers?:string[]};
+export const PROJECT_ONLY_NOTE='موجودة بالمشروع وغير موجودة بكشف سجى';
+export type SerialPeriod = {from:string;to:string};
+export type SerialInput = {row:number; number:string; amount:string; date:string; originalTransfers?:string[]; origin?:'project'};
 export type SerialState = 'received'|'received_difference'|'pending'|'missing'|'review';
 export type SerialTransfer = {number:string; kind:'main'|'dry'|'adjustment'};
 export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; unassignedTransfers:SerialTransfer[]; branch:string; omarNumber:string; omarAmount:string};
 export type SerialRecord = {id:string; branch:string; status?:string; payload:string};
-export type SerialReport = {rows:SerialRow[]; blockers:string[]; legacyWarnings:string[]; count:{received:number;pending:number;missing:number;review:number}};
+export type SerialReport = {rows:SerialRow[]; projectOnly:SerialRow[]; period:SerialPeriod|null; blockers:string[]; legacyWarnings:string[]; count:{received:number;pending:number;missing:number;review:number}};
 
 // Existing matched records dated before the new workflow do not need historic page numbers.
 export const LEGACY_PAGE_CUTOFF='2026-11-11';
@@ -102,7 +105,7 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
   }
   return {assigned,unassigned};
 }
-export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):SerialReport {
+export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period?:SerialPeriod|null):SerialReport {
   const blockers:string[]=[], legacyWarnings:string[]=[];
   const index=new Map<string,Saved[]>();
   // A Saja typo can be associated with Omar's record only when an existing SAP transfer
@@ -133,7 +136,8 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     }
   }
   const inSheet=new Map<string,number>();
-  const result:SerialRow[]=rows.map(row=>{
+  const represented=new Set<string>();
+  const evaluate=(row:SerialInput):SerialRow=>{
     const number=normalNumber(row.number);
     const key=number;
     const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في سجل المطابقة؛ لا يعني أن ورقها غير واصل',transfers:[] as SerialTransfer[],unassignedTransfers:[] as SerialTransfer[],branch:'',omarNumber:'',omarAmount:''};
@@ -141,11 +145,11 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
       blockers.push('صف '+row.row+': رقم فاتورة مفقود أو غير صالح.');
       return {...base,state:'review',reason:'رقم فاتورة غير صالح'};
     }
-    if(inSheet.has(key)){
+    if(row.row>0&&inSheet.has(key)){
       blockers.push('رقم الفاتورة '+number+' مكرر في صفّي '+inSheet.get(key)+' و'+row.row+' من Excel سجى.');
       return {...base,state:'review',reason:'رقم فاتورة مكرر في Excel'};
     }
-    inSheet.set(key,row.row);
+    if(row.row>0)inSheet.set(key,row.row);
     let candidates=index.get(number)||[];
     let matchedByTransfer=false;
     if(!candidates.length&&row.originalTransfers?.length){
@@ -164,6 +168,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     }
     if(!candidates.length)return base;
     const saved=candidates[0], amount=fils(row.amount);
+    represented.add(saved.record.id+'|'+normalNumber(saved.invoice.number));
     const confirmed=fils(saved.invoice.amount||'');
     const errorsBefore=blockers.length;
     const linked=serialTransfer(saved.draft,saved,transferOwner,blockers,legacyWarnings);
@@ -188,18 +193,37 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
     if(matchedByTransfer||amount!==confirmed)
       return {...rowBase,state:'received_difference',reason:'الفاتورة واصلة، مع فرق موضح بالملاحظات'};
     return {...rowBase,state:'received',reason:'رقم الفاتورة والمبلغ مؤكدان'};
-  });
+  };
+  const result=rows.map(evaluate);
+  const dates=rows.map(row=>dateValue(row.date)).filter((date):date is string=>!!date).sort();
+  const scope=period|| (dates.length?{from:dates[0],to:dates[dates.length-1]}:null);
+  const projectOnly:SerialRow[]=[];
+  if(scope){
+    const collected=collectInvoicesByDate(records,scope.from,scope.to);
+    const inWorkbook=new Set(rows.map(row=>normalNumber(row.number)));
+    const appended=new Set<string>();
+    for(const invoice of collected.rows){
+      const number=normalNumber(invoice.number),key=invoice.recordId+'|'+number;
+      if(!/^\d{8,20}$/.test(number)||inWorkbook.has(number)||represented.has(key)||appended.has(key))continue;
+      appended.add(key);
+      const checked=evaluate({row:-(projectOnly.length+1),number,amount:invoice.amount,date:invoice.date,origin:'project'});
+      projectOnly.push({...checked,branch:invoice.branch,omarNumber:number,omarAmount:invoice.amount});
+    }
+    if(collected.undatedInvoices)
+      legacyWarnings.push('يوجد '+collected.undatedInvoices+' فاتورة في المشروع بلا تاريخ صالح؛ لم تُنسب إلى فترة كشف سجى.');
+  }
   const count={received:0,pending:0,missing:0,review:0};
   for(const row of result){
+    if(row.origin==='project')continue;
     if(row.state==='received_difference')count.received++;
     else count[row.state]++;
   }
-  return {rows:result,blockers:[...new Set(blockers)],legacyWarnings:[...new Set(legacyWarnings)],count};
+  return {rows:result,projectOnly,period:scope,blockers:[...new Set(blockers)],legacyWarnings:[...new Set(legacyWarnings)],count};
 }
 /** Only describe exceptions; approved rows should never receive repeated Omar/Saja values. */
 export function serialReviewNote(row:SerialRow):string {
- if(row.state==='received')return '';
- const parts:string[]=[];
+ if(row.state==='received'&&row.origin!=='project')return '';
+ const parts:string[]=row.origin==='project'?[PROJECT_ONLY_NOTE]:[];
  if(row.omarNumber&&row.number&&row.omarNumber!==row.number)
    parts.push('فرق رقم الفاتورة: عمر '+row.omarNumber+'، سجى '+row.number);
  if(row.omarAmount&&row.amount){
