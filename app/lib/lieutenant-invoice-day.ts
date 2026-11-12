@@ -444,7 +444,6 @@ export function auditInvoicesForDay(
     }
     const sapCheck=verifyInvoiceSap(row.number,row.branch,allNumbers,asOf,source,bySource,
       movements,cancellationDates,corrective,sourceLastDate);
-    notes.push(...sapCheck.notes);
     let state:DayInvoiceState='match';
     if(financiallyMatchedGroup){
       state=[...postedDates].some(date=>date>row.date)?'late':'match';
@@ -460,6 +459,7 @@ export function auditInvoicesForDay(
       notes.push('آخر ترحيل في كشف SAP بتاريخ '+(sourceLastDate||'غير معروف')+
         '، قبل تاريخ الفحص '+asOf+'؛ يلزم كشف محدث لإثبات عدم الترحيل.');
     }
+    notes.push(...sapCheck.notes);
     return {recordId:row.recordId,number:row.number,branch:row.branch,
       invoiceDate:row.date,asOf,transferNumbers:[...new Set([...nums,...row.unresolvedTransferNumbers,...row.groupConfirmedTransfers])],
       postedDates:[...postedDates].sort(),state,financiallyMatchedGroup:!!financiallyMatchedGroup,
