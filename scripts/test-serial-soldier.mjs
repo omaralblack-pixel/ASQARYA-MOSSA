@@ -158,7 +158,7 @@ assert.equal(serialReviewNote(wrongNumber),'فرق رقم الفاتورة: عم
 const bothWrong=evaluateSerial([{...guessedSaja,amount:'186.420'}],[correct]).rows[0];
 assert.ok(serialReviewNote(bothWrong).includes('فرق رقم الفاتورة: عمر'));
 assert.ok(serialReviewNote(bothWrong).includes('فرق المبلغ: عمر 186.400'));
-assert.equal(serialReviewNote(evaluateSerial([row(5,'9999999999','2.000')],[correct]).rows[0]),'غير موجودة في سجل عمر؛ وصول الورق غير مؤكد');
+assert.equal(serialReviewNote(evaluateSerial([row(5,'9999999999','2.000')],[correct]).rows[0]),'غير موجودة في سجل المطابقة؛ لا يمكن استنتاج وصول الورق من غياب التسجيل');
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: Omar/Saja numbers and amounts are preserved side by side; uncertain links remain unresolved');
 console.log('PASS: serial soldier retains approved old group matching without page numbers, while enforcing amount, duplicates and new records');
