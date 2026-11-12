@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import ts from 'typescript';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 
 const compile=(path)=>ts.transpileModule(fs.readFileSync(path,'utf8'),{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext},
@@ -120,5 +121,57 @@ assert.ok(screen.includes("response.headers.get('content-type')"),'HTML response
 assert.ok(screen.includes("movements.get(row.transfer.number)?.kind==='normal'"),'Auto-import must skip reversals and Cash Van');
 assert.ok(screen.includes("soldierEligible(row.status)"),'Settled Cash Van should not be sent to soldier');
 console.log('PASS: Lieutenant Cash Van matching, period cutoff, uniqueness, SAP cancellation, import exclusion and HTML-response diagnosis.');
+
+
+const archiveRoute=fs.readFileSync('worker/institution.ts','utf8');
+const routeStart=archiveRoute.indexOf('async function lieutenantFiles(');
+const routeEnd=archiveRoute.indexOf('export async function handleInstitution(',routeStart);
+assert.ok(routeStart>0&&routeEnd>routeStart,'Archive route must exist within authenticated worker');
+const isolatedArchive=compileText(archiveRoute.slice(routeStart,routeEnd));
+function compileText(source){
+  return ts.transpileModule(source,{
+    compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None},
+  }).outputText;
+}
+const archivedKey='lieutenant/transfers__'+'a'.repeat(32)+'__011.txt';
+const deletedObjects=[];
+const storageContext={
+  URL,Response,Headers,Buffer,
+  storagePath:'/storage/v1/object',bucket:'institution-sap',privateHeaders:{'Cache-Control':'no-store'},
+  maxSapFileBytes:16*1024*1024,
+  readBody:async(request,limit)=>{
+    const body=await request.text();
+    if(body.length>limit)throw Error('Too large');
+    return body;
+  },
+  reply:(status,error)=>Response.json({error},{status}),
+  fetch:async(url,init)=>{
+    deletedObjects.push({url,method:init.method,payload:JSON.parse(init.body)});
+    return Response.json([{name:archivedKey}]);
+  },
+};
+vm.runInNewContext(isolatedArchive+'\\n globalThis.testArchive = lieutenantFiles;',storageContext);
+const removeFile=(key)=>storageContext.testArchive(new Request('https://local.test/api/lieutenant-files',{
+  method:'DELETE',body:JSON.stringify({key}),
+}),{SUPABASE_URL:'https://storage.test',SUPABASE_STORAGE_SECRET:'private-server-secret'});
+for(const invalid of ['current.json','lieutenant/current.json','lieutenant/../../current.json',
+  'lieutenant/transfers__'+'a'.repeat(32)+'__/wrong.txt']){
+  const denied=await removeFile(invalid);
+  assert.equal(denied.status,400,'Deletion must reject paths outside one archived file');
+}
+assert.equal(deletedObjects.length,0,'Invalid archive keys must not reach Supabase');
+const successful=await removeFile(archivedKey);
+assert.equal(successful.status,200,'Authenticated archive route deletes a single original');
+assert.deepEqual(await successful.json(),{deleted:true,key:archivedKey});
+assert.equal(deletedObjects.length,1);
+assert.equal(deletedObjects[0].method,'DELETE');
+assert.ok(deletedObjects[0].url.endsWith('/storage/v1/object/institution-sap'));
+assert.deepEqual(deletedObjects[0].payload,{prefixes:[archivedKey]});
+assert.ok(screen.includes('async function deleteArchive(file:StoredFile)'));
+assert.ok(screen.includes('window.confirm('),'Deletion must require explicit confirmation');
+assert.ok(screen.includes('Promise.allSettled('),'Failed reconcile API must not hide archive listing');
+assert.ok(fs.readFileSync('worker/index.ts','utf8').includes('downstream.status === 503'),
+  'HTML 503 from framework must be translated to actionable JSON');
+console.log('PASS: Secure single-file archive deletion, invalid paths, independent archive loading, JSON 503 fallback.');
 
 console.log('Lieutenant parser regressions passed');
