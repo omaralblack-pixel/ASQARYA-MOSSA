@@ -62,9 +62,23 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
   const [status, setStatus] = useState<'received' | 'pending'>('received');
   const received = useMemo(() => registerRows(records, 'received'), [records]);
   const pending = useMemo(() => registerRows(records, 'pending'), [records]);
-  const rows = status === 'received' ? received : pending;
+  // An invoice-number search must check every saved group regardless of the
+  // currently selected paper status or date filter. Otherwise an existing
+  // checked invoice can misleadingly appear to be absent.
+  const searched = digits(query.trim()).toLowerCase();
+  const searching = Boolean(query.trim());
+  const exactInvoiceSearch = /^\\d{8,20}$/.test(searched);
+  const rows = searching ? [...received, ...pending] : status === 'received' ? received : pending;
+  const receivedKeys = new Set(received.map(row => row.key));
   const selectedDate = dateValue(invoiceDate);
-  const visible = rows.filter(row => (!month || row.date.startsWith(month)) && (!invoiceDate.trim() || (selectedDate !== null && row.values[5] === selectedDate)) && digits(row.values.join(' ')).includes(digits(query.trim())));
+  const visible = rows.filter(row => {
+    if (searching) {
+      if (exactInvoiceSearch) return invoiceDocumentNo(row.values[0]) === searched;
+      return digits(row.values.join(' ')).toLowerCase().includes(searched);
+    }
+    return (!month || row.date.startsWith(month)) &&
+      (!invoiceDate.trim() || (selectedDate !== null && row.values[5] === selectedDate));
+  });
   const branchCount = new Set(visible.map(row => row.record.branch.trim()).filter(Boolean)).size;
 
   // Re-open the stored SAP source whenever this screen mounts or the user requests a refresh.
@@ -97,7 +111,11 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
   const comparison = useMemo(() => sapSource ? compareSapWithSavedInvoices(sapSource, records) : [], [sapSource,records]);
   const notReceived = comparison.filter(row=>row.state==='missing'||row.state==='pending');
   const questionable = comparison.filter(row=>row.state==='review');
-  const visibleComparison = comparison.filter(row=>sapFilter==='all'||(sapFilter==='notReceived'&&(row.state==='missing'||row.state==='pending'))||row.state===sapFilter);
+  const visibleComparison = comparison.filter(row=>
+    (sapFilter==='all'||(sapFilter==='notReceived'&&(row.state==='missing'||row.state==='pending'))||row.state===sapFilter) &&
+    (!exactInvoiceSearch || row.number===searched));
+  const sapOnlySearchMatch = exactInvoiceSearch && !visible.length
+    ? comparison.find(row=>row.number===searched && row.state==='missing') : undefined;
   async function exportSapPending(){
     const {invoiceWorkbook} = await import('../lib/invoice-workbook');
     const data = [
@@ -139,6 +157,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
       </div>
       {sapBusy&&<p role="status">جارٍ قراءة كشف SAP المحفوظ ومقارنته بالسجل…</p>}
       {sapError&&<p role="alert" className="amber">{sapError}</p>}
+      {sapOnlySearchMatch&&<p role="status" className="amber">الفاتورة {sapOnlySearchMatch.number} موجودة في Remarks بملف SAP، لكنها غير موجودة في سجلات المطابقة المحفوظة. أرقام ترحيلاتها: {sapOnlySearchMatch.transfers.join('، ')}. لا تعتبرها غير واصلة ورقيًا بناءً على SAP وحده.</p>}
       {sapSource&&!sapBusy&&<>
         <p className="hint">المصدر: <strong>{sapName}</strong> · آخر فحص: {sapCheckedAt} · {sapSource.sourceRows} سطر SAP · {sapSource.transferCount} ترحيل يحمل رقم فاتورة مقروءًا · {sapSource.ignoredCount} ترحيل خارج مسار الفواتير أو ملغى.</p>
         <div className="stats">
@@ -184,15 +203,16 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
         <button className="button secondary" disabled={status !== "received" || !visible.length} onClick={exportRegister}><Download size={16}/>تصدير Excel</button>
       </div>
       {invoiceDate.trim() && !selectedDate && <p role="alert">أدخل تاريخًا صحيحًا مثل 1.11.2026.</p>}
-      <p className="hint">{status === "received" ? "فواتير وصلتني وشيّكتها" : "فواتير لم يصل ورقها"} · <strong>{visible.length} فاتورة</strong> · <strong>{branchCount} فرع</strong> · العدد حسب التاريخ والبحث والفلاتر المختارة. البحث بيوم محدد يعتمد تاريخ الفاتورة نفسها. الإكسل مرتب من أقدم تاريخ لأحدث تاريخ؛ وعند غياب تاريخ الفاتورة يُستخدم تاريخ المجموعة للترتيب وفلتر الشهر.</p>
+      <p className="hint">{searching ? 'نتائج البحث في كل السجلات والحالات والتواريخ (دون إخفاء الورق غير المؤكد)' : status === "received" ? "فواتير وصلتني وشيّكتها" : "فواتير لم يصل ورقها"} · <strong>{visible.length} فاتورة</strong> · <strong>{branchCount} فرع</strong> · العدد حسب التاريخ والبحث والفلاتر المختارة. البحث بيوم محدد يعتمد تاريخ الفاتورة نفسها. الإكسل مرتب من أقدم تاريخ لأحدث تاريخ؛ وعند غياب تاريخ الفاتورة يُستخدم تاريخ المجموعة للترتيب وفلتر الشهر.</p>
       <div className="table-scroll">
-        <table><thead><tr>{headers.map(header => <th key={header}>{header}</th>)}<th>المجموعة</th></tr></thead>
+        <table><thead><tr>{headers.map(header => <th key={header}>{header}</th>)}{searching&&<th>حالة الورق</th>}<th>المجموعة</th></tr></thead>
           <tbody>{visible.map(row => <tr key={row.key}>
             {row.values.map((value, index) => <td key={index} dir={index < 3 || index >= 5 ? 'ltr' : undefined}>{value || '—'}</td>)}
+            {searching&&<td>{receivedKeys.has(row.key)?'الورق مؤكد في السجل':'الورق غير مؤكد في السجل'}</td>}
             <td><button className="button secondary small" onClick={() => open(row.record)}>فتح المجموعة</button></td>
           </tr>)}</tbody>
         </table>
-        {!visible.length && <div className="empty">لا توجد فواتير ضمن العرض الحالي.</div>}
+        {!visible.length && <div className="empty">{searching?'رقم الفاتورة غير موجود في سجلات المطابقة المحمّلة. راجع نتائج SAP أعلاه؛ وجوده في SAP وحده لا يثبت حفظ الفاتورة بالمشروع.':'لا توجد فواتير ضمن العرض الحالي.'}</div>}
       </div>
     </section>
     <aside className="panel" style={{position:"sticky",top:12,padding:12,display:"grid",gap:10}} aria-label="حالة وصول الفواتير">
