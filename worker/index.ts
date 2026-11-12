@@ -6,7 +6,16 @@ import { handleInstitution } from "./institution";
 
 const worker = {
   async fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {
-    const response = await handleInstitution(request, env);
+    let response: Response | undefined;
+    try {
+      response = await handleInstitution(request, env);
+    } catch (error) {
+      console.error("Institution gateway failed before application routing", error);
+      if (!new URL(request.url).pathname.startsWith("/api/")) throw error;
+      return Response.json({
+        error: "تعذّر تشغيل بوابة إدارة المؤسسة (HTTP 503). تحقق من أسرار الجلسة واتصال Cloudflare D1 في سجلات Worker. الملفات المحفوظة على Supabase لم تتغير.",
+      }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
     if (response) return response;
     let binding = ctx.props?.CONNECTORS;
     // Local preview emulates the same request-scoped capability. This branch and
