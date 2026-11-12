@@ -104,11 +104,11 @@ function verifyInvoiceSap(
   const notes:string[]=[];
   if(!linkedNumbers.length)
     return {status:'missing',notes:['لا يوجد رقم ترحيل SAP مثبت لهذه الفاتورة، حتى لو كانت معتمدة ماليًا.']};
-  let posted=0,waiting=0,reversed=0,changed=0,unknown=0;
+  let posted=0,waiting=0,reversed=0,changed=0,missing=0,unknown=0;
   for(const number of linkedNumbers){
     const current=bySource.get(number);
     if(!current){
-      unknown++;
+      missing++;
       notes.push('مستند SAP '+number+' غير موجود في كشف الترحيلات الحالي.');continue;
     }
     const date=current.transfer.date;
@@ -174,10 +174,11 @@ function verifyInvoiceSap(
     notes.push('كشف SAP يصل إلى '+(sourceLastDate||'تاريخ غير معروف')+
       ' فقط؛ لا يثبت اكتمال الحركات حتى '+asOf+'.');
   }
+  const distinctKinds=[posted,waiting,reversed,missing].filter(Boolean).length;
   const status:DaySapStatus=unknown?'review':
-    changed||posted>0&&(reversed>0||waiting>0)?'partial':
+    changed||distinctKinds>1?'partial':
     posted>0?'posted':
-    reversed>0&&waiting===0?'reversed':
+    reversed>0?'reversed':
     waiting>0?'waiting':'missing';
   if(status==='posted')
     notes.push('وجود الترحيلات الواردة إلى 011 مثبت حتى '+asOf+
