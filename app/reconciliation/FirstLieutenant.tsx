@@ -9,6 +9,7 @@ import {invoiceDocumentNo,transferNumbers,type Draft,type Transfer,type Item} fr
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 import {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {lieutenantApprovals} from '../lib/lieutenant-coverage';
+import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState} from '../lib/lieutenant-invoice-day';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
 import {auditLieutenantStock,classifyLieutenantContent,parseLieutenantStock,
   type StockItem,type LieutenantFileKind} from '../lib/lieutenant-stock';
@@ -47,6 +48,10 @@ const statusText:Record<ReviewStatus,string>={
 const empty:RecordSnapshot={records:[],queue:[],openingStock:[]};
 const fileLimit=16*1024*1024;
 const stockUnit=(value:string)=>({Piece:'حبة',Carton:'كرتونة',KG:'كغم'}[value]||value);
+const dailyStateNames:Record<DayInvoiceState,string>={
+  match:'مطابقة',late:'مطابقة — ترحيل متأخر',pending:'بانتظار الترحيل',
+  short:'نقص في الترحيل',extra:'كمية زائدة',review:'تحتاج بيانات مكتملة',
+};
 // Local calendar day, not UTC, because SAP stock is dated by posting day.
 function todayLocal():string{
   const value=new Date();
@@ -183,6 +188,11 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [sharedSource,setSharedSource]=useState<SavedSapImport|null>(null);
   const [transferSourceName,setTransferSourceName]=useState('');
   const [importProgress,setImportProgress]=useState('');
+  const [invoiceDay,setInvoiceDay]=useState(()=>todayLocal().slice(0,8)+'01');
+  const [invoiceAsOf,setInvoiceAsOf]=useState(todayLocal);
+  const [dailyInvoices,setDailyInvoices]=useState<DayInvoiceData|null>(null);
+  const [dailyLoading,setDailyLoading]=useState(false);
+  const [dailyError,setDailyError]=useState('');
   const [rowLimit,setRowLimit]=useState(50);
   const transferSelectedRef=useRef(false);
   const closingSelectedRef=useRef(false);
@@ -194,6 +204,21 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   }).length,[snapshot.records]);
   const recordsReady=snapshotLoaded&&unreadableRecords===0;
 
+  async function inspectInvoiceDay(){
+    if(!sapStockBalanceQuery(invoiceDay)||!sapStockBalanceQuery(invoiceAsOf)||
+      invoiceDay>invoiceAsOf||invoiceAsOf>todayLocal()){
+      setDailyError('اختر تاريخ الفاتورة وتاريخ فحص صحيحين؛ الفحص لا يكون قبل الفاتورة أو بعد اليوم.');
+      return;
+    }
+    setDailyLoading(true);setDailyError('');setDailyInvoices(null);
+    try{
+      const data=await checkedJson<DayInvoiceData>(
+        '/api/reconcile?lieutenantInvoiceDay='+encodeURIComponent(invoiceDay));
+      setDailyInvoices(data);
+    }catch(cause){
+      setDailyError(cause instanceof Error?cause.message:'تعذّر قراءة الفواتير الزرقاء المحفوظة.');
+    }finally{setDailyLoading(false)}
+  }
   async function copyStockQuery(){
     if(!stockQuery)return;
     let copied=false;
@@ -365,6 +390,15 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     return()=>{active=false};
   },[]);
 
+  const dailyReport=useMemo(()=>
+    dailyInvoices&&selectedTransfer&&transfers.length?
+      auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference):null,
+    [dailyInvoices,selectedTransfer,transfers,invoiceAsOf,reference]);
+  const dailyCounts=useMemo(()=>{
+    const totals={match:0,late:0,pending:0,short:0,extra:0,review:0};
+    for(const row of dailyReport?.rows||[])totals[row.state]++;
+    return totals;
+  },[dailyReport]);
   const approvals=useMemo(()=>lieutenantApprovals(transfers,snapshot.records),[transfers,snapshot.records]);
   const rows=useMemo(()=>makeRows(transfers,snapshot,to,approvals).filter(row=>
     row.source.transfer.date>=from&&row.source.transfer.date<=to),[transfers,snapshot,from,to,approvals]);
@@ -590,6 +624,80 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         }}/></label>
       </div>
       {!periodValid&&<p className="banner warn" role="alert">اختر تاريخ بداية ونهاية صحيحين؛ تاريخ البداية لا يتجاوز النهاية، والنهاية لا تتجاوز اليوم.</p>}
+    </section>
+    <section className="panel" aria-label="مطابقة الفواتير الزرقاء حسب تاريخ الفاتورة">
+      <div className="section-title"><div>
+        <h2>فحص يوم الفواتير الزرقاء — هل ترحّلت الكميات على SAP؟</h2>
+        <p>اختر يوم إصدار الفواتير، ثم تاريخ فحص ترحيلاتها. تُقارن أصناف وكميات كل فاتورة بالترحيلات المرتبطة، حتى لو رُحّلت لاحقًا. هذا فحص الفواتير وليس كشف رصيد المخزون.</p>
+      </div></div>
+      <div className="table-controls no-print">
+        <label>تاريخ الفواتير الزرقاء
+          <input type="date" dir="ltr" value={invoiceDay} max={todayLocal()}
+            onChange={event=>{setInvoiceDay(event.target.value);setDailyInvoices(null);setDailyError('')}}/>
+        </label>
+        <label>فحص الترحيلات حتى نهاية
+          <input type="date" dir="ltr" value={invoiceAsOf} min={invoiceDay} max={todayLocal()}
+            onChange={event=>{setInvoiceAsOf(event.target.value);setDailyError('')}}/>
+        </label>
+        <button className="button primary" type="button"
+          disabled={dailyLoading||!sapStockBalanceQuery(invoiceDay)||!sapStockBalanceQuery(invoiceAsOf)||
+            invoiceDay>invoiceAsOf||invoiceAsOf>todayLocal()}
+          onClick={()=>void inspectInvoiceDay()}><Search size={16}/>
+          {dailyLoading?'جارٍ فحص الفواتير...':'فحص جميع فواتير هذا اليوم'}
+        </button>
+      </div>
+      <p className="hint">مثلًا: فاتورة بتاريخ 01/11 وترحيل بتاريخ 03/11 تظهر «بانتظار الترحيل» عند الفحص حتى 02/11، وتصبح «مطابقة — ترحيل متأخر» عند الفحص حتى 03/11. لا تدخل الترحيلات اللاحقة لتاريخ الفحص.</p>
+      {dailyError&&<p className="banner error" role="alert"><AlertTriangle size={16}/>{dailyError}</p>}
+      {dailyInvoices&&!selectedTransfer&&<p className="banner warn" role="alert">
+        بيانات الفواتير جاهزة، لكن ملف ترحيلات SAP لم يُسترجع بعد. افتح كشف الترحيلات من الأرشيف؛ لا يكفي كشف الرصيد الفعلي وحده.
+      </p>}
+      {dailyInvoices&&selectedTransfer&&!dailyReport&&<p className="banner warn" role="alert">
+        مصدر ترحيلات SAP لا يحتوي حركات قابلة للفحص.
+      </p>}
+      {dailyReport&&<>
+        <p className="hint">المصدر: <b>{transferSourceName}</b> · أحدث تاريخ حركة ظاهر في الملف: <b dir="ltr">{dailyReport.sourceLastDate||'غير معروف'}</b>.
+          لا يمكن إثبات عدم وجود ترحيلات جديدة بعد أحدث تاريخ يغطيه الملف.</p>
+        {dailyInvoices.unreadableRecords>0&&<p className="banner warn" role="alert">
+          يوجد {dailyInvoices.unreadableRecords} سجل غير قابل للقراءة في قاعدة الفواتير؛ النتائج لا تشمل هذه السجلات.
+        </p>}
+        {dailyInvoices.undatedInvoices>0&&<p className="hint">يوجد {dailyInvoices.undatedInvoices} فاتورة بلا تاريخ يمكن التحقق منه على مستوى السجل، ولم تُنسب تلقائيًا إلى اليوم المختار.</p>}
+        <div className="stats">
+          <div className="stat"><span>فواتير اليوم</span><strong>{dailyReport.rows.length}</strong></div>
+          <div className="stat"><span>مطابقة</span><strong>{dailyCounts.match}</strong></div>
+          <div className="stat"><span>مطابقة — متأخرة</span><strong>{dailyCounts.late}</strong></div>
+          <div className="stat"><span>بانتظار ترحيل</span><strong>{dailyCounts.pending}</strong></div>
+          <div className="stat"><span>نقص أو زيادة</span><strong>{dailyCounts.short+dailyCounts.extra}</strong></div>
+          <div className="stat"><span>بيانات غير مكتملة</span><strong>{dailyCounts.review}</strong></div>
+        </div>
+        {!dailyReport.rows.length?<p className="hint">لا توجد فواتير زرقاء مؤرّخة في هذا اليوم ضمن السجلات التي أمكن قراءتها.</p>:
+        <div className="table-scroll"><table>
+          <thead><tr><th>الفاتورة الزرقاء</th><th>الفرع</th><th>تاريخ الفاتورة</th>
+            <th>ترحيلات SAP المرتبطة</th><th>تاريخ الترحيل</th><th>الحالة</th><th>تفاصيل الأصناف والفرق</th>
+          </tr></thead>
+          <tbody>{dailyReport.rows.map((result,index)=><tr key={result.recordId+'|'+result.number+'|'+index}>
+            <td dir="ltr"><strong>{result.number}</strong></td>
+            <td>{result.branch}</td><td dir="ltr">{result.invoiceDate}</td>
+            <td dir="ltr">{result.transferNumbers.join('، ')||'غير مثبت'}</td>
+            <td dir="ltr">{result.postedDates.join('، ')||'—'}</td>
+            <td><span className={'badge '+(
+              result.state==='match'||result.state==='late'?'match':
+              result.state==='short'||result.state==='extra'?'difference':'review')}>
+              {dailyStateNames[result.state]}</span></td>
+            <td><details><summary>عرض الأصناف ({result.items.length})</summary>
+              {result.notes.length>0&&<ul>{result.notes.map(note=><li key={note}>{note}</li>)}</ul>}
+              {result.items.length>0&&<table><thead><tr>
+                <th>رقم المؤسسة</th><th>الصنف</th><th>كمية الفاتورة (حبة)</th>
+                <th>المرحل إلى 011 حتى الفحص (حبة)</th><th>الفرق (فاتورة − SAP)</th>
+              </tr></thead><tbody>{result.items.map(item=><tr key={item.code}>
+                <td dir="ltr">{item.code}</td><td>{item.name}</td>
+                <td dir="ltr">{item.expected.toFixed(3)}</td>
+                <td dir="ltr">{item.posted.toFixed(3)}</td>
+                <td dir="ltr">{item.difference.toFixed(3)}</td>
+              </tr>)}</tbody></table>}
+            </details></td>
+          </tr>)}</tbody></table></div>}
+        <p className="hint">الفحص للقراءة فقط؛ لا يعتمد فاتورة أو يعدّل أرشيف SAP. إذا كانت شدّة الصنف أو صفحة الفاتورة غير معرّفة، تظهر «بيانات غير مكتملة» بدل نسبة كمية غير مؤكدة. حركة SAP بتاريخ الترحيل، وليس بتاريخ الفاتورة.</p>
+      </>}
     </section>
     <section className="panel" aria-label="الأرصدة الافتتاحية المعتمدة">
       <div className="section-title"><div><h2>الأرصدة الافتتاحية المعتمدة — المستودع 011</h2>
