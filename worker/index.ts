@@ -27,7 +27,25 @@ const worker = {
         },
       };
     }
-    return runWithConnectorBinding(binding, () => handler.fetch(request, env, ctx));
+    // Keep API errors machine-readable even when the framework returns an
+    // upstream HTML 503 page. This does not claim that the database succeeded.
+    const isReconciliationApi = new URL(request.url).pathname === "/api/reconcile";
+    try {
+      const downstream = await runWithConnectorBinding(binding, () => handler.fetch(request, env, ctx));
+      if (isReconciliationApi && downstream.status === 503 &&
+        !(downstream.headers.get("content-type") || "").includes("application/json")) {
+        return Response.json({
+          error: "خدمة المطابقة غير متاحة حاليًا (HTTP 503). أرشيف الملفات محفوظ بشكل مستقل؛ تحقق من تشغيل Cloudflare Worker وربط قاعدة البيانات DB، ثم أعد المحاولة.",
+        }, { status: 503, headers: { "Cache-Control": "no-store" } });
+      }
+      return downstream;
+    } catch (error) {
+      if (!isReconciliationApi) throw error;
+      console.error("Reconciliation API runtime failure", error);
+      return Response.json({
+        error: "تعطلت خدمة المطابقة قبل إكمال الطلب. تحقق من سجلات Cloudflare Worker وربط DB؛ لا تعِد رفع ملف SAP المحفوظ.",
+      }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
   },
 };
 
