@@ -46,6 +46,7 @@ function loadTs(file) {
   const require = specifier => {
     if (specifier === 'cloudflare:workers') return {env};
     if (specifier.endsWith('.json')) return createRequire(file)(specifier);
+    if (!specifier.startsWith('.')) return createRequire(file)(specifier);
     return loadTs(resolve(dirname(file), specifier + '.ts'));
   };
   new Function('exports', 'require', outputText)(exports, require);
@@ -262,5 +263,32 @@ assert.ok(stockUI.includes('stockReport(file.text,{from:selectedFrom,to:selected
 assert.ok(stockUI.includes('report.items.map(row=>[row.sapCode'),
   'Excel export must include the date-filtered report instead of all movements');
 assert.ok(stockUI.includes('invalidRange'),'Invalid from/to dates must block report export');
+
+const {tableWorkbook}=loadTs(resolve('app/lib/invoice-workbook.ts'));
+const {unzipSync,strFromU8}=createRequire(import.meta.url)('fflate');
+const exportRows=[
+  ['صافي الترحيلات إلى مستودع 011'],
+  ['الفترة المختارة حسب تاريخ الترحيل','2026-11-02 — 2026-11-03'],
+  ['الفترة في ملف SAP الأصلي','2026-11-01 — 2026-11-04'],
+  ['المصدر','sap-transfer-test.txt'],
+  ['مستندات الترحيل في الفترة',partial.documents],
+  ['الصافي = الوارد − العكسي + أثر الإلغاء الموقّع'],
+  ['كود SAP','اسم الصنف في SAP','الوحدة','الوارد إلى 011','العكسي من 011','أثر الإلغاء','الصافي إلى 011'],
+  ...partial.items.map(row=>[row.sapCode,row.name,row.unit,row.incoming,row.reverse,row.cancellation,row.net]),
+];
+const exportBlob=tableWorkbook(exportRows,'صافي الترحيل 011',[24,68,14,19,19,17,19],7);
+assert.ok(exportBlob.size>0,'Excel report must produce a nonempty XLSX Blob');
+const exportArchive=unzipSync(new Uint8Array(await exportBlob.arrayBuffer()));
+const sheetXml=strFromU8(exportArchive['xl/worksheets/sheet1.xml']);
+assert.ok(sheetXml.includes('<autoFilter ref="A7:G'+exportRows.length+'"/>'),
+  'Excel header must be at the correct row after report metadata');
+assert.ok(sheetXml.includes('<v>-4</v>'),
+  'Excel must preserve signed net movements numerically');
+assert.ok(sheetXml.includes('2026-11-02 — 2026-11-03'),
+  'Excel must state the selected SAP transfer-document date range');
+assert.ok(stockUI.includes("import {tableWorkbook} from '../lib/invoice-workbook';"),
+  'Stock report must bundle the Excel writer rather than rely on a failing lazy chunk');
+assert.ok(stockUI.includes('document.body.appendChild(link)'),
+  'Temporary Excel download link must be attached for reliable browser behavior');
 
 console.log('PASS: direct transfer addition, SAP branch recovery, date-filtered stock, cancellation, duplicate guards and atomic rollback');
