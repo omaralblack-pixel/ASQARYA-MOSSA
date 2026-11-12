@@ -39,6 +39,19 @@ export async function GET(req:Request){try{await ensureSchema();const u=new URL(
  return json({records:records.results,queue:queue.results,openingStock:openingStock.results});
 }if(u.searchParams.has('pageSortingCatalog')){
  return json({catalog:await currentPageSortingCatalog()});
+}if(u.searchParams.has('lieutenantInvoiceDay')){
+  // Read-only daily blue-invoice audit. Resolve dates/page links using the
+  // existing invoice collector; never duplicate historical invoices or write.
+  const day=u.searchParams.get('lieutenantInvoiceDay')||'';
+  if(dateValue(day)!==day)return json({error:'اختر تاريخ فاتورة صحيحًا.'},400);
+  const records=await db().prepare(
+    'SELECT id,branch,status,doc_date,payload FROM reconciliations ORDER BY updated DESC'
+  ).all<{id:string;branch:string;status:string;doc_date:string;payload:string}>();
+  const collected=collectInvoicesByDate(records.results,day,day);
+  const wanted=new Set(collected.rows.map(row=>row.recordId));
+  return json({...collected,records:records.results
+    .filter(record=>wanted.has(record.id))
+    .map(record=>({id:record.id,branch:record.branch,status:record.status,payload:record.payload}))});
 }if(u.searchParams.has('invoiceListFrom')||u.searchParams.has('invoiceListTo')){
  const from=u.searchParams.get('invoiceListFrom')||'';
  const to=u.searchParams.get('invoiceListTo')||'';
