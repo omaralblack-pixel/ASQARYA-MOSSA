@@ -12,7 +12,7 @@ import {lieutenantApprovals} from '../lib/lieutenant-coverage';
 import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState} from '../lib/lieutenant-invoice-day';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
 import {auditLieutenantStock,classifyLieutenantContent,parseLieutenantStock,
-  type StockItem,type LieutenantFileKind} from '../lib/lieutenant-stock';
+  type StockItem,type StockAuditItem,type LieutenantFileKind} from '../lib/lieutenant-stock';
 
 type FileKind=LieutenantFileKind;
 type StoredFile={key:string;name:string;kind:FileKind;size:number;created:string;snapshotDate?:string};
@@ -48,6 +48,19 @@ const statusText:Record<ReviewStatus,string>={
 const empty:RecordSnapshot={records:[],queue:[],openingStock:[]};
 const fileLimit=16*1024*1024;
 const stockUnit=(value:string)=>({Piece:'حبة',Carton:'كرتونة',KG:'كغم'}[value]||value);
+/** Inventory reconciliation is transfer-only until an OINM movement journal is
+ * supplied. Do not invent a specific cause for a non-zero balance variance. */
+function explainStockDifference(item:StockAuditItem,canCompare:boolean):string{
+  if(!canCompare)return 'بانتظار كشف ترحيلات SAP ورصيد فعلي مؤرّخ بنهاية الفترة.';
+  if(item.opening===null)return 'الرصيد الافتتاحي غير مثبت أو وحدة تحويله غير معرّفة؛ لا يمكن تفسير الفرق.';
+  if(item.quantity===null)return 'لا يوجد رصيد فعلي مثبت لهذا الصنف في كشف SAP.';
+  if(!item.movementComplete)return 'ترحيلات أو وحدات غير مكتملة؛ راجع ملاحظات الصنف قبل حساب الفرق.';
+  if(item.difference===null)return 'المقارنة غير مكتملة؛ لا يجوز اعتبار البيانات الناقصة صفرًا.';
+  if(Math.abs(item.difference)<0.000001)return 'مطابق بين الرصيد الفعلي وحساب الافتتاحي وصافي الترحيلات.';
+  const direction=item.difference>0?'زيادة في رصيد SAP':'نقص في رصيد SAP';
+  return direction+' بمقدار '+Math.abs(item.difference).toFixed(3)+' '+stockUnit(item.unit)+
+    ' عن المتوقع من الترحيلات. السبب التفصيلي غير مثبت: افحص حركات OINM الأخرى (بيع، صرف، تسوية أو جرد) وأرقام مستنداتها.';
+}
 const dailyStateNames:Record<DayInvoiceState,string>={
   match:'مطابقة',late:'مطابقة — ترحيل متأخر',pending:'بانتظار الترحيل',
   short:'نقص في الترحيل',extra:'كمية زائدة',
@@ -865,7 +878,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         </div>
         <div className="table-scroll"><table className="lieutenant-stock-table"><thead><tr>
           <th>الصنف</th><th>الوحدة</th><th>رصيد SAP الفعلي</th><th>صافي الترحيلات</th>
-          <th>وارد يحتاج فاتورة</th><th>مرتبط بفواتير معتمدة</th><th>غير مغطى بفواتير معتمدة</th><th>حالة تغطية الفواتير</th>
+          <th>وارد يحتاج فاتورة</th><th>مرتبط بفواتير معتمدة</th><th>غير مغطى بفواتير معتمدة</th><th>حالة تغطية الفواتير</th><th>تفسير فرق الرصيد</th>
         </tr></thead><tbody>{visibleStockRows.map(item=><tr key={item.code+'|'+item.unit}>
           <td className="name-cell"><b dir="ltr">{item.code}</b><small>{item.name}</small></td><td>{stockUnit(item.unit)}</td>
           <td dir="ltr"><strong>{item.quantity===null?'—':item.quantity.toFixed(3)}</strong></td>
@@ -878,13 +891,14 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
             {item.converted&&<small style={{display:'block'}}>وُحّدت الكميات حسب مرجع الأصناف</small>}
             {item.issues.map(note=><small className="red" style={{display:'block'}} key={note}>{note}</small>)}
           </td>
+          <td>{explainStockDifference(item,canCompare)}</td>
         </tr>)}</tbody></table></div>
         {!visibleStockRows.length&&<p className="hint">لا توجد أصناف بهذه الفلاتر.</p>}
         <details className="lieutenant-stock-details"><summary>تفاصيل الافتتاحي والوارد والعكسي والتصحيحات</summary>
           <p className="hint">الفرق التفسيري هو رصيد SAP − (الافتتاحي + صافي الترحيلات). لا يمثل حكمًا نهائيًا على صحة رصيد المستودع دون سجل جميع حركات المخزون.</p>
           <div className="table-scroll"><table><thead><tr>
             <th>كود SAP</th><th>الوحدة</th><th>الافتتاحي</th><th>الوارد</th><th>الصادر / العكسي</th>
-            <th>أثر التصحيحات الموقّع</th><th>المتوقع من الترحيلات</th><th>رصيد SAP الفعلي</th><th>الفرق التفسيري</th>
+            <th>أثر التصحيحات الموقّع</th><th>المتوقع من الترحيلات</th><th>رصيد SAP الفعلي</th><th>الفرق التفسيري</th><th>سبب الفرق / ما يلزم إثباته</th>
           </tr></thead><tbody>{visibleStockRows.map(item=><tr key={item.code+'|'+item.unit}>
             <td dir="ltr">{item.code}</td><td>{stockUnit(item.unit)}</td>
             <td dir="ltr">{canCompare&&item.opening!==null?item.opening.toFixed(3):'—'}</td>
@@ -894,6 +908,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
             <td dir="ltr">{canCompare&&item.estimated!==null?item.estimated.toFixed(3):'—'}</td>
             <td dir="ltr">{item.quantity===null?'—':item.quantity.toFixed(3)}</td>
             <td dir="ltr">{canCompare&&item.difference!==null?item.difference.toFixed(3):'—'}</td>
+            <td>{explainStockDifference(item,canCompare)}</td>
           </tr>)}</tbody></table></div>
         </details>
       </>}
