@@ -197,6 +197,41 @@ assert.deepEqual(approvedCanceled.postedDates,[],
   'Canceled SAP documents must not supply an effective receipt date');
 assert.deepEqual(JSON.parse(group.payload).invoices,[paper,paper2],
   'Read-only audit must not mutate previously saved invoices');
+
+// The saved approval remains financial only; selected SAP cutoff must be
+// independently checked even for the old 01/11 invoices.
+assert.equal(notYetPosted.sapStatus,'waiting',
+  'A 03/11 SAP posting must not be certified when cutoff is 02/11');
+assert.equal(approvedWithoutSource.sapStatus,'review',
+  'A missing SAP source cannot be certified based on financial approval');
+const extendedSource=live('2617999','2026-11-08',[line('CHS00033',1)]);
+const approvedFromNov1={...missingAmounts};
+const reverseOnNov6=live('2617015','2026-11-06',[
+  line('DAR00005',100,'Piece','011','001'),
+],{reverse:true});
+reverseOnNov6.remarks='عكس ترحيل 2617001';
+const beforeNov6=audit([approvedFromNov1],[src,reverseOnNov6,extendedSource],'2026-11-05')[0];
+assert.equal(beforeNov6.sapStatus,'posted',
+  'A future reverse must not undo the original receipt before its SAP date');
+const afterNov6=audit([approvedFromNov1],[src,reverseOnNov6,extendedSource],'2026-11-08')[0];
+assert.equal(afterNov6.financiallyMatchedGroup,true);
+assert.equal(afterNov6.sapStatus,'reversed',
+  'The November 8 SAP check must catch a valid November 6 reverse');
+assert.ok(afterNov6.notes.some(note=>note.includes('2617015')),
+  'Show actual later reverse transfer number instead of hiding its evidence');
+const noTransferSaved={...record([paper],[]),status:'match'};
+const unlinkedInvoice=audit([noTransferSaved],[src,extendedSource],'2026-11-08')[0];
+assert.equal(unlinkedInvoice.state,'match');
+assert.equal(unlinkedInvoice.sapStatus,'missing',
+  'Approved invoices with no proven transfer must never show a green SAP verification');
+const explicitlyExtra=live('2617022','2026-11-07',[line('DAR00005',5)]);
+explicitlyExtra.invoiceNumbers=['2631000001'];
+const laterExplicitlyLinked=audit([approvedFromNov1],[src,explicitlyExtra,extendedSource],
+  '2026-11-08')[0];
+assert.equal(laterExplicitlyLinked.sapStatus,'review',
+  'Later SAP movement mentioning this invoice must be disclosed, not silently assigned');
+assert.ok(laterExplicitlyLinked.notes.some(note=>note.includes('2617022')));
+
 // Cash Van movements are not missing blue invoices. A pair of independently
 // posted partial reversals must settle only when every item/UoM/warehouse sums.
 const cashOriginal=live('2615768','2026-11-02',[
