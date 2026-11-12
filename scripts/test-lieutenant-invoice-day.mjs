@@ -118,7 +118,7 @@ assert.equal(audit([record([paper],[saved])],[laterCanceled,cancelDocument],'202
 assert.equal(audit([record([paper],[saved])],[laterCanceled,cancelDocument],'2026-11-05')[0].state,'pending');
 
 const pastedPaper=record([{...paper,quantities:{},
-  auditLines:'رقم المادة\\tالكمية\\n11371486\\t100'}],[saved]);
+  auditLines:'رقم المادة\tالكمية\n11371486\t100'}],[saved]);
 assert.equal(audit([pastedPaper],[src],'2026-11-03')[0].state,'late',
   'Pasted invoice column headers must not create false item errors');
 
