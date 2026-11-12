@@ -459,9 +459,17 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     if(opening?.date===from)
       for(const item of opening.items)if(!byKey.has(item.code+'|'+item.unit))
         byKey.set(item.code+'|'+item.unit,item);
+    // The user-approved opening baseline covers warehouse 011 at the selected
+    // start date. A code absent from that baseline means zero opening stock.
+    // Never infer zero when the baseline is unavailable or its source has errors.
+    const approvedOpening=snapshot.openingStock.some(item=>
+      item.snapshot_date===from&&item.warehouse==='011'&&Number.isFinite(Number(item.quantity)));
+    const openingSourceValid=opening?.date===from&&opening.items.length>0&&opening.issues.length===0;
+    const openingSourceDamaged=opening?.date===from&&opening.issues.length>0;
+    const openingConfirmed=(approvedOpening||openingSourceValid)&&!openingSourceDamaged;
     return auditLieutenantStock(closing.items,[...byKey.values()],
       canCompare?transfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to,
-      reference,invoiceRequiredNumbers);
+      reference,invoiceRequiredNumbers,openingConfirmed);
   },[closing,opening,snapshot.openingStock,from,to,transfers,approvedTransferNumbers,canCompare,reference,invoiceRequiredNumbers]);
   const coverageReady=canCompare&&recordsReady;
   const uncoveredItems=stockRows.filter(item=>item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001);
@@ -749,7 +757,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     </section>
     <section className="panel" aria-label="الأرصدة الافتتاحية المعتمدة">
       <div className="section-title"><div><h2>الأرصدة الافتتاحية المعتمدة — المستودع 011</h2>
-        <p>الرصيد المسجل قبل أول حركة في تاريخ البداية. يُحتسب في التدقيق ولا يُسجل كترحيل أو فاتورة.</p></div></div>
+        <p>الرصيد المسجل قبل أول حركة في تاريخ البداية. الأصناف غير الموجودة في الكشف الافتتاحي المعتمد لنفس التاريخ تعتبر رصيدها الافتتاحي صفرًا؛ ولا يُسجل هذا الصفر كترحيل أو فاتورة.</p></div></div>
       {snapshot.openingStock.length>0?
         <div className="table-scroll"><table><thead><tr>
           <th>تاريخ الرصيد</th><th>كود الصنف</th><th>اسم الصنف</th><th>المستودع</th><th>الوحدة</th><th>الرصيد الافتتاحي</th><th>الاعتماد</th>
@@ -868,7 +876,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <ul>{closing.issues.slice(0,10).map((note,i)=><li key={i}>{note}</li>)}</ul></div>}
         {!recordsReady&&<p className="banner warn">قاعدة المطابقات لم تُقرأ بالكامل؛ عمود الفواتير المعتمدة غير متاح حاليًا، وليس صفرًا.</p>}
         <p className="hint">«غير مغطى بفواتير معتمدة» = الوارد الذي يحتاج فاتورة − الوارد المغطى بفواتير مشيّكة ومعتمدة ومؤكد ورقها. لا تدخل حركات الكاش فان أو الإلغاء أو العكسي المسوّى بالكامل ضمن المطلوب له فواتير. هذه المقارنة لا تثبت أن الفاتورة رُحّلت على SAP.</p>
-        <p className="hint">«المتوقع من الترحيلات» = الافتتاحي + الوارد − الصادر + أثر التصحيحات الموقّع. مطابقة رصيد المستودع النهائية تحتاج جميع حركات المخزون OINM، بما فيها البيع والتسويات. تُوحّد الوحدات فقط بشدّات وأوزان معرفة في مرجع الأصناف؛ البيانات الناقصة تظهر «—» ولا تُحسب صفرًا.</p>
+        <p className="hint">«المتوقع من الترحيلات» = الافتتاحي + الوارد − الصادر + أثر التصحيحات الموقّع. الصنف الغائب عن كشف الافتتاحي المعتمد لنفس تاريخ البداية يُحسب افتتاحيه صفرًا. إذا كان كشف الافتتاحي غير متوفر أو فيه أخطاء أو تعارض تحويل وحدات، تبقى القيمة «—» ولا يُفترض الصفر. مطابقة رصيد المستودع النهائية تحتاج جميع حركات OINM، بما فيها البيع والتسويات.</p>
         <div className="table-controls no-print">
           <label>بحث في الأصناف<input type="search" value={stockQueryText} onChange={event=>setStockQueryText(event.target.value)} placeholder="كود SAP أو اسم الصنف"/></label>
           <label>عرض الأصناف<select value={stockFilter} disabled={!coverageReady} onChange={event=>setStockFilter(event.target.value)}>
@@ -901,7 +909,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
             <th>أثر التصحيحات الموقّع</th><th>المتوقع من الترحيلات</th><th>رصيد SAP الفعلي</th><th>الفرق التفسيري</th><th>سبب الفرق / ما يلزم إثباته</th>
           </tr></thead><tbody>{visibleStockRows.map(item=><tr key={item.code+'|'+item.unit}>
             <td dir="ltr">{item.code}</td><td>{stockUnit(item.unit)}</td>
-            <td dir="ltr">{canCompare&&item.opening!==null?item.opening.toFixed(3):'—'}</td>
+            <td dir="ltr">{canCompare&&item.opening!==null?item.opening.toFixed(3):'—'}
+              {canCompare&&item.openingAssumedZero&&<small style={{display:'block'}}>صفر حسب الافتتاحي المعتمد</small>}
+            </td>
             <td dir="ltr">{canCompare&&item.movementComplete?item.incoming.toFixed(3):'—'}</td>
             <td dir="ltr">{canCompare&&item.movementComplete?item.outgoing.toFixed(3):'—'}</td>
             <td dir="ltr">{canCompare&&item.movementComplete?item.adjustment.toFixed(3):'—'}</td>
