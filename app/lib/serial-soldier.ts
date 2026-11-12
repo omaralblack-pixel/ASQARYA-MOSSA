@@ -125,7 +125,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[]):Seria
   const result:SerialRow[]=rows.map(row=>{
     const number=normalNumber(row.number);
     const key=number;
-    const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في السجل',transfers:[] as SerialTransfer[],unassignedTransfers:[] as SerialTransfer[],branch:'',omarNumber:'',omarAmount:''};
+    const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في سجل المطابقة؛ لا يعني أن ورقها غير واصل',transfers:[] as SerialTransfer[],unassignedTransfers:[] as SerialTransfer[],branch:'',omarNumber:'',omarAmount:''};
     if(!/^\d{8,20}$/.test(number)){
       blockers.push('صف '+row.row+': رقم فاتورة مفقود أو غير صالح.');
       return {...base,state:'review',reason:'رقم فاتورة غير صالح'};
@@ -191,7 +191,7 @@ export function serialReviewNote(row:SerialRow):string {
      parts.push('فرق المبلغ: عمر '+(omar/1000).toFixed(3)+' د.أ، سجى '+(saja/1000).toFixed(3)+' د.أ');
  }
  if(!parts.length){
-   if(row.state==='missing')parts.push('غير موجودة في سجل عمر؛ وصول الورق غير مؤكد');
+   if(row.state==='missing')parts.push('غير موجودة في سجل المطابقة؛ لا يمكن استنتاج وصول الورق من غياب التسجيل');
    else if(row.state==='pending')parts.push('ورق الفاتورة غير مؤكد في سجل عمر');
    else if(row.reason)parts.push(row.reason);
  }
