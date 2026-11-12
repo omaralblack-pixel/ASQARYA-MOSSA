@@ -81,7 +81,18 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
         }
         continue;
       }
-      if(!linked.has(saved.index))continue;
+      if(!linked.has(saved.index)){
+        // Historical approved multi-invoice groups can have legitimate page
+        // assignments for some invoices, with no rows assigned to another.
+        // Keep the known group association visible to the other invoice
+        // without fabricating item-page allocations or quantities.
+        if(acceptedOldGroup){
+          unassigned.push({number,kind});
+          warnings.push('الترحيل '+number+' ضمن مجموعة قديمة معتمدة تشمل '+saved.invoice.number+
+            '؛ لا توجد بنود موزعة مباشرة لهذه الصفحة، لذلك يظهر كترحيل مجموعة فقط.');
+        }
+        continue;
+      }
     }
     if(assigned.some(row=>row.number===number)){
       blockers.push('الترحيل '+number+' مكرر داخل الفاتورة '+saved.invoice.number+'.');
