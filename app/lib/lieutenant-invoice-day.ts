@@ -21,7 +21,7 @@ const epsilon=0.000001;
 const near=(a:number,b:number)=>Math.abs(a-b)<epsilon;
 const round=(n:number)=>Number(n.toFixed(6));
 const signature=(lines:TransferLine[])=>lines.map(line=>[
-  line.sapCode,line.quantity.toFixed(6),line.unit,line.from,line.to].join('|')).sort().join('||');
+  line.sapCode,line.quantity.toFixed(6),line.unit,line.from,line.to].join('|')).join('||');
 const sourceLines=(row:LieutenantTransfer)=>parseTransfer(row.transfer.paste,{allowReverse:true});
 const paperQuantities=(invoice:Draft['invoices'][number])=>{
   const totals=new Map<string,number>(),issues:string[]=[];
@@ -73,6 +73,24 @@ export function auditInvoicesForDay(
   const byRecord=new Map(daily.records.map(row=>[row.id,row]));
   const bySource=new Map(source.map(row=>[row.transfer.number,row]));
   const movements=analyzeLieutenantMovements(source,asOf);
+  const cancelRef=/inventory\\s+transfer\\s+no\\.?\\s*(\\d{4,20})\\s+has\\s+been\\s+cancel(?:ed|led)/i;
+  const reverseRef=/(?:عكس(?:ي)?(?:\\s+ترحيل)?|ترحيل\\s+عكسي(?:\\s+لترحيل)?|reverse(?:\\s+(?:transfer|of))?)\\s*(?:رقم|no\\.?|#|:|-)?\\s*(\\d{4,20})/iu;
+  const cancellationDates=new Map<string,string>();
+  const corrective=new Map<string,LieutenantTransfer[]>();
+  for(const movement of source){
+    const related=movement.remarks.match(cancelRef)?.[1];
+    if(movement.cancellationState==='cancellation'&&related&&movement.transfer.date){
+      const saved=cancellationDates.get(related);
+      if(!saved||movement.transfer.date<saved)cancellationDates.set(related,movement.transfer.date);
+    }
+    const original=related||movement.reverse?(
+      related||(movement.reverse?movement.remarks.match(reverseRef)?.[1]:undefined)):undefined;
+    if(!original||!bySource.has(original)||original===movement.transfer.number)continue;
+    if((movement.signedAdjustment||movement.reverse)&&
+      movement.cancellationState!=='canceled'&&movement.cancellationState!=='cancellation'){
+      corrective.set(original,[...(corrective.get(original)||[]),movement]);
+    }
+  }
   const sourceLastDate=source.reduce((last,row)=>row.transfer.date>last?row.transfer.date:last,'');
   const duplicateNumbers=new Map<string,number>();
   for(const row of daily.rows){
@@ -116,10 +134,16 @@ export function auditInvoicesForDay(
       }
       if(current.transfer.date>asOf)continue;
       const state=movements.get(number);
-      if(state?.kind==='sap-canceled'||state?.kind==='sap-cancel-doc'||
-        current.cancellationState==='canceled'||current.cancellationState==='cancellation')continue;
+      if(current.cancellationState==='cancellation'||state?.kind==='sap-cancel-doc')continue;
+      const canceledAt=cancellationDates.get(number);
+      const canceledNow=current.cancellationState==='canceled'||state?.kind==='sap-canceled';
+      if(canceledNow&&(!canceledAt||canceledAt<=asOf)){
+        if(!canceledAt&&asOf<sourceLastDate)
+          notes.push('الترحيل '+number+' ملغي حاليًا، لكن تاريخ إلغائه غير مثبت لفحص يوم '+asOf+'.');
+        continue;
+      }
       if(current.reverse)continue;
-      if(state?.kind==='reversed')continue; // exact reversed pair, within cutoff
+      if(state?.kind==='reversed')continue; // Full exact reverse within cutoff; net incoming is zero.
       const parsed=sourceLines(current);
       if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length){
         notes.push('تعذّر تدقيق بنود الترحيل '+number+'.');continue;
@@ -166,6 +190,48 @@ export function auditInvoicesForDay(
         }
       }
       if(counted){anyTransfer=true;postedDates.add(current.transfer.date);}
+      // A partially signed SAP cancellation, or an explicitly linked partial
+      // reverse, reduces the posted quantity. No inference from item coincidence.
+      if(draft?.invoices.length===1){
+        for(const correction of corrective.get(number)||[]){
+          if(!correction.transfer.date||correction.transfer.date>asOf||correction.issues.length)continue;
+          const adjusted=sourceLines(correction);
+          if(adjusted.issues.length||adjusted.excluded.length||!adjusted.lines.length){
+            notes.push('حركة التصحيح '+correction.transfer.number+' غير قابلة للتحقق.');continue;
+          }
+          const hasPositive=adjusted.lines.some(line=>correction.reverse?line.quantity<0:line.quantity>=0);
+          if(hasPositive){notes.push('حركة التصحيح '+correction.transfer.number+' ليست حركة خصم صافية.');continue;}
+          const originalAmounts=new Map<string,number>();
+          for(const line of parsed.lines){
+            if(line.quantity<=0)continue;
+            const key=[line.sapCode,line.unit,line.from,line.to].join('|');
+            originalAmounts.set(key,(originalAmounts.get(key)||0)+line.quantity);
+          }
+          const spent=new Map<string,number>();
+          let valid=true;
+          for(const line of adjusted.lines){
+            const key=[line.sapCode,line.unit,
+              correction.reverse?line.to:line.from,
+              correction.reverse?line.from:line.to].join('|');
+            const amount=Math.abs(line.quantity);
+            const used=(spent.get(key)||0)+amount;
+            spent.set(key,used);
+            if(!originalAmounts.has(key)||used>originalAmounts.get(key)!+epsilon)valid=false;
+          }
+          if(!valid){notes.push('التصحيح '+correction.transfer.number+' لا يتطابق مع الصنف والاتجاه والكمية الأصلية.');continue;}
+          for(const line of adjusted.lines){
+            const item=invoice?refFor(references,line.sapCode,invoice):null;
+            if(!item){notes.push('تعريف صنف تصحيح '+line.sapCode+' غير مكتمل.');continue;}
+            try{
+              const absolute={...line,quantity:Math.abs(line.quantity)};
+              const pieces=convert(absolute,item);
+              posted.set(item.code,(posted.get(item.code)||0)-pieces);
+            }catch{notes.push('شدّة تصحيح '+line.sapCode+' غير معرّفة.');}
+          }
+          postedDates.add(correction.transfer.date);
+        }
+      }else if((corrective.get(number)||[]).some(correction=>correction.transfer.date<=asOf))
+        notes.push('يوجد عكسي أو تصحيح جزئي لترحيل متعدد الصفحات؛ يلزم تحديد الصفحة المتأثرة قبل اعتماد كميتها.');
     }
     const codes=new Set([...paper.totals.keys(),...posted.keys()]);
     const items=[...codes].sort().map(code=>{
