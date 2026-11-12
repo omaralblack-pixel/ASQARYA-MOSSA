@@ -7,9 +7,12 @@ import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenan
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,transferNumbers,type Draft,type Transfer} from '../lib/reconcile';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
+import {auditLieutenantStock,classifyLieutenantContent,parseLieutenantStock,
+  type StockItem,type LieutenantFileKind} from '../lib/lieutenant-stock';
 
-type FileKind='transfers'|'opening'|'balance'|'other';
-type StoredFile={key:string;name:string;kind:FileKind;size:number;created:string};
+type FileKind=LieutenantFileKind;
+type StoredFile={key:string;name:string;kind:FileKind;size:number;created:string;snapshotDate?:string};
+type StockSnapshot={key:string;date:string;items:StockItem[];issues:string[]};
 type SavedRecord={id:string;branch:string;status:string;payload:string};
 type QueueRecord={transfer_no:string;doc_date:string;payload:string;source_file:string;created:string};
 type OpeningStock={snapshot_date:string;warehouse:string;sap_code:string;item_name:string;unit:string;quantity:number;source:string;approved_at:string};
@@ -132,6 +135,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
   const [files,setFiles]=useState<StoredFile[]>([]);
   const [nextPage,setNextPage]=useState<number|null>(null);
   const [selected,setSelected]=useState('');
+  const [selectedTransfer,setSelectedTransfer]=useState('');
+  const [closing,setClosing]=useState<StockSnapshot|null>(null);
+  const [opening,setOpening]=useState<StockSnapshot|null>(null);
   const [transfers,setTransfers]=useState<LieutenantTransfer[]>([]);
   const [issues,setIssues]=useState<string[]>([]);
   const [snapshot,setSnapshot]=useState<RecordSnapshot>(empty);
@@ -187,9 +193,10 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         body:JSON.stringify({key:file.key}),
       });
       if(!result.deleted||result.key!==file.key)throw Error('الخادم لم يؤكد حذف الملف المحدد.');
-      if(selected===file.key){
-        setSelected('');setTransfers([]);setIssues([]);
-      }
+      if(selected===file.key)setSelected('');
+      if(selectedTransfer===file.key){setSelectedTransfer('');setTransfers([]);setIssues([]);}
+      if(closing?.key===file.key)setClosing(null);
+      if(opening?.key===file.key)setOpening(null);
       await refreshFiles();
       setMessage('تم حذف "'+file.name+'" من أرشيف الملفات فقط. الترحيلات والفواتير المحفوظة لم تتغير.');
     }catch(cause){
@@ -197,26 +204,51 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     }finally{setBusy(false)}
   }
   async function readArchive(file:StoredFile){
-    setError('');
-    setMessage('');
-    setSelected(file.key);
-    setKind(file.kind);
-    if(file.kind!=='transfers'){
-      setTransfers([]);setIssues([]);
-      setMessage('الملف محفوظ في أرشيف الملازم أول. هذا الملف يستخدم كمرجع للرصيد أو التحقيق؛ لا يُستورد كفاتورة.');
-      return;
-    }
-    setBusy(true);
+    setError('');setMessage('');setBusy(true);
     try{
-      const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key),{cache:'no-store'});
-      if(!response.ok)throw Error('تعذّر فتح ملف SAP المحفوظ.');
-      const text=decodeLieutenantFile(await response.arrayBuffer(),file.name);
+      const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key),
+        {cache:'no-store',redirect:'manual'});
+      if(response.status===401){window.location.assign('/login');throw Error('انتهت الجلسة؛ سجّل دخولك من جديد.');}
+      if(!response.ok)throw Error('تعذّر فتح ملف SAP المحفوظ (HTTP '+response.status+').');
+      const bytes=await response.arrayBuffer();
+      const text=decodeLieutenantFile(bytes,file.name);
+      const actualKind=classifyLieutenantContent(text);
+      let key=file.key;
+      let date=file.snapshotDate||'';
+      if(actualKind!==file.kind){
+        // Copy misclassified legacy originals to the correct archive without
+        // deleting the original or manufacturing a stock snapshot date.
+        const fixed=await checkedJson<{key:string}>('/api/lieutenant-files',{
+          method:'POST',headers:{
+            'Content-Type':'application/octet-stream','X-File-Name':encodeURIComponent(file.name),
+            'X-File-Kind':actualKind,'X-Snapshot-Date':date,
+          },body:bytes,
+        });
+        key=fixed.key;
+        await refreshFiles();
+      }
+      setSelected(key);setKind(actualKind);
+      const repaired=key!==file.key?' تم حفظ نسخة مصنّفة بشكل صحيح، وبقي الملف الأصلي كما هو.':'';
+      if(actualKind==='balance'||actualKind==='opening'){
+        const parsed=parseLieutenantStock(text,actualKind);
+        const stock={key,date,items:parsed.items,issues:parsed.issues};
+        if(actualKind==='balance')setClosing(stock);
+        else setOpening(stock);
+        setMessage('تم فتح '+fileKinds[actualKind]+': '+parsed.items.length+
+          ' صنفًا للمستودع 011.'+(date?' تاريخ اللقطة: '+date+'.':
+          ' تاريخ هذه النسخة القديمة غير محدد؛ أعد رفعها مع اختيار تاريخ صحيح لتفعيل المقارنة.')+
+          repaired);
+        return;
+      }
+      if(actualKind!=='transfers'){
+        setMessage('الملف محفوظ، لكن أعمدته لا تطابق كشف الترحيلات أو الرصيد المعروف. لم يُرسل شيء للجندي.'+repaired);
+        return;
+      }
       const parsed=parseLieutenantTransfers(text,branches);
-      setTransfers(parsed.transfers);
-      setIssues(parsed.issues);
-      setMessage('تم فتح الملف المحفوظ: '+parsed.transfers.length+' ترحيلًا للمستودع 011.');
+      setSelectedTransfer(key);
+      setTransfers(parsed.transfers);setIssues(parsed.issues);
+      setMessage('تم فتح ملف الترحيلات: '+parsed.transfers.length+' ترحيلًا للمستودع 011.'+repaired);
     }catch(cause){
-      setTransfers([]);setIssues([]);
       setError(cause instanceof Error?cause.message:'تعذّر فحص الملف المحفوظ.');
     }finally{setBusy(false)}
   }
@@ -256,6 +288,34 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     review:rows.filter(row=>row.status==='review'||row.status==='cashvan-pending'||row.status==='cancellation-review').length,
     pending:pending.length,
   }),[rows,pending.length]);
+  const approvedTransferNumbers=useMemo(()=>{
+    const approved=new Set<string>();
+    for(const record of snapshot.records){
+      if(record.status!=='match')continue;
+      let draft:Draft;
+      try{draft=JSON.parse(record.payload) as Draft}catch{continue}
+      const invoices=draft.invoices||[];
+      if(!invoices.length||!invoices.every(row=>!!invoiceDocumentNo(row.number)&&row.complete))continue;
+      for(const transfer of draft.transfers||[])
+        for(const num of transferNumbers(transfer.number||''))approved.add(num);
+    }
+    return approved;
+  },[snapshot.records]);
+  const canCompare=!!closing?.date&&closing.date===to&&!!selectedTransfer&&from<=to;
+  const stockRows=useMemo(()=>{
+    if(!closing?.items.length)return [];
+    const byKey=new Map<string,StockItem>();
+    for(const item of snapshot.openingStock){
+      if(item.snapshot_date!==from||item.warehouse!=='011')continue;
+      byKey.set(item.sap_code+'|'+item.unit,{
+        code:item.sap_code,name:item.item_name,warehouse:'011',unit:item.unit,quantity:Number(item.quantity)});
+    }
+    if(opening?.date===from)
+      for(const item of opening.items)if(!byKey.has(item.code+'|'+item.unit))
+        byKey.set(item.code+'|'+item.unit,item);
+    return auditLieutenantStock(closing.items,[...byKey.values()],
+      canCompare?transfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to);
+  },[closing,opening,snapshot.openingStock,from,to,transfers,approvedTransferNumbers,canCompare]);
 
   async function enqueue(source:LieutenantTransfer[],key:string){
     // Cash Van, the exact reverse, SAP-canceled and cancellation documents
@@ -299,45 +359,70 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     try{
       if(file.size>fileLimit)throw Error('حجم الملف يتجاوز 16 ميغابايت.');
       const bytes=await file.arrayBuffer();
-      // Preserve the original first. If parsing fails, the source is still retrievable.
+      let text='',detected:FileKind='other',decodeIssue='';
+      try{
+        text=decodeLieutenantFile(bytes,file.name);
+        detected=classifyLieutenantContent(text);
+      }catch(cause){decodeIssue=cause instanceof Error?cause.message:'تعذّر قراءة نوع الملف.';}
+      const date=detected==='balance'?stockQueryDate:detected==='opening'?from:'';
+      if(date&&!sapStockBalanceQuery(date))throw Error('اختر تاريخًا صحيحًا قبل إرفاق كشف الرصيد.');
+      // Save the original bytes first, categorized by actual columns, not by
+      // the selected hint or by its filename.
       const stored=await checkedJson<{key:string;name:string;duplicate:boolean}>('/api/lieutenant-files',{
         method:'POST',
         headers:{
           'Content-Type':file.type||'application/octet-stream',
           'X-File-Name':encodeURIComponent(file.name),
-          'X-File-Kind':kind,
+          'X-File-Kind':detected,
+          'X-Snapshot-Date':date,
         },
         body:bytes,
       });
-      await refreshFiles();
-      setSelected(stored.key);
-      if(kind!=='transfers'){
-        setTransfers([]);setIssues([]);
-        setMessage('تم حفظ '+file.name+' بشكل دائم في Supabase'+(stored.duplicate?' (كان محفوظًا مسبقًا).':'')+'.');
+      setKind(detected);setSelected(stored.key);
+      let warning='';
+      try{await refreshFiles()}catch{warning=' (تعذّر تحديث قائمة الأرشيف، لكن الخادم أكد حفظ الملف).';}
+      const saved='تم حفظ الملف الأصلي في Supabase'+(stored.duplicate?' (كان محفوظًا مسبقًا)':'')+'. ';
+      const reclassified=kind!==detected?' التصنيف الصحيح حسب الأعمدة: '+fileKinds[detected]+'.':'';
+      if(detected==='opening'||detected==='balance'){
+        const parsed=parseLieutenantStock(text,detected);
+        const stock={key:stored.key,date,items:parsed.items,issues:parsed.issues};
+        if(detected==='balance')setClosing(stock);else setOpening(stock);
+        setMessage(saved+'تمت قراءة '+parsed.items.length+' صنفًا من '+fileKinds[detected]+
+          ' بتاريخ '+date+'. لم تُنشأ فاتورة أو يُرسل شيء للجندي.'+reclassified+warning);
         return;
       }
-      let text:string;
-      try{text=decodeLieutenantFile(bytes,file.name)}
-      catch(cause){
-        setTransfers([]);setIssues([]);
-        setMessage('تم حفظ الملف في Supabase. '+(cause instanceof Error?cause.message:'تعذّر تحليل نوع الملف.'));
+      if(detected==='other'){
+        setMessage(saved+(decodeIssue||'أعمدة الملف غير معروفة؛ راجع الملف قبل استخدامه في التدقيق.')+
+          ' لم يُرسل شيء للجندي.'+reclassified+warning);
         return;
       }
       const result=parseLieutenantTransfers(text,branches);
+      setSelectedTransfer(stored.key);
       setTransfers(result.transfers);setIssues(result.issues);
-      const imported=result.transfers.length?await enqueue(result.transfers,stored.key):{added:0,existing:0,skipped:0};
-      setMessage('تم حفظ الملف في Supabase. أُضيف '+imported.added+' ترحيلًا لقائمة الجندي؛ '+imported.existing+
-        ' موجودة مسبقًا؛ '+imported.skipped+' حركات عكسية/كاش فان/ملغاة أو غير صالحة أُبعدت عن الجندي. لم تُنشأ أي فاتورة زرقاء.');
+      if(!result.transfers.length){
+        setMessage(saved+'لم يُعثر على ترحيلات صالحة؛ راجع ملاحظات قراءة SAP. لم يُرسل شيء للجندي.'+warning);
+        return;
+      }
+      try{
+        const imported=await enqueue(result.transfers,stored.key);
+        setMessage(saved+'أُضيف '+imported.added+' ترحيلًا لقائمة الجندي؛ '+imported.existing+
+          ' موجودة مسبقًا؛ '+imported.skipped+
+          ' حركات مستبعدة من الجندي (عكسي/كاش فان/إلغاء/غير صالحة). لم تُنشأ فاتورة زرقاء.'+
+          reclassified+warning);
+      }catch(cause){
+        setMessage(saved+'تمت قراءة '+result.transfers.length+' ترحيلًا، لكن تعذّر تحديث قائمة الجندي. '+
+          (cause instanceof Error?cause.message:'أعد الفحص لاحقًا.')+' لم تُحذف النسخة المحفوظة.'+warning);
+      }
     }catch(cause){
       setError(cause instanceof Error?cause.message:'تعذّر حفظ ملف الملازم أول.');
     }finally{setBusy(false)}
   }
 
   async function auditAgain(){
-    if(!selected||!transfers.length)return;
+    if(!selectedTransfer||!transfers.length)return;
     setBusy(true);setError('');
     try{
-      const result=await enqueue(transfers,selected);
+      const result=await enqueue(transfers,selectedTransfer);
       setMessage('اكتمل تحديث الرقابة: '+result.added+' ترحيلًا جديدًا؛ '+result.existing+
         ' محفوظًا مسبقًا؛ '+result.skipped+' مستبعدًا من جندي الفواتير (عكسي/كاش فان/ملغى أو غير صالح).');
     }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر تحديث الفحص.')}
@@ -387,9 +472,9 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
     </section>
     <section className="panel">
       <div className="section-title"><div><h2>أرشيف ملفات الملازم أول</h2>
-        <p>ترفع الملف مرة واحدة، وتستعيده في أي وقت. الملف الأصلي لا يُستبدل عند رفع ملف جديد.</p></div></div>
+        <p>تُقرأ الأعمدة لتصنيف الترحيلات والأرصدة تلقائيًا. يحتفظ Supabase بكل ملف أصلي ولا يحوّل الأرصدة إلى فواتير.</p></div></div>
       <div className="table-controls">
-        <label>نوع الملف
+        <label>نوع الملف المتوقع (يُصحّح تلقائيًا)
           <select value={kind} disabled={busy} onChange={event=>setKind(event.target.value as FileKind)}>
             {Object.entries(fileKinds).map(([id,title])=><option value={id} key={id}>{title}</option>)}
           </select>
@@ -404,9 +489,11 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
           finally{setBusy(false)}
         }}><RefreshCw size={16}/> تحديث الأرشيف</button>
       </div>
-      {files.length?<div className="table-scroll"><table><thead><tr><th>الملف المحفوظ</th><th>نوعه</th><th>تاريخ الحفظ</th><th>فتح</th><th>حذف</th></tr></thead>
+      <p className="hint">عند رفع كشف رصيد فعلي يُحفظ تاريخ اللقطة من «تاريخ الرصيد — نهاية اليوم» أعلى الشاشة. والرصد الافتتاحي يأخذ «من تاريخ». راجع التاريخ قبل الرفع؛ تاريخ الحفظ ليس تاريخ الرصيد.</p>
+      {files.length?<div className="table-scroll"><table><thead><tr><th>الملف المحفوظ</th><th>نوعه</th><th>تاريخ الرصيد</th><th>تاريخ الحفظ</th><th>فتح</th><th>حذف</th></tr></thead>
         <tbody>{files.map(file=><tr key={file.key}><td dir="auto">{file.name}</td>
-          <td>{fileKinds[file.kind]||file.kind}</td><td dir="ltr">{file.created?.slice(0,16).replace('T',' ')||'—'}</td>
+          <td>{fileKinds[file.kind]||file.kind}</td><td dir="ltr">{file.snapshotDate||'—'}</td>
+          <td dir="ltr">{file.created?.slice(0,16).replace('T',' ')||'—'}</td>
           <td><button type="button" disabled={busy} className="button secondary small" onClick={()=>void readArchive(file)}>
             <FileArchive size={14}/>{selected===file.key?'مفتوح':'فتح من الأرشيف'}</button></td>
           <td><button type="button" disabled={busy} className="button secondary small"
@@ -416,6 +503,39 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
       {nextPage!==null&&<button type="button" disabled={busy} className="button secondary" onClick={()=>void refreshFiles(nextPage)}>إظهار ملفات أقدم</button>}
       {error&&<p role="alert" className="banner error"><AlertTriangle size={16}/> {error}</p>}
       {message&&<p role="status" className="banner info">{message}</p>}
+    </section>
+    <section className="panel" aria-label="مقارنة رصيد 011 الفعلي">
+      <div className="section-title"><div><h2>رصيد 011 الفعلي — مقارنة الترحيلات والفواتير</h2>
+        <p>اللقطة من كويري OINM، والترحيلات من كشف SAP، والكميات المعتمدة من الفواتير الزرقاء المحفوظة.</p></div></div>
+      {!closing?<p className="hint">ارفع كشف الرصيد الفعلي أو افتحه من أرشيف الملازم أول لعرض الأصناف ومقارنتها.</p>:<>
+        <div className="stats">
+          <div className="stat"><span>أصناف كشف الرصيد</span><strong>{closing.items.length}</strong></div>
+          <div className="stat"><span>تاريخ الرصيد</span><strong>{closing.date||'غير محدد'}</strong></div>
+          <div className="stat"><span>الترحيلات المحمّلة</span><strong>{transfers.length}</strong></div>
+        </div>
+        {!canCompare&&<p role="alert" className="banner warn"><AlertTriangle size={16}/>
+          لا يمكن احتساب المقارنة: افتح ملف الترحيلات، واضبط «إلى تاريخ» على تاريخ كشف الرصيد ({closing.date||'غير مسجل في النسخة القديمة'}).
+          لا نفترض تاريخ الرصيد من تاريخ حفظ الملف.</p>}
+        {closing.issues.length>0&&<div className="banner warn" role="alert">
+          <strong>ملاحظات كشف الرصيد ({closing.issues.length}):</strong>
+          <ul>{closing.issues.slice(0,10).map((note,i)=><li key={i}>{note}</li>)}</ul></div>}
+        <p className="hint">«المتوقع» = الرصيد الافتتاحي المعتمد + صافي الترحيلات فقط، وليس بديلًا عن سجل جميع حركات OINM. إذا كان الرصيد الافتتاحي ناقصًا أو اختلفت الوحدات، لا يُفترض صفر ولا يُختلق فرق. الكميات المرتبطة بالفواتير هي وارد الترحيلات المعتمدة المؤكد ورقها، ولا تُستخدم بدل الرصيد.</p>
+        <div className="table-scroll"><table><thead><tr>
+          <th>كود SAP</th><th>اسم الصنف</th><th>الوحدة</th><th>الافتتاحي</th>
+          <th>وارد الترحيلات</th><th>صادر / عكسي</th><th>صافي الترحيلات</th>
+          <th>وارد فواتيره معتمدة</th><th>المتوقع من الترحيلات</th><th>رصيد SAP الفعلي</th><th>الفرق التفسيري</th>
+        </tr></thead><tbody>{stockRows.map(item=><tr key={item.code+'|'+item.unit}>
+          <td dir="ltr"><b>{item.code}</b></td><td>{item.name}</td><td>{item.unit}</td>
+          <td dir="ltr">{canCompare&&item.opening!==null?item.opening.toFixed(3):'—'}</td>
+          <td dir="ltr">{canCompare?item.incoming.toFixed(3):'—'}</td>
+          <td dir="ltr">{canCompare?item.outgoing.toFixed(3):'—'}</td>
+          <td dir="ltr">{canCompare?item.netTransfers.toFixed(3):'—'}</td>
+          <td dir="ltr">{canCompare?item.approvedIncoming.toFixed(3):'—'}</td>
+          <td dir="ltr">{canCompare&&item.estimated!==null?item.estimated.toFixed(3):'—'}</td>
+          <td dir="ltr"><strong>{item.quantity.toFixed(3)}</strong></td>
+          <td dir="ltr">{canCompare&&item.difference!==null?item.difference.toFixed(3):'—'}</td>
+        </tr>)}</tbody></table></div>
+      </>}
     </section>
     <section className="panel">
       <div className="section-title"><div><h2>تدقيق الفترة المطلوبة</h2>
@@ -446,7 +566,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         <div><strong>{issues.length} ملاحظة على قراءة SAP:</strong>
           <ul>{issues.slice(0,12).map((issue,i)=><li key={i}>{issue}</li>)}</ul></div>
       </div>}
-      {!selected?<p className="hint">ارفع أو افتح ملف ترحيلات SAP من الأرشيف لبدء التقرير.</p>:
+      {!selectedTransfer?<p className="hint">ارفع أو افتح ملف ترحيلات SAP من الأرشيف لبدء التقرير.</p>:
         !transfers.length?<p className="hint">هذا الملف ليس كشف ترحيلات صالحًا للمراجعة، أو لم يُفتح كشف ترحيلات بعد.</p>:
       <div className="table-scroll"><table><thead><tr>
         <th>رقم الترحيل</th><th>التاريخ</th><th>الفرع</th><th>اتجاه الحركة</th><th>الحالة</th><th>تفاصيل</th><th>فتح</th>
@@ -465,7 +585,7 @@ export default function FirstLieutenant({branches,onOpenTransfer,onOpenRecord}:{
         <td>{row.recordId?<button type="button" className="button secondary small" onClick={()=>onOpenRecord(row.recordId!)}>فتح الفاتورة</button>:
           <button type="button" className="button secondary small" disabled={!soldierEligible(row.status)||!!row.source.issues.length} onClick={()=>onOpenTransfer(row.source.transfer,row.source.branch)}>{soldierEligible(row.status)?'إرسال للجندي':'ليس لفاتورة زرقاء'}</button>}</td>
       </tr>)}</tbody></table></div>}
-      {selected&&transfers.length>0&&!visible.length&&<p className="hint">لا توجد ترحيلات بهذه الفلاتر.</p>}
+      {selectedTransfer&&transfers.length>0&&!visible.length&&<p className="hint">لا توجد ترحيلات بهذه الفلاتر.</p>}
       {counts.review>0&&<p className="hint">هناك {counts.review} حركة تحتاج تدقيق العكسي أو الإلغاء أو بيانات المصدر. العكسي المطابق ليس إلغاء SAP؛ لا يُرسل كاش فان للجندي لمجرد عدم وجود فاتورة زرقاء.</p>}
     </section>
     <MovementSummary rows={rows}/>
