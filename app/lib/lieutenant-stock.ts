@@ -16,10 +16,10 @@ const fields={
   unit:['وحدة المخزون','الوحدة','inventory uom','invntryuom','uom code','uom'],
   balance:['الرصيد الفعلي بنهاية التاريخ','الرصيد الفعلي','closing balance','closing stock','quantity on hand'],
   opening:['الرصيد الافتتاحي','رصيد افتتاحي','opening balance','opening stock'],
-  doc:['رقم الترحيل','document number','docnum','transfer number'],
-  date:['تاريخ الترحيل','document date','docdate','posting date'],
-  from:['من مستودع','from warehouse','fromwhscod'],
-  to:['إلى مستودع','الى مستودع','to warehouse','whscode'],
+  doc:['رقم الترحيل','document number','docnum','doc no','transfer number'],
+  date:['تاريخ الترحيل','التاريخ','document date','docdate','posting date'],
+  from:['من مستودع','من المستودع','from warehouse','fromwhscod'],
+  to:['إلى مستودع','الى مستودع','إلى المستودع','to warehouse','whscode'],
   quantity:['الكمية','quantity'],
 } as const;
 type Column=keyof typeof fields;
