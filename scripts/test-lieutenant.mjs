@@ -213,7 +213,7 @@ assert.ok(fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8').inclu
 
 
 const counterpartCode=compile('app/lib/lieutenant-counterparts.ts');
-const {analyzeLieutenantMovements,isCashVanTransfer}=
+const {analyzeLieutenantMovements,isCashVanTransfer,cashVanMovementReport}=
   await import('data:text/javascript;base64,'+Buffer.from(counterpartCode).toString('base64'));
 const cashRows=[
  ['2615767','02/11/2026','','','كاش فان عجلون','DAR00005','كريمة','12','Piece','001','011'],
@@ -340,3 +340,46 @@ assert.ok(fs.readFileSync('worker/index.ts','utf8').includes('downstream.status 
 console.log('PASS: Secure single-file archive deletion, invalid paths, independent archive loading, JSON 503 fallback.');
 
 console.log('Lieutenant parser regressions passed');
+
+// All SAP note columns and later item-row notes must survive parsing. The
+// period-wide report must not depend on invoice dates, approvals or pagination.
+const notesHeader=englishHeader+'\tJournal Remarks\tComments';
+const periodRows=[
+  ['2615767','02/11/2026','','','طلب نقل','DAR00005','كريمة','12','Piece','001','011','كاش فان عجلون',''],
+  ['2615918','03/11/2026','','','2615767 cancel','DAR00005','كريمة','12','Piece','011','001','',''],
+  ['2615768','02/11/2026','','','طلب نقل','DAR00027','كريمة','3','Piece','002','011','',''],
+  ['2615768','02/11/2026','','','طلب نقل','DAR00027','كريمة','3','Piece','002','011','','كاش فان عجلون'],
+  ['2616422','11/11/2026','','','كاش فان عجلون','DAR00004','كريمة','1','Piece','001','011','',''],
+  ['2616468','12/11/2026','','','كاش فأن اربد','DAR00005','كريمة','20','Piece','001','011','',''],
+  ['2616469','12/11/2026','','','كاش فأن إربد','DAR00004','كريمة','10','Piece','002','011','',''],
+  ...Array.from({length:60},(_,index)=>[String(2618000+index),'05/11/2026','','','فاتورة عادية','DAR00004','كريمة','100','Piece','001','011','','']),
+];
+const periodScan=parseLieutenantTransfers([notesHeader,...periodRows.map(row=>row.join('\t'))].join('\n'),['12 — عجلون']);
+const report=cashVanMovementReport(periodScan.transfers,'2026-11-01','2026-11-13');
+assert.equal(report.length,5,'Show every Cash Van movement, including settled, no-branch and late-month rows after 60 normal documents');
+assert.equal(report[0].counterparts[0].number,'2615918');
+assert.deepEqual(report[0].counterparts[0].directions,['011 → 001']);
+assert.equal(report[1].source.transfer.number,'2615768');
+assert.equal(report[1].movement.kind,'cashvan-pending','A 001 reverse cannot settle a 002 original');
+assert.equal(report[1].cancellationStatus,'غير مذكورة في الكشف','Missing CANCELED is not a claim that SAP is active');
+assert.ok(report[3].route.includes('اربد'),'Unmapped route label must remain visible from Remarks');
+assert.equal(cashVanMovementReport(periodScan.transfers,'2026-11-12','2026-11-12').length,2,'Include both period boundaries');
+const dryReverse=['2616510','12/11/2026','','','عكس ترحيل 2615768','DAR00027','كريمة','6','Piece','011','002','',''];
+const dryScan=parseLieutenantTransfers([notesHeader,...periodRows.map(row=>row.join('\t')),dryReverse.join('\t')].join('\n'),['12 — عجلون']);
+const dryReport=cashVanMovementReport(dryScan.transfers,'2026-11-01','2026-11-13');
+assert.equal(dryReport[1].movement.kind,'reversed','Aggregate duplicate item rows before matching the full 002 reverse');
+assert.equal(dryReport[1].counterparts[0].number,'2616510');
+assert.deepEqual(dryReport[1].counterparts[0].directions,['011 → 002']);
+assert.equal(cashVanMovementReport(dryScan.transfers,'2026-11-01','2026-11-11')[1].movement.kind,'cashvan-pending','Future reverses cannot settle a historical period');
+const unrelated=[...dryReverse];unrelated[4]='عكس ترحيل 2619999';
+const unrelatedScan=parseLieutenantTransfers([notesHeader,...periodRows.map(row=>row.join('\t')),unrelated.join('\t')].join('\n'),['12 — عجلون']);
+assert.equal(cashVanMovementReport(unrelatedScan.transfers,'2026-11-01','2026-11-13')[1].movement.kind,'cashvan-pending','Never reuse a reverse explicitly belonging to a different original');
+const canceled=parseLieutenantTransfers([ar,
+  ['2619010','2026-11-02','DAR00005','كريمة','002','011','12','Piece','Y','كاش فان عجلون'].join('\t'),
+  ['2619011','2026-11-12','DAR00005','كريمة','011','002','12','Piece','C','Inventory transfer no. 2619010 has been canceled'].join('\t'),
+].join('\n'),[]);
+const canceledReport=cashVanMovementReport(canceled.transfers,'2026-11-01','2026-11-13');
+assert.equal(canceledReport[0].movement.kind,'sap-canceled');
+assert.equal(canceledReport[0].counterparts[0].number,'2619011','Preserve the cancellation number when original SAP state is Y');
+assert.equal(cashVanMovementReport(canceled.transfers,'2026-11-01','2026-11-11')[0].movement.kind,'cashvan-pending','A dated cancellation after cutoff cannot close the original early');
+console.log('PASS: All Cash Van routes, merged note columns/rows, 001/002 separation, aggregate matching, cancellation IDs and historical cutoff.');

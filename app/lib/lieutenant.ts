@@ -70,6 +70,10 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
   const first=raw.findIndex(line=>line.trim());
   const columns=(raw[first]||'').split('\t').map(header);
   const indexes=Object.fromEntries(Object.keys(aliases).map(key=>[key,headIndex(columns,key as Field)])) as Record<Field,number>;
+  // SAP can export Comments, Remarks and Journal Remarks together. Keep all
+  // note columns and all item-row notes; a later row may identify the route.
+  const noteIndexes=columns.flatMap((value,index)=>
+    /remarks?|comments?|jrnlmemo|journalmemo|notes?|ملاحظ|ريماركس/.test(value)?[index]:[]);
   const missing=required.filter(field=>indexes[field]<0);
   if(missing.length)return {transfers:[],issues:['أعمدة SAP مفقودة: '+missing.map(x=>aliases[x][0]).join('، ')]};
   const read=(cells:string[],field:Field)=>indexes[field]<0?'':(cells[indexes[field]]||'').trim();
@@ -100,14 +104,18 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
     const meta={
       date:postingDate(rawDate),
       branchCode:read(cells,'branchCode'),branchName:read(cells,'branchName'),
-      remarks:read(cells,'remarks'),state:cancellation(read(cells,'canceled')),
+      remarks:[...new Set(noteIndexes.map(index=>(cells[index]||'').trim()).filter(Boolean))].join('\n'),
+      state:cancellation(read(cells,'canceled')),
     };
     const current=grouped.get(number)||{meta,lines:[],issues:[],reverse:false,signedAdjustment:false};
     if(grouped.has(number)&&
       (meta.date!==current.meta.date||
        (meta.state!==current.meta.state&&meta.state!=='unknown'&&current.meta.state!=='unknown')))
       current.issues.push('معلومات الترحيل أو حالة الإلغاء تختلف بين سطوره.');
-    if(!current.meta.remarks&&meta.remarks)current.meta.remarks=meta.remarks;
+    current.meta.remarks=[...new Set([current.meta.remarks,meta.remarks]
+      .flatMap(value=>value.split('\n')).filter(Boolean))].join('\n');
+    if(!current.meta.branchCode&&meta.branchCode)current.meta.branchCode=meta.branchCode;
+    if(!current.meta.branchName&&meta.branchName)current.meta.branchName=meta.branchName;
     if(current.meta.state==='unknown'&&meta.state!=='unknown')current.meta.state=meta.state;
     const code=read(cells,'code').toUpperCase();
     const description=read(cells,'name');

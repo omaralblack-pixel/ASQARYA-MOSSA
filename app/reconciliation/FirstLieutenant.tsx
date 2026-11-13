@@ -1,6 +1,7 @@
 'use client';
 
 import {useEffect,useMemo,useRef,useState,type ChangeEvent} from 'react';
+import CashVanAudit from './CashVanAudit';
 import {AlertTriangle,CheckCircle2,Copy,FileArchive,FileUp,RefreshCw,Search,ShieldCheck,Trash2} from 'lucide-react';
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenant';
@@ -736,6 +737,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       </div>
       {!periodValid&&<p className="banner warn" role="alert">اختر تاريخ بداية ونهاية صحيحين؛ تاريخ البداية لا يتجاوز النهاية، والنهاية لا تتجاوز اليوم.</p>}
     </section>
+    <CashVanAudit transfers={transfers} sourceName={selectedTransfer===sharedLieutenantKey?sharedSource?.name||'':files.find(file=>file.key===selectedTransfer)?.name||''}/>
     <section className="panel" aria-label="مطابقة الفواتير الزرقاء حسب تاريخ الفاتورة">
       <div className="section-title"><div>
         <h2>فحص يوم الفواتير الزرقاء — هل ترحّلت الكميات على SAP؟</h2>

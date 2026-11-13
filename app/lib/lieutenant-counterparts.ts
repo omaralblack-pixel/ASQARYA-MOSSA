@@ -12,18 +12,24 @@ export type LieutenantMovement = {
 const cashVan=/(?:كاش[\s._\-ـ]*[فڤ][اأإآ]ن|cash[\s._\-]*van)/iu;
 const officialCancellation=/inventory\s+transfer\s+no\.?\s*(\d{4,20})\s+has\s+been\s+cancel(?:ed|led)/i;
 const reverseReference=/(?:عكس(?:ي)?(?:\s+ترحيل)?|ترحيل\s+عكسي(?:\s+لترحيل)?|مقابل(?:\s+ترحيل)?|reverse(?:\s+(?:transfer|of))?|original(?:\s+transfer)?)\s*(?:رقم|no\.?|#|:|-)?\s*(\d{4,20})/iu;
+const numberFirstReverse=/\b(\d{4,20})\s*(?:cancel(?:led|ed)?|reverse(?:d)?|عكس(?:ي)?|إلغاء|الغاء)\b/iu;
+const referencedOriginal=(remarks:string)=>remarks.match(reverseReference)?.[1]||
+  remarks.match(numberFirstReverse)?.[1];
 export function isCashVanTransfer(source:LieutenantTransfer):boolean{
   return cashVan.test(source.remarks)||cashVan.test(source.branch);
 }
 function signature(source:LieutenantTransfer,flip=false,absolute=false):string{
   if(source.issues.length)return '';
-  const parts=source.transfer.paste.replace(/\r/g,'').split('\n').slice(1).map(line=>{
+  const totals=new Map<string,number>();
+  for(const line of source.transfer.paste.replace(/\r/g,'').split('\n').slice(1)){
+    if(!line.trim())continue;
     const [code,,rawQty,rawUnit,from,to]=line.split('\t');
     const qty=Number((rawQty||'').replace(/,/g,''));
     if(!code||!rawUnit||!from||!to||!Number.isFinite(qty)||qty<0&&!absolute)return '';
-    return [code.toUpperCase(),(absolute?Math.abs(qty):qty).toFixed(6),rawUnit.toLowerCase(),flip?to:from,flip?from:to].join('|');
-  });
-  return !parts.length||parts.some(part=>!part)?'':parts.sort().join('||');
+    const key=[code.toUpperCase(),rawUnit.toLowerCase(),flip?to:from,flip?from:to].join('|');
+    totals.set(key,(totals.get(key)||0)+(absolute?Math.abs(qty):qty));
+  }
+  return [...totals].map(([key,qty])=>key+'|'+qty.toFixed(6)).sort().join('||');
 }
 function compare(incoming:LieutenantTransfer,outgoing:LieutenantTransfer):boolean{
   if(incoming.reverse||!outgoing.reverse)return false;
@@ -98,18 +104,23 @@ export function analyzeLieutenantMovements(
       counterpart:reference, note,
     });
     if(confirmed&&original){
+      const later=cancellation.transfer.date>periodEnd;
       resolved.set(original.transfer.number,{
-        kind:'sap-canceled',counterpart:cancellation.transfer.number,
+        kind:later?(isCashVanTransfer(original)?'cashvan-pending':'normal'):'sap-canceled',counterpart:cancellation.transfer.number,
         counterpartDate:cancellation.transfer.date,
-        note:'ترحيل ملغى على SAP بمستند إلغاء رقم '+cancellation.transfer.number,
+        note:later?'مستند إلغاء SAP رقم '+cancellation.transfer.number+' بتاريخ '+cancellation.transfer.date+
+          ' بعد نهاية الفحص؛ لا يُعتبر ملغى ضمن الفترة.':
+          'ترحيل ملغى على SAP بمستند إلغاء رقم '+cancellation.transfer.number,
       });
     }
   }
 
   // CANCELED=Y is direct SAP evidence, whether or not the cancellation document is in this file.
   for(const source of transfers){
-    if(source.cancellationState==='canceled')
-      resolved.set(source.transfer.number,{kind:'sap-canceled',note:'حالة SAP: ملغى (Y)'});
+    const known=resolved.get(source.transfer.number);
+    if(source.cancellationState==='canceled'&&!(known?.counterpartDate&&known.counterpartDate>periodEnd))
+      resolved.set(source.transfer.number,{...resolved.get(source.transfer.number),kind:'sap-canceled',
+        note:resolved.get(source.transfer.number)?.note||'حالة SAP: ملغى (Y)'});
   }
 
   // The shared SAP query represents correction documents as signed quantities
@@ -137,7 +148,7 @@ export function analyzeLieutenantMovements(
   // items, quantities, UoMs, and source/destination warehouses match exactly.
   for(const reverse of transfers){
     if(!reverse.reverse||!active(reverse)||resolved.has(reverse.transfer.number))continue;
-    const originalNo=reverse.remarks.match(reverseReference)?.[1];
+    const originalNo=referencedOriginal(reverse.remarks);
     if(!originalNo)continue;
     const original=byNumber.get(originalNo);
     if(!original||!active(original)||resolved.has(originalNo)||!compare(original,reverse))continue;
@@ -158,8 +169,10 @@ export function analyzeLieutenantMovements(
   const reverseCandidates=new Map<string,string[]>();
   for(const reverse of transfers){
     if(!reverse.reverse||!active(reverse)||resolved.has(reverse.transfer.number)||usedReverse.has(reverse.transfer.number))continue;
+    const reference=referencedOriginal(reverse.remarks);
     for(const original of transfers){
       if(original.reverse||!active(original)||resolved.has(original.transfer.number)||pairs.has(original.transfer.number)||ambiguousReferences.has(original.transfer.number))continue;
+      if(reference&&reference!==original.transfer.number)continue;
       if(!compare(original,reverse))continue;
       const ids=candidates.get(original.transfer.number)||[];
       ids.push(reverse.transfer.number);
@@ -185,7 +198,7 @@ export function analyzeLieutenantMovements(
     const compatible=transfers.filter(reverse=>{
       if(!reverse.reverse||!active(reverse)||resolved.has(reverse.transfer.number)||
         usedReverse.has(reverse.transfer.number)||!canPartiallyReverse(original,reverse))return false;
-      const ref=reverse.remarks.match(reverseReference)?.[1];
+      const ref=referencedOriginal(reverse.remarks);
       if(ref)return ref===originalNo;
       // Without an explicit reference, all quantities/warehouses must point
       // uniquely to this original; otherwise this is only a possible reverse.
@@ -233,7 +246,7 @@ export function analyzeLieutenantMovements(
     if(!isCashVanTransfer(original)||original.reverse||!active(original)||resolved.has(number))continue;
     const partial=transfers.filter(reverse=>reverse.reverse&&active(reverse)&&
       !usedReverse.has(reverse.transfer.number)&&
-      reverse.remarks.match(reverseReference)?.[1]===number&&
+      referencedOriginal(reverse.remarks)===number&&
       canPartiallyReverse(original,reverse));
     if(!partial.length)continue;
     const ids=partial.map(row=>row.transfer.number);
@@ -257,4 +270,36 @@ export function analyzeLieutenantMovements(
     }
   }
   return resolved;
+}
+
+export function lieutenantDirections(source:LieutenantTransfer):string[]{
+  return [...new Set(source.transfer.paste.split('\n').slice(1).filter(line=>line.trim()).map(line=>{
+    const cells=line.split('\t');
+    return cells[4]+' → '+cells[5];
+  }))];
+}
+
+/** Cash Van is a period-wide SAP source report. Invoice dates, saved records,
+ * approval filters and the general table's pagination must not hide routes. */
+export function cashVanMovementReport(transfers:LieutenantTransfer[],from:string,to:string){
+  const movements=analyzeLieutenantMovements(transfers,to);
+  const byNumber=new Map(transfers.map(source=>[source.transfer.number,source]));
+  return transfers.filter(source=>isCashVanTransfer(source)&&!source.reverse&&
+    !source.signedAdjustment&&source.cancellationState!=='cancellation'&&
+    source.transfer.date>=from&&source.transfer.date<=to).map(source=>{
+    const movement=movements.get(source.transfer.number)!;
+    const rawRoute=source.remarks.split(/based\s+on|[\n|]/i)
+      .map(value=>value.match(cashVan)?value.slice(value.search(cashVan)).trim():'').find(Boolean);
+    const ids=movement.counterparts||[movement.counterpart].filter((value):value is string=>!!value);
+    return {source,movement,route:source.branch||rawRoute||'غير محدد في الملاحظات',
+      directions:lieutenantDirections(source),
+      cancellationStatus:movement.kind==='sap-canceled'?'ملغى على SAP':
+        source.cancellationState==='active'?'غير ملغى على SAP':'غير مذكورة في الكشف',
+      counterparts:ids.map(number=>{
+        const counterpart=byNumber.get(number);
+        return {number,date:counterpart?.transfer.date||'',
+          directions:counterpart?lieutenantDirections(counterpart):[]};
+      })};
+  }).sort((a,b)=>a.source.transfer.date.localeCompare(b.source.transfer.date)||
+    a.source.transfer.number.localeCompare(b.source.transfer.number));
 }
