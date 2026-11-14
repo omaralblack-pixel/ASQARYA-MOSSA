@@ -104,6 +104,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
   useEffect(()=>{if(message)setNotification({text:message,error:message.startsWith('تعذّر')})},[message]);
 
   async function preview(text=paste,isActive=()=>true){
+    let parsedTransferCount=0;
     setBusy(true);
     setMessage('');
     setGroups([]);
@@ -113,6 +114,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
     setErrors({});
     try{
       const result=parseSapImport(text,branches);
+      parsedTransferCount=result.groups.reduce((count,group)=>count+group.members.length,0);
       setIssues(result.issues);
       const records=await readRecords();
       if(!isActive())return;
@@ -121,7 +123,10 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
       setFilter('pending');
       setQuery('');
     }catch(error){
-      if(isActive())setIssues([error instanceof Error?error.message:'تعذّر تجهيز المعاينة']);
+      if(isActive())setIssues([
+        ...(parsedTransferCount?['تمت قراءة '+parsedTransferCount+' ترحيلًا من SAP، لكن تعذّر جلب سجلات المطابقة. النسخة المحفوظة لم تُحذف.']:[]),
+        error instanceof Error?error.message:'تعذّر تجهيز المعاينة',
+      ]);
     }finally{
       if(isActive())setBusy(false);
     }
