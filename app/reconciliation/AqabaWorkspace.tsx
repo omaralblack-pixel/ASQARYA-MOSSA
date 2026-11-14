@@ -11,7 +11,7 @@ const template=[
  'رقم الفاتورة الزرقاء\tالتاريخ\tكود SAP\tاسم الصنف\tالكمية\tالوحدة\tالسعر\tأرقام الفواتير الرسمية\tأرقام الترحيلات',
  '2650710367\t2026-11-03\tCHS00561\tجبنة فيتا جولد\t600\tPiece\t0.313\t260063818\t2615754',
 ].join('\n');
-async function request(body?:unknown){
+async function request(body?:unknown):Promise<any>{
  const res=await fetch('/api/aqaba',body?{
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),
  }:{cache:'no-store'});
