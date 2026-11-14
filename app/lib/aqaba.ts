@@ -14,6 +14,7 @@ export type AqabaLine={
 export type BlueLine={
  key:string;invoice:string;date:string;item:string;description:string;
  quantity:number;unit:string;price:number;officialNumbers:string[];transferNumbers:string[];
+ sourceFile?:string;sourceEstimatedPack?:number;
 };
 export type ReadResult<T>={items:T[];issues:string[]};
 const digits=(s:string)=>s.replace(/[٠-٩]/g,c=>String(c.charCodeAt(0)-1632))
@@ -110,6 +111,7 @@ export function readAqabaBlue(source:string):ReadResult<BlueLine>{
  if(['invoice','date','item','qty','unit','price'].some(k=>(ix as Record<string,number>)[k]<0))
   return {items,issues:['الأعمدة المطلوبة: رقم الفاتورة الزرقاء، التاريخ، كود SAP، الكمية، الوحدة، السعر.']};
  const seen=new Set<string>();
+ const occurrence=new Map<string,number>();
  for(let n=1;n<rows.length;n++){
   const r=rows[n],v=(k:keyof typeof ix)=>ix[k]>=0?(r[ix[k]]||'').trim():'',
    invoice=digits(v('invoice')),day=date(v('date')),item=v('item').toUpperCase(),
@@ -118,7 +120,9 @@ export function readAqabaBlue(source:string):ReadResult<BlueLine>{
      qty===null||qty<0||price===null||price<0||!unit){
    issues.push('السطر '+(n+1)+': بيانات الفاتورة الزرقاء غير صالحة.');continue;
   }
-  const key=invoice+'|'+n;
+  const stem=invoice+'|'+item,seq=(occurrence.get(stem)||0)+1;
+  occurrence.set(stem,seq);
+  const key=stem+'|'+seq;
   if(seen.has(key))continue;seen.add(key);
   items.push({key,invoice,date:day,item,description:v('description'),quantity:qty,unit,
     price,officialNumbers:codes(v('official')),transferNumbers:codes(v('transfers'))});
