@@ -250,6 +250,15 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [issues,setIssues]=useState<string[]>([]);
   const [snapshot,setSnapshot]=useState<RecordSnapshot>(empty);
   const [snapshotLoaded,setSnapshotLoaded]=useState(false);
+  const [aqabaSummary,setAqabaSummary]=useState<{officialInvoices:number;blueInvoices:number;unlinkedOfficial:number;unlinkedBlue:number;cancellationRows:number;transferDocuments:number;journalMovements:number}|null>(null);
+  useEffect(()=>{
+    fetch('/api/aqaba?summary=1',{cache:'no-store'}).then(async response=>{
+      if(!response.ok)throw Error('لم يفتح سجل العقبة');
+      return response.json() as Promise<{
+        officialInvoices:number;blueInvoices:number;unlinkedOfficial:number;unlinkedBlue:number;
+        cancellationRows:number;transferDocuments:number;journalMovements:number}>;
+    }).then(data=>setAqabaSummary(data)).catch(()=>setAqabaSummary(null));
+  },[]);
   const [from,setFrom]=useState(()=>todayLocal().slice(0,8)+'01');
   const [to,setTo]=useState(todayLocal);
   const [stockDate,setStockDate]=useState<string|null>(null);
@@ -728,6 +737,13 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       <h1>الملازم أول — مراقبة الترحيلات والفواتير</h1>
       <p>كل ملفات SAP محفوظة في أرشيف Supabase؛ يرسل الترحيلات غير المسجلة للجندي دون إنشاء فاتورة أو اعتمادها.</p></div>
       <ShieldCheck size={32}/></div>
+    <section className="panel" aria-label="مراقبة مؤسسة العقبة في المستودع المشترك">
+      <div className="section-title"><div><h2>مؤسسة العقبة — المستودع 011 المشترك</h2>
+        <p>فواتير العقبة الرسمية وترحيلاتها منفصلة عن عمّان. الفاتورة أو التسليم قد يكون سبب خروج البضاعة، لكن لا يجوز خصم أيهما مرة أخرى فوق حركة OINM الفعلية.</p></div></div>
+      <p className="hint">{aqabaSummary?'فواتير رسمية: '+aqabaSummary.officialInvoices+' · زرقاء: '+aqabaSummary.blueInvoices+' · ترحيلات العقبة: '+aqabaSummary.transferDocuments+' · حركات OINM محفوظة: '+aqabaSummary.journalMovements+' · سطور إلغاء/إلغاء مقابل: '+aqabaSummary.cancellationRows:'لم يُحمّل ملخص العقبة؛ لا تُعتبر الحركات غير الموجودة صفرًا.'}</p>
+      <p className="hint">الربط هنا للمراجعة فقط، ولا يغير معادلة رصيد 011 ولا المطابقات السابقة. يجب توثيق خروج العقبة من OINM وتحديد المستند المقابل قبل إغلاق الفرق.</p>
+      <a className="button secondary" href="/reconciliation?view=aqaba">فتح مطابقة مؤسسة العقبة</a>
+    </section>
     <section className="panel" aria-label="فترة رقابة المستودع 011">
       <div className="section-title"><div><h2>الفترة المطلوبة للمقارنة</h2>
         <p>ابدأ من أول الشهر، واختر نهاية الفترة بنفس تاريخ كشف رصيد SAP. تتحدث الترحيلات والمقارنة حسب هذه الفترة.</p></div></div>

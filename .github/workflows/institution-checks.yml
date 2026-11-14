@@ -50,6 +50,8 @@ jobs:
           python3 scripts/test-storage.py
           python3 scripts/test-invoice-register.py
           python3 scripts/test-document-uniqueness.py
+      - name: Aqaba document reconciliation regression tests
+        run: node scripts/test-aqaba.mjs
       - name: TypeScript validation
         run: pnpm exec tsc --noEmit
       - name: Production build
