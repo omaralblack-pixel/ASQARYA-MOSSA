@@ -16,7 +16,7 @@ export function officialAqabaQuery(from:string,to:string){
  "'"+kind+"' AS \"نوع المستند\",",
  'TO_NVARCHAR(H."DocNum") AS "رقم الفاتورة",',
  'TO_NVARCHAR(H."DocEntry") AS "DocEntry",',
- 'TO_VARCHAR(H."DocDate", \'YYYY-MM-DD\') AS "التاريخ",'
+ 'TO_VARCHAR(H."DocDate", \'YYYY-MM-DD\') AS "التاريخ",',
  'H."CardCode" AS "رقم الزبون",',
  'H."CardName" AS "اسم الزبون",',
  'L."LineNum" + 1 AS "رقم السطر",',
