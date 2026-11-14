@@ -1,6 +1,6 @@
 import {env} from 'cloudflare:workers';
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
-import {AQABA_CUSTOMER,AQABA_START,type AqabaLine,type BlueLine,type AqabaTransfer} from '../../lib/aqaba';
+import {AQABA_CUSTOMER,AQABA_START,type AqabaLine,type BlueLine,type AqabaTransfer,type AqabaMovement} from '../../lib/aqaba';
 export const dynamic='force-dynamic';
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة') ;return env.DB};
@@ -12,6 +12,8 @@ function schema(){return ready??=db().batch([
  db().prepare("CREATE INDEX IF NOT EXISTS aqaba_blue_doc ON aqaba_blue (doc_no,doc_date)"),
  db().prepare("CREATE TABLE IF NOT EXISTS aqaba_transfers (id TEXT PRIMARY KEY NOT NULL, doc_no TEXT NOT NULL, doc_date TEXT NOT NULL, payload TEXT NOT NULL, updated TEXT NOT NULL)"),
  db().prepare("CREATE INDEX IF NOT EXISTS aqaba_transfers_doc ON aqaba_transfers (doc_no,doc_date)"),
+ db().prepare("CREATE TABLE IF NOT EXISTS aqaba_oinm (id TEXT PRIMARY KEY NOT NULL, doc_no TEXT NOT NULL, doc_date TEXT NOT NULL, payload TEXT NOT NULL, updated TEXT NOT NULL)"),
+ db().prepare("CREATE INDEX IF NOT EXISTS aqaba_oinm_doc ON aqaba_oinm (doc_no,doc_date)"),
  db().prepare("CREATE TABLE IF NOT EXISTS aqaba_audit (id TEXT PRIMARY KEY NOT NULL, source TEXT NOT NULL, item_id TEXT NOT NULL, previous TEXT NOT NULL, updated TEXT NOT NULL)")
  ]).catch(error=>{ready=undefined;throw error})}
 const date=(v:unknown)=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&v>=AQABA_START;
@@ -56,18 +58,30 @@ function validTransfer(x:unknown):x is AqabaTransfer{
   ['aqaba-remark','unclassified'].includes(String(v.classified))&&
   v.key===[v.docEntry||v.document,v.date,v.row].join('|');
 }
+function validMovement(x:unknown):x is AqabaMovement{
+ if(!x||typeof x!=='object')return false;
+ const v=x as Record<string,unknown>;
+ return text(v.key,120)&&text(v.transNum,30)&&/^\d{1,20}$/.test(v.transNum as string)&&
+  date(v.date)&&text(v.transType,20)&&/^-?\d{1,12}$/.test(v.transType as string)&&
+  text(v.docEntry,30)&&text(v.document,30)&&Number.isInteger(v.row)&&
+  Number(v.row)>=0&&Number(v.row)<20001&&code(v.item)&&text(v.description,500)&&
+  v.warehouse==='011'&&number(v.incoming)&&number(v.outgoing)&&text(v.customer,30)&&
+  v.key===[v.transNum,v.transType,v.docEntry,v.row,v.item].join('|');
+}
 export async function GET(req:Request){
  try{
   await schema();
   const u=new URL(req.url),summary=u.searchParams.has('summary');
-  const [official,blue,transfers]=await Promise.all([
+  const [official,blue,transfers,journal]=await Promise.all([
    db().prepare('SELECT payload FROM aqaba_official ORDER BY doc_date DESC,doc_no LIMIT 3000').all<{payload:string}>(),
    db().prepare('SELECT payload FROM aqaba_blue ORDER BY doc_date DESC,doc_no LIMIT 3000').all<{payload:string}>(),
    db().prepare('SELECT payload FROM aqaba_transfers ORDER BY doc_date DESC,doc_no LIMIT 3000').all<{payload:string}>(),
+   db().prepare('SELECT payload FROM aqaba_oinm ORDER BY doc_date DESC,doc_no LIMIT 3000').all<{payload:string}>(),
   ]);
   const officialLines=official.results.map(x=>JSON.parse(x.payload) as AqabaLine);
   const blueLines=blue.results.map(x=>JSON.parse(x.payload) as BlueLine);
   const transferLines=transfers.results.map(x=>JSON.parse(x.payload) as AqabaTransfer);
+  const journalLines=journal.results.map(x=>JSON.parse(x.payload) as AqabaMovement);
   if(summary){
    const officialNos=new Set(officialLines.filter(x=>x.kind==='IN').map(x=>x.document));
    const blueNos=new Set(blueLines.map(x=>x.invoice));
@@ -76,24 +90,25 @@ export async function GET(req:Request){
      unlinkedOfficial:[...officialNos].filter(x=>!linked.has(x)).length,
      unlinkedBlue:[...blueNos].filter(n=>!blueLines.some(x=>x.invoice===n&&x.officialNumbers.length)).length,
      cancellationRows:officialLines.filter(x=>x.canceled==='Y'||x.canceled==='C').length,
-     transferDocuments:new Set(transferLines.map(x=>x.document)).size});
+     transferDocuments:new Set(transferLines.map(x=>x.document)).size,
+     journalMovements:journalLines.length});
   }
-  return json({official:officialLines,blue:blueLines,transfers:transferLines});
+  return json({official:officialLines,blue:blueLines,transfers:transferLines,journal:journalLines});
  }catch{return json({error:'تعذّر قراءة سجل العقبة.'},500)}
 }
 export async function POST(req:Request){
  try{
   if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);
   const body=await readJsonRequest(req);await schema();
-  const official=body.action==='aqabaOfficial',blue=body.action==='aqabaBlue',transfer=body.action==='aqabaTransfer';
-  if(!official&&!blue&&!transfer)return json({error:'عملية غير معروفة'},400);
+  const official=body.action==='aqabaOfficial',blue=body.action==='aqabaBlue',transfer=body.action==='aqabaTransfer',movement=body.action==='aqabaJournal';
+  if(!official&&!blue&&!transfer&&!movement)return json({error:'عملية غير معروفة'},400);
   const incoming=body.items;
   if(!Array.isArray(incoming)||incoming.length<1||incoming.length>50||
-     !incoming.every(official?validOfficial:blue?validBlue:validTransfer))
+     !incoming.every(official?validOfficial:blue?validBlue:transfer?validTransfer:validMovement))
     return json({error:'أكواد أو حقول غير صالحة. أرسل من 1 إلى 50 بندًا في كل دفعة.'},400);
   const seen=new Set<string>();
   for(const item of incoming)if(seen.has(item.key))return json({error:'يوجد سطر مكرر بنفس المعرف.'},400);else seen.add(item.key);
-  const table=official?'aqaba_official':blue?'aqaba_blue':'aqaba_transfers',source=official?'official':blue?'blue':'transfer';
+  const table=official?'aqaba_official':blue?'aqaba_blue':transfer?'aqaba_transfers':'aqaba_oinm',source=official?'official':blue?'blue':transfer?'transfer':'oinm';
   const now=new Date().toISOString();
   const statements:ReturnType<ReturnType<typeof db>['prepare']>[]=[];
   let unchanged=0,updated=0,added=0;
@@ -109,7 +124,7 @@ export async function POST(req:Request){
     updated++;
    }else added++;
    statements.push(db().prepare('INSERT INTO '+table+' (id,doc_no,doc_date,payload,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated')
-    .bind(item.key,blue?item.invoice:item.document,item.date,payload,now));
+    .bind(item.key,blue?item.invoice:movement?item.transNum:item.document,item.date,payload,now));
   }
   // A D1 batch is atomic. On a conflict a subsequent import is idempotent.
   if(statements.length)await db().batch(statements);
