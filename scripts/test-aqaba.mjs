@@ -54,4 +54,26 @@ assert.equal(stock.physical.net,0);
 assert.equal(stock.aqabaEvidence.incoming,600);
 assert.equal(stock.aqabaEvidence.outgoing,600);
 
+
+const seedSource=fs.readFileSync(new URL('../app/lib/aqaba-blue-seed.ts',import.meta.url),'utf8');
+const seedJS=ts.transpileModule(seedSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
+const priceSeed=await import('data:text/javascript;base64,'+Buffer.from(seedJS).toString('base64'));
+const seedRows=priceSeed.aqabaBlueSeed();
+assert.equal(seedRows.length,52);
+assert.equal(new Set(seedRows.map(row=>row.code)).size,52);
+const totals=priceSeed.aqabaSeedTotals();
+assert.equal(totals.get('2650710367'),651930);
+assert.equal(totals.get('2650710368'),2737700);
+assert.equal(totals.get('2650710369'),823960);
+const persisted=priceSeed.aqabaSeedInvoiceLines([{sapCode:'CHS00561',warehouseName:'جبنة فيتا جولد رودس'}]);
+assert.equal(persisted.length,52);
+assert.equal(persisted.find(row=>row.item==='CHS00561').price,0.35);
+assert.equal(persisted.find(row=>row.item==='CHS00561').description,'جبنة فيتا جولد رودس');
+assert.equal(persisted.find(row=>row.item==='FVL00043').quantity,200);
+assert.equal(persisted.find(row=>row.item==='FOD00064').sourceEstimatedPack,40);
+assert.ok(persisted.every(row=>row.transferNumbers.join(',')==='2615754'));
+assert.ok(persisted.every(row=>row.officialNumbers.length===0));
+const stable=p.readAqabaBlue([blueHeading,blueRow].join('\n'));
+assert.equal(stable.items[0].key,'2650710367|CHS00561|1');
+
 console.log('Aqaba parser and cancellation handling passed');
