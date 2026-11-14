@@ -21,7 +21,39 @@ const newInvoice=():Invoice=>({id:uid(),number:'',date:'',amount:'',complete:fal
 const newTransfer=()=>({id:uid(),number:'',date:today(),paste:''});
 type OrderedDraft = Draft & {pageEntryOrder?: string[]};
 const blank=():OrderedDraft=>({mode:'manual',checks:{},branch:'',driver:'',date:today(),transfers:[newTransfer()],invoices:[newInvoice()],notes:''});
-async function api(body?:any,url=''){const r=await fetch('/api/reconcile'+url,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});const data:any=await r.json();if(!r.ok)throw Error(data.error||'تعذر تنفيذ الطلب');return data}
+async function api(body?:any,url=''){
+ const endpoint='/api/reconcile'+url;
+ const options:RequestInit=body
+   ?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}
+   :{cache:'no-store'};
+ // Retry read-only requests only: re-sending a failed POST could duplicate a saved invoice.
+ const attempts=body?1:3;
+ for(let attempt=0;attempt<attempts;attempt++){
+   let response:Response;
+   try{response=await fetch(endpoint,options)}
+   catch{
+     if(attempt+1<attempts){await new Promise<void>(resolve=>setTimeout(resolve,350*(attempt+1)));continue}
+     throw Error(body
+       ?'انقطع الاتصال بالخادم. افحص السجل قبل إعادة الحفظ حتى لا تتكرر الفاتورة.'
+       :'تعذّر الاتصال بخادم المطابقة. ملف SAP المحفوظ لم يُحذف؛ أعد محاولة تحديث القائمة.');
+   }
+   if(!body&&[502,503,504].includes(response.status)&&attempt+1<attempts){
+     await new Promise<void>(resolve=>setTimeout(resolve,350*(attempt+1)));
+     continue;
+   }
+   if(!(response.headers.get('content-type')||'').toLowerCase().includes('application/json')){
+     if(response.redirected||response.status===401||response.status===403)
+       throw Error('جلسة الدخول غير متاحة. سجّل الدخول مجددًا، ثم أعد تحميل السجل دون إعادة رفع ملف SAP.');
+     throw Error('خادم المطابقة أعاد صفحة بدل بيانات JSON (HTTP '+response.status+'). ملف SAP المحفوظ لم يُحذف؛ تعذّر تحديث القائمة فقط.');
+   }
+   let data:any;
+   try{data=await response.json()}
+   catch{throw Error('خادم المطابقة أعاد JSON غير مكتمل (HTTP '+response.status+'). أعد محاولة تحديث القائمة.')}
+   if(!response.ok)throw Error(data?.error||'تعذّر تنفيذ طلب المطابقة (HTTP '+response.status+').');
+   return data;
+ }
+ throw Error('تعذّر الاتصال بخادم المطابقة.');
+}
 type StoredTransfer = {transfer: Transfer; invoiceNumbers: string[]; recordId: string; version: number; branch: string};
 async function lookupSavedTransfer(number: string): Promise<StoredTransfer | null> {
   const response = await fetch('/api/reconcile?transfer=' + encodeURIComponent(number), {cache: 'no-store'});
