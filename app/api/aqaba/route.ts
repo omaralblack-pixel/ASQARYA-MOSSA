@@ -1,11 +1,13 @@
 import {env} from 'cloudflare:workers';
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
+import reference from '../../reference.json';
+import {aqabaSeedInvoiceLines,aqabaSeedTotals} from '../../lib/aqaba-blue-seed';
 import {AQABA_CUSTOMER,AQABA_START,type AqabaLine,type BlueLine,type AqabaTransfer,type AqabaMovement} from '../../lib/aqaba';
 export const dynamic='force-dynamic';
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة') ;return env.DB};
 let ready:Promise<unknown>|undefined;
-function schema(){return ready??=db().batch([
+async function initializeSchema(){await db().batch([
  db().prepare("CREATE TABLE IF NOT EXISTS aqaba_official (id TEXT PRIMARY KEY NOT NULL, doc_no TEXT NOT NULL, doc_date TEXT NOT NULL, payload TEXT NOT NULL, updated TEXT NOT NULL)"),
  db().prepare("CREATE INDEX IF NOT EXISTS aqaba_official_doc ON aqaba_official (doc_no,doc_date)"),
  db().prepare("CREATE TABLE IF NOT EXISTS aqaba_blue (id TEXT PRIMARY KEY NOT NULL, doc_no TEXT NOT NULL, doc_date TEXT NOT NULL, payload TEXT NOT NULL, updated TEXT NOT NULL)"),
@@ -15,7 +17,22 @@ function schema(){return ready??=db().batch([
  db().prepare("CREATE TABLE IF NOT EXISTS aqaba_oinm (id TEXT PRIMARY KEY NOT NULL, doc_no TEXT NOT NULL, doc_date TEXT NOT NULL, payload TEXT NOT NULL, updated TEXT NOT NULL)"),
  db().prepare("CREATE INDEX IF NOT EXISTS aqaba_oinm_doc ON aqaba_oinm (doc_no,doc_date)"),
  db().prepare("CREATE TABLE IF NOT EXISTS aqaba_audit (id TEXT PRIMARY KEY NOT NULL, source TEXT NOT NULL, item_id TEXT NOT NULL, previous TEXT NOT NULL, updated TEXT NOT NULL)")
- ]).catch(error=>{ready=undefined;throw error})}
+ ]);
+ // The 52 rows are copied from the verified 03-Nov blue-invoice Excel, not SAP sales prices.
+ // INSERT OR IGNORE preserves every existing manually corrected price or invoice.
+ const seed=aqabaSeedInvoiceLines(reference);
+ const totals=aqabaSeedTotals();
+ const expected=new Map([['2650710367',651930],['2650710368',2737700],['2650710369',823960]]);
+ if(seed.length!==52||new Set(seed.map(r=>r.item)).size!==52||
+    [...expected].some(([no,amount])=>totals.get(no)!==amount))
+   throw Error('مرجع أسعار العقبة غير مطابق لمجاميع Excel؛ لم يُحفظ.');
+ const fields='(id,doc_no,doc_date,payload,updated)';
+ const values=seed.map(()=>'('+Array(5).fill('?').join(',')+')').join(',');
+ const params=seed.flatMap(item=>[item.key,item.invoice,item.date,JSON.stringify(item),new Date().toISOString()]);
+ await db().prepare('INSERT OR IGNORE INTO aqaba_blue '+fields+' VALUES '+values).bind(...params).run();
+}
+function schema(){return ready??=initializeSchema().catch(error=>{ready=undefined;throw error})}
+
 const date=(v:unknown)=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&v>=AQABA_START;
 const code=(v:unknown)=>typeof v==='string'&&/^[A-Z]{2,6}\d{3,10}$/.test(v);
 const number=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1e9;
@@ -43,6 +60,8 @@ function validBlue(x:unknown):x is BlueLine{
   date(v.date)&&code(v.item)&&text(v.description,500)&&number(v.quantity)&&
   number(v.price)&&text(v.unit,80)&&Array.isArray(v.officialNumbers)&&Array.isArray(v.transferNumbers)&&
   v.officialNumbers.length<=40&&v.transferNumbers.length<=40&&
+  (v.sourceFile===undefined||text(v.sourceFile,200))&&
+  (v.sourceEstimatedPack===undefined||(Number.isInteger(v.sourceEstimatedPack)&&Number(v.sourceEstimatedPack)>0&&Number(v.sourceEstimatedPack)<10000))&&
   [...v.officialNumbers,...v.transferNumbers].every(n=>typeof n==='string'&&/^\d{4,20}$/.test(n));
 }
 function validTransfer(x:unknown):x is AqabaTransfer{
