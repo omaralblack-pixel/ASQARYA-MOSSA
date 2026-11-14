@@ -439,18 +439,24 @@ if (b.action === 'lieutenantImport') {
      invoiceNumbers:Array.isArray(item?.invoiceNumbers)?
        item.invoiceNumbers.filter((n:unknown)=>typeof n==='string'&&/^\d{10}$/.test(n)).slice(0,30):[]});
  }
- // Scan current reconciliations, not only transfer_keys: old groups can contain several numbers.
- const [groups,queued]=await Promise.all([
-   db().prepare('SELECT payload FROM reconciliations').all<{payload:string}>(),
-   db().prepare('SELECT transfer_no FROM lieutenant_queue').all<{transfer_no:string}>(),
+ // Look up only transfer numbers, not every invoice's full multi-kilobyte payload.
+ // transfer_keys covers current records; the compact legacy query also detects
+ // combined old cards (e.g. "2616390 + 2616391") without downloading their items.
+ const requested=JSON.stringify([...seen]);
+ const [queued,keyed,legacy]=await Promise.all([
+   db().prepare('SELECT transfer_no FROM lieutenant_queue WHERE transfer_no IN (SELECT value FROM json_each(?))')
+     .bind(requested).all<{transfer_no:string}>(),
+   db().prepare('SELECT key FROM transfer_keys WHERE key IN (SELECT value FROM json_each(?))')
+     .bind(requested).all<{key:string}>(),
+   db().prepare(`SELECT json_extract(t.value,'$.number') AS number
+     FROM reconciliations r,
+          json_each(CASE WHEN json_valid(r.payload) THEN r.payload ELSE '{}' END,'$.transfers') t
+     WHERE t.type='object' AND json_type(t.value,'$.number')='text'`)
+     .all<{number:string}>(),
  ]);
- const existing=new Set<string>(queued.results.map(x=>x.transfer_no));
- for(const row of groups.results){
-   const saved=readReconciliationRecord(row.payload);
-   if(!saved)continue;
-   for(const transfer of saved.transfers||[])
-     for(const number of transferNumbers(transfer.number||''))existing.add(number);
- }
+ const existing=new Set<string>([...queued.results.map(row=>row.transfer_no),...keyed.results.map(row=>row.key)]);
+ for(const row of legacy.results)
+   for(const number of transferNumbers(row.number||''))if(seen.has(number))existing.add(number);
  const pending=incoming.filter(item=>!existing.has(item.number));
  const queries=pending.map(item=>db().prepare(
    'INSERT OR IGNORE INTO lieutenant_queue (transfer_no,doc_date,payload,source_file,created) VALUES (?,?,?,?,?)'
