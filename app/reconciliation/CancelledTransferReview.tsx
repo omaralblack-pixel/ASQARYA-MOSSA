@@ -87,7 +87,8 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
         </small>}
         {!!saved.note&&<p style={{whiteSpace:'pre-wrap'}}>{saved.note}</p>}
         <small style={{display:'block'}} dir="ltr">حُفظ: {saved.updated_at}</small>
-      </div>:<b>بحاجة قرار — غير محفوظ</b>}
+      </div>:row.proven?<b>مستند مقابل مثبت في SAP — لا يحتاج اعتمادًا يدويًا</b>:
+        <b>بحاجة قرار — غير محفوظ</b>}
       <div className="no-print" style={{marginTop:8}}>
         <label>قرار المراجعة
           <select value={mode} disabled={disabled||busy} onChange={event=>{
@@ -144,9 +145,13 @@ export default function CancelledTransferReview({transfers,from,to,onOpenTransfe
   const [filter,setFilter]=useState<'all'|'pending'|'reviewed'>('all');
   const rows=useMemo(()=>from<=to?cancellationReviewRows(transfers,from,to):[],
     [transfers,from,to]);
-  const pending=rows.filter(row=>!decisions[row.source.transfer.number]).length;
-  const visible=rows.filter(row=>filter==='all'||(filter==='pending')===
-    !decisions[row.source.transfer.number]);
+  const needsDecision=(row:CancellationReviewRow)=>
+    !row.proven&&!decisions[row.source.transfer.number];
+  const pending=rows.filter(needsDecision).length;
+  const manuallyReviewed=rows.filter(row=>!!decisions[row.source.transfer.number]).length;
+  const verified=rows.filter(row=>row.proven&&!decisions[row.source.transfer.number]).length;
+  const visible=rows.filter(row=>filter==='all'||
+    (filter==='pending'?needsDecision(row):!needsDecision(row)));
   async function refresh(){
     setLoading(true);setError('');
     try{
@@ -182,13 +187,13 @@ export default function CancelledTransferReview({transfers,from,to,onOpenTransfe
       <p>تظهر الإلغاءات المثبتة في SAP والحركات التي تشير ملاحظاتها إلى إلغاء دون سبب مثبت. سجّل قرارك مرة واحدة؛ يظهر في كل كشف وطباعة لاحقة.</p>
     </div></div>
     <p className="hint">قرار «تجاوزها» يغلق متابعة هذه الحركة إداريًا فقط. قرار «لا يجب إلغاؤها» يوثّق اعتراضك ورقم الفاتورة، ولا يعيد تفعيل ترحيل ملغى في SAP ولا يغيّر المخزون أو اعتمادات الفواتير. الربط اليدوي لا يعني إثبات المطابقة آليًا.</p>
-    <p role="status"><b>{rows.length}</b> حركة إلغاء أو إشارة إلغاء في الفترة · <b>{pending}</b> بحاجة قرار · <b>{rows.length-pending}</b> قرار محفوظ.</p>
+    <p role="status"><b>{rows.length}</b> حركة إلغاء أو إشارة إلغاء في الفترة · <b>{pending}</b> بحاجة قرار · <b>{manuallyReviewed}</b> قرار محفوظ · <b>{verified}</b> مثبتة بالمستند دون حاجة لقرار يدوي.</p>
     <div className="table-controls no-print">
       <label>عرض القرارات
         <select value={filter} onChange={event=>setFilter(event.target.value as typeof filter)}>
           <option value="all">الكل (بما فيها القرارات المحفوظة)</option>
           <option value="pending">بحاجة قرار</option>
-          <option value="reviewed">تمت مراجعتها</option>
+          <option value="reviewed">قرارات محفوظة أو إلغاء مثبت</option>
         </select>
       </label>
       <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={loading}>
