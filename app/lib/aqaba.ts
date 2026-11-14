@@ -267,3 +267,77 @@ export function reviewAqabaTransfers(
  }
  return result;
 }
+
+
+export type AqabaMovement={
+ key:string;transNum:string;date:string;transType:string;docEntry:string;
+ document:string;row:number;item:string;description:string;warehouse:'011';
+ incoming:number;outgoing:number;customer:string;
+};
+export function readAqabaJournal(source:string):ReadResult<AqabaMovement>{
+ const {rows,header}=table(source),items:AqabaMovement[]=[],issues:string[]=[];
+ const names={
+  trans:['معرف حركة المخزون','transnum'],date:['التاريخ','posting date'],
+  type:['نوع حركة SAP','transtype'],entry:['docentry','createdby'],
+  doc:['رقم المستند','base_ref'],row:['رقم السطر','doclinenum'],
+  item:['كود الصنف','itemcode'],description:['اسم الصنف','description'],
+  warehouse:['المستودع','warehouse'],incoming:['الوارد','inqty'],
+  outgoing:['الصادر','outqty'],customer:['رقم الزبون','cardcode']
+ } as const;
+ const ix=Object.fromEntries(Object.entries(names).map(([k,v])=>[k,field(header,[...v])]));
+ if(Object.values(ix).some(x=>x<0))return {items,issues:['كشف OINM يجب أن يحتوي جميع الأعمدة الموضحة في الكويري.']};
+ const read=(r:string[],k:string)=>(r[ix[k]]||'').trim();
+ const seen=new Set<string>();
+ for(let i=1;i<rows.length;i++){
+  const r=rows[i],transNum=digits(read(r,'trans')),day=date(read(r,'date')),
+    transType=digits(read(r,'type')),docEntry=digits(read(r,'entry')),
+    document=digits(read(r,'doc')),row=number(read(r,'row')),
+    item=read(r,'item').toUpperCase(),warehouse=digits(read(r,'warehouse')).padStart(3,'0'),
+    incoming=number(read(r,'incoming')),outgoing=number(read(r,'outgoing'));
+  if(!/^\d{1,20}$/.test(transNum)||!day||day<AQABA_START||!/^-?\d{1,12}$/.test(transType)||
+     !Number.isInteger(row)||row===null||row<0||row>20000||
+     !/^[A-Z]{2,6}\d{3,10}$/.test(item)||warehouse!=='011'||
+     incoming===null||outgoing===null||incoming<0||outgoing<0){
+   issues.push('السطر '+(i+1)+': حركة مخزون غير صالحة.');continue;
+  }
+  const key=[transNum,transType,docEntry,row,item].join('|');
+  if(seen.has(key)){issues.push('حركة مخزون مكررة: '+key);continue}seen.add(key);
+  items.push({key,transNum,date:day,transType,docEntry,document,row,item,
+   description:read(r,'description'),warehouse:'011',incoming,outgoing,customer:read(r,'customer')});
+ }
+ if(!items.length)issues.push('لا توجد حركات OINM صالحة.');
+ return {items,issues};
+}
+/** This is physical inventory evidence; it NEVER subtracts a sales invoice
+ * in addition to the OINM journal. Unknown movement owners stay unknown. */
+export function auditAqabaJournal(
+ movements:AqabaMovement[],official:AqabaLine[],transfers:AqabaTransfer[],
+){
+ const types:Record<string,AqabaDocumentKind>={'13':'IN','14':'CN','15':'DN','16':'RE'};
+ const officialEntries=new Set(official.filter(r=>r.docEntry).map(r=>r.kind+'|'+r.docEntry+'|'+r.item));
+ const transferEntries=new Set(transfers.filter(r=>r.docEntry&&r.classified==='aqaba-remark')
+    .map(r=>r.docEntry+'|'+r.item));
+ let inward=0,outward=0,verifiedAqabaIncoming=0,verifiedAqabaOutgoing=0;
+ const issues:string[]=[],unassigned:AqabaMovement[]=[];
+ const rows=movements.map(m=>{
+  const ownerKind=types[m.transType];
+  const officialMatch=ownerKind&&officialEntries.has(ownerKind+'|'+m.docEntry+'|'+m.item);
+  const transferMatch=m.transType==='67'&&transferEntries.has(m.docEntry+'|'+m.item);
+  const customerMatch=m.customer===AQABA_CUSTOMER;
+  const otherCustomer=!!m.customer&&!customerMatch;
+  const assigned=otherCustomer?'other-customer':
+   (officialMatch||transferMatch||customerMatch?'aqaba-evidence':'unknown');
+  const net=m.incoming-m.outgoing;
+  inward+=m.incoming;outward+=m.outgoing;
+  if(assigned==='aqaba-evidence'){
+   verifiedAqabaIncoming+=m.incoming;verifiedAqabaOutgoing+=m.outgoing;
+  }else if(assigned==='unknown')unassigned.push(m);
+  return {...m,net,assigned};
+ });
+ if(unassigned.length)issues.push(unassigned.length+' حركة 011 لم تُنسب لعمّان أو العقبة بدليل مثبت.');
+ if(!movements.length)issues.push('لا يوجد كشف OINM؛ لا يمكن احتساب أثر حركة البيع على الرصيد.');
+ return {rows,issues,unassigned,
+  physical:{incoming:inward,outgoing:outward,net:Number((inward-outward).toFixed(6))},
+  aqabaEvidence:{incoming:verifiedAqabaIncoming,outgoing:verifiedAqabaOutgoing,
+   net:Number((verifiedAqabaIncoming-verifiedAqabaOutgoing).toFixed(6))}};
+}
