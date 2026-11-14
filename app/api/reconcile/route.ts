@@ -1,4 +1,5 @@
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
+import {validateCancellationDecision} from '../../lib/lieutenant-cancellation-decisions';
 import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
 import {isHistoricalSoldierRecord} from '../../lib/soldier-start';
@@ -24,7 +25,14 @@ async function currentPageSortingCatalog():Promise<AuditCatalog>{
  if(!validateAuditCatalog(saved.catalog))throw Error('مرجع فرز الصفحات المحفوظ غير صالح.');
  return saved.catalog;
 }
-export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);if(u.searchParams.has('lieutenant')){
+export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);
+if(u.searchParams.has('lieutenantCancellationDecisions')){
+ const rows=await db().prepare(
+   'SELECT transfer_no,decision,related_type,related_number,note,revision,updated_at FROM lieutenant_cancellation_decisions ORDER BY transfer_no'
+ ).all();
+ return json({decisions:rows.results});
+}
+if(u.searchParams.has('lieutenant')){
  const [records,queue,openingStock]=await Promise.all([
   // Keep reviewed SAP quantities to verify approval against the current file,
   // while dropping bulky attachments and item-reference snapshots.
@@ -357,7 +365,41 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
     soldierLineTotals:prepared.draft.soldierLineTotals,soldierManualLineKeys:prepared.draft.soldierManualLineKeys});
 }
 
-export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);const b=await readJsonRequest(req);await ensureSchema();if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
+export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);const b=await readJsonRequest(req);await ensureSchema();
+if(b.action==='lieutenantCancellationDecision'){
+ // Optimistic locking prevents another device from silently overwriting a review.
+ const expected=Number(b.expectedRevision);
+ if(!Number.isSafeInteger(expected)||expected<0)
+   return json({error:'نسخة قرار المراجعة غير صالحة؛ حدّث الكشف.'},400);
+ const transferNo=String(b.transferNo||'').trim();
+ if(!/^\d{4,20}$/.test(transferNo))return json({error:'رقم الترحيل غير صالح.'},400);
+ if(b.decision==='clear'){
+   if(expected<1)return json({error:'لا يوجد قرار محفوظ لإعادة فتحه.'},400);
+   const done=await db().prepare(
+     'DELETE FROM lieutenant_cancellation_decisions WHERE transfer_no=? AND revision=?'
+   ).bind(transferNo,expected).run();
+   if(!done.meta.changes)return json({error:'تغيّر القرار من جهاز آخر. حدّث الكشف قبل التعديل.'},409);
+   return json({ok:true,deleted:true,transferNo});
+ }
+ const parsed=validateCancellationDecision({
+   transferNo,decision:b.decision,relatedType:b.relatedType,
+   relatedNumber:b.relatedNumber,note:b.note,
+ });
+ if(!parsed.value)return json({error:parsed.error},400);
+ const item=parsed.value,now=new Date().toISOString();
+ const done=expected===0?
+   await db().prepare(
+     'INSERT INTO lieutenant_cancellation_decisions (transfer_no,decision,related_type,related_number,note,revision,updated_at) VALUES (?,?,?,?,?,1,?) ON CONFLICT(transfer_no) DO NOTHING'
+   ).bind(item.transferNo,item.decision,item.relatedType,item.relatedNumber,item.note,now).run():
+   await db().prepare(
+     'UPDATE lieutenant_cancellation_decisions SET decision=?,related_type=?,related_number=?,note=?,revision=revision+1,updated_at=? WHERE transfer_no=? AND revision=?'
+   ).bind(item.decision,item.relatedType,item.relatedNumber,item.note,now,item.transferNo,expected).run();
+ if(!done.meta.changes)return json({error:'تغيّر القرار من جهاز آخر. حدّث الكشف قبل التعديل.'},409);
+ return json({ok:true,record:{transfer_no:item.transferNo,decision:item.decision,
+   related_type:item.relatedType,related_number:item.relatedNumber,note:item.note,
+   revision:expected+1,updated_at:now}});
+}
+if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
 const before=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();
 const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
 let items=b.items;
