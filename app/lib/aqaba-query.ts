@@ -73,7 +73,7 @@ export function aqabaInventoryQuery(from:string,to:string){
   throw Error('فترة غير صحيحة');
  return [
  'SELECT TO_NVARCHAR(M."TransNum") AS "معرف حركة المخزون",',
- 'TO_VARCHAR(M."DocDate", \\'YYYY-MM-DD\\') AS "التاريخ",',
+ 'TO_VARCHAR(M."DocDate", \'YYYY-MM-DD\') AS "التاريخ",',
  'TO_NVARCHAR(M."TransType") AS "نوع حركة SAP",',
  'TO_NVARCHAR(M."CreatedBy") AS "DocEntry",',
  'TO_NVARCHAR(M."BASE_REF") AS "رقم المستند",',
