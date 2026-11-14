@@ -16,7 +16,7 @@ export function aqabaBlueSeed():AqabaBlueSeed[]{
   return {invoice,code,quantity:Number(qty),priceFils:Number(priceFils),estimatedPack:Number(estimatedPack)};
  });
 }
-export function aqabaSeedInvoiceLines(reference:ReadonlyArray<{sapCode?:string;warehouseName?:string;name?:string}>):BlueLine[]{
+export function aqabaSeedInvoiceLines(reference:ReadonlyArray<{sapCode?:string|null;warehouseName?:string|null;name?:string|null}>):BlueLine[]{
  const names=new Map(reference.filter(r=>r.sapCode).map(r=>[r.sapCode!,r.warehouseName||r.name||'']));
  return aqabaBlueSeed().map(r=>({
   key:r.invoice+'|'+r.code+'|1',invoice:r.invoice,date:AQABA_BLUE_SEED_DATE,
