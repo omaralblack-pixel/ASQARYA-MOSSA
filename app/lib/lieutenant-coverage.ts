@@ -1,4 +1,4 @@
-import {invoiceDocumentNo,parseTransfer,transferNumbers,type Draft} from './reconcile';
+import {invoiceDocumentNo,parseTransfer,readReconciliationRecord,transferNumbers,type Draft} from './reconcile';
 import type {LieutenantTransfer} from './lieutenant';
 
 export type LieutenantSavedRecord={id:string;status:string;payload:string};
@@ -25,10 +25,8 @@ export function lieutenantApprovals(sources:LieutenantTransfer[],records:Lieuten
   const approved=new Set<string>(),warnings=new Map<string,string>();
   for(const record of records){
     if(record.status!=='match')continue;
-    let draft:Draft;
-    try{draft=JSON.parse(record.payload)}catch{continue}
-    if(!draft||!Array.isArray(draft.invoices)||!Array.isArray(draft.transfers)||
-      !draft.invoices.length||!draft.invoices.every(row=>invoiceDocumentNo(row.number)&&row.complete))continue;
+    const draft=readReconciliationRecord(record.payload);
+    if(!draft||!draft.invoices.length||!draft.invoices.every(row=>invoiceDocumentNo(row.number)&&row.complete))continue;
     for(const card of draft.transfers){
       const numbers=transferNumbers(card.number||'');
       const actual=numbers.map(number=>byNumber.get(number));

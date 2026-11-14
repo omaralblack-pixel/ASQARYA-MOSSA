@@ -14,7 +14,7 @@ import FirstLieutenant from './FirstLieutenant';
 import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
 import {ArrowLeftRight,Check,CheckCircle2,AlertTriangle,Plus,Trash2,ClipboardPaste,FileText,CalendarDays,History,Settings2,Search,Save,Printer,Upload,ChevronDown,ArrowUpRight,RefreshCw,Copy,PackageCheck} from 'lucide-react';
-import {prepareReconciliation,withInvoiceDates,editInvoiceDate,addTransferToDraft,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation,readReconciliationRecord,withInvoiceDates,editInvoiceDate,addTransferToDraft,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource} from '../lib/reconcile';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
 const uid=()=>typeof crypto.randomUUID==='function'?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const newInvoice=():Invoice=>({id:uid(),number:'',date:'',amount:'',complete:false,quantities:{},attachments:[]});
@@ -51,7 +51,8 @@ const sapTransfers=useMemo(()=>new Map(sapPreview.groups.filter(group=>!group.re
   .flatMap(group=>group.members.filter(member=>!member.issues.length)
     .map(member=>[member.transfer.number,member] as const))),[sapPreview.groups]);
 const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
-  const stored=JSON.parse(record.payload) as Draft;
+  const stored=readReconciliationRecord(record.payload);
+  if(!stored)return [];
   return stored.transfers.flatMap(transfer=>transferNumbers(transfer.number).map(number=>[number,record.id] as const));
 })),[sapPreview.records]);
 useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','audit','replace','stock','serial-soldier','lieutenant'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
@@ -328,10 +329,17 @@ async function exportFullHistory(){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
  });
 }
-async function getRecords(){const x=await api(undefined,'?records=1');REC(x.records)}
+async function getRecords(){
+ const x=await api(undefined,'?records=1');
+ if(!Array.isArray(x.records))throw Error('استجابة سجل المطابقات غير صالحة.');
+ const readable=x.records.filter((record:{payload:string})=>readReconciliationRecord(record.payload));
+ REC(readable);
+ if(readable.length!==x.records.length)E('يوجد '+(x.records.length-readable.length)+' سجل غير مقروء. بقية السجلات متاحة؛ البيانات الأصلية لم تُحذف أو تُعدّل.');
+}
 async function openRecord(id:string,invoiceId?:string){
   const [data,settings]=await Promise.all([api(undefined,'?id='+encodeURIComponent(id)),api()]);
-  const saved=JSON.parse(data.record.payload) as Draft;
+  const saved=readReconciliationRecord(data.record.payload);
+  if(!saved)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
   let page='all';
   if(invoiceId!==undefined){
     const index=saved.invoices?.findIndex(invoice=>invoice.id===invoiceId)??-1;
@@ -538,7 +546,7 @@ async function save(overrideSoldier=false) {
 }
 function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);const h=serialHeaders(text).map(h=>h.toLowerCase().replace(/[\s._:-]/g,''));COLS({number:h.findIndex(v=>['docnum','docno','documentnumber','documentno','transfernumber','transferno','#','رقمالترحيل','رقمالمستند','رقمالحركة'].includes(v)),date:h.findIndex(v=>['docdate','documentdate','postingdate','date','التاريخ','تاريخالمستند','تاريخالترحيل'].includes(v)),branch:h.findIndex(v=>['branch','branchname','الفرع','اسمالفرع'].includes(v))})}
 if(!draft)return <div className="initial">جاري تجهيز مساحة المطابقة…</div>;
-return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="private-dot"/>مساحة عمل خاصة<form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');if(key==='history'||key==='invoices'||key==='monthly')run(async()=>{await getRecords();T(key)});else T(key)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
+return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="private-dot"/>مساحة عمل خاصة<form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');T(key);if(key==='history'||key==='invoices'||key==='monthly')void run(getRecords)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
 {tab==='audit'&&<InstitutionAudit onOpenInvoice={openCollectedInvoice}/>}
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}

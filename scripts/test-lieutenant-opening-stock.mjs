@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 
-// The stock audit imports types only; transpilation runs the real business logic.
+// Run the stock audit with its real shared numeric parser.
 const source=fs.readFileSync('app/lib/lieutenant-stock.ts','utf8');
 const transpiled=ts.transpileModule(source,{
   fileName:'app/lib/lieutenant-stock.ts',
@@ -11,7 +11,15 @@ const transpiled=ts.transpileModule(source,{
 });
 assert.deepEqual(transpiled.diagnostics?.filter(d=>d.category===ts.DiagnosticCategory.Error)||[],[]);
 const exports={};
-new Function('exports','require',transpiled.outputText)(exports,()=>{throw Error('Unexpected runtime import')});
+const core={};
+const coreJs=ts.transpileModule(fs.readFileSync('app/lib/reconcile.ts','utf8'),{
+ compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+}).outputText;
+new Function('exports','require',coreJs)(core,()=>{throw Error('Unexpected runtime import')});
+new Function('exports','require',transpiled.outputText)(exports,name=>{
+ if(name==='./reconcile')return core;
+ throw Error('Unexpected runtime import: '+name);
+});
 const {auditLieutenantStock}=exports;
 const row=(code,quantity,unit='Piece')=>({code,name:code,warehouse:'011',unit,quantity});
 const audit=(closing,opening,confirmed)=>auditLieutenantStock(

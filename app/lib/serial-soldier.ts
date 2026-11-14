@@ -1,4 +1,4 @@
-import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
+import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, readReconciliationRecord, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
 import {collectInvoicesByDate} from './invoice-collector';
 
 
@@ -113,10 +113,8 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
   const transferIndex=new Map<string,Saved[]>();
   const transferOwner=new Map<string,string>();
   for(const record of records){
-    let draft:Draft;
-    try{draft=JSON.parse(record.payload) as Draft;}
-    catch{blockers.push('سجل تالف تعذّر قراءته: '+record.id);continue;}
-    if(!Array.isArray(draft.invoices)||!Array.isArray(draft.transfers)){
+    const draft=readReconciliationRecord(record.payload);
+    if(!draft){
       blockers.push('سجل فواتير ناقص: '+record.id);continue;
     }
     const numbered=draft.invoices.map((invoice,i)=>({record,draft,invoice,index:i})).filter(saved=>normalNumber(saved.invoice.number));

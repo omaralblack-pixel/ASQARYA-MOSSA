@@ -1,4 +1,4 @@
-import {dateValue, digits, invoiceDocumentNo, numeric, transferNumbers, type Draft} from './reconcile';
+import {dateValue, digits, invoiceDocumentNo, signedNumeric, readReconciliationRecord, transferNumbers, type Draft} from './reconcile';
 import {readSapImportRows} from './sap-import';
 
 // A read-only view of the SAME Supabase-hosted SAP import used by the import screen.
@@ -46,10 +46,14 @@ export function sapInvoicesFromSavedFile(text:string):SapRegisterSource{
   for(const [number,lines] of docs){
     const directed=lines.filter(line=>['001','002','009'].includes(normWarehouse(line[9]||''))&&normWarehouse(line[10]||'')==='011');
     if(!directed.length){ignoredCount++;continue;}
-    if(lines.some(line=>/has been canceled/i.test(line[4]||'')||(numeric(line[7]||'')??0)<0)){
+    if(lines.some(line=>/has been cancel(?:ed|led)/i.test(line[4]||'')||(signedNumeric(line[7])??0)<0)){
       ignoredCount++;
       issues.push('الترحيل '+number+': ملغى أو يحتوي كمية سالبة؛ استُبعد من فواتير الوصول.');
       continue;
+    }
+    if(directed.some(line=>signedNumeric(line[7])===null)){
+      issues.push('الترحيل '+number+': كمية غير صالحة؛ لم يُنسب لفاتورة.');
+      withoutInvoice.push(number);continue;
     }
     const distinctRemarks=[...new Set(lines.map(line=>(line[4]||'').trim()).filter(Boolean))];
     if(distinctRemarks.length!==1){
@@ -82,10 +86,8 @@ export function sapInvoicesFromSavedFile(text:string):SapRegisterSource{
 export function compareSapWithSavedInvoices(source:SapRegisterSource,records:SavedInvoiceRecord[]):SapRegisterCheck[]{
   const saved=new Map<string,{record:SavedInvoiceRecord;complete:boolean;amount:string;transfers:string[]}[]>();
   for(const record of records){
-    let draft:Draft;
-    try{draft=JSON.parse(record.payload) as Draft;}
-    catch{continue;}
-    if(!Array.isArray(draft.invoices))continue;
+    const draft=readReconciliationRecord(record.payload);
+    if(!draft)continue;
     const transfers=Array.isArray(draft.transfers)
       ?draft.transfers.flatMap(t=>transferNumbers(t.number||'')):[];
     for(const invoice of draft.invoices){

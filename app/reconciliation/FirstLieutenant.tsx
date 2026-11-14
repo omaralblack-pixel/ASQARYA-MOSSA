@@ -6,13 +6,13 @@ import {AlertTriangle,CheckCircle2,Copy,FileArchive,FileUp,RefreshCw,Search,Shie
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenant';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
-import {invoiceDocumentNo,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
+import {invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 import {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {lieutenantApprovals} from '../lib/lieutenant-coverage';
 import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState,type DaySapStatus} from '../lib/lieutenant-invoice-day';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
-import {auditLieutenantStock,classifyLieutenantContent,parseLieutenantStock,
+import {auditLieutenantStock,stockMovementSources,classifyLieutenantContent,parseLieutenantStock,
   type StockItem,type StockAuditItem,type LieutenantFileKind} from '../lib/lieutenant-stock';
 
 type FileKind=LieutenantFileKind;
@@ -170,10 +170,8 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodE
   const movements=analyzeLieutenantMovements(transfers,periodEnd);
   const saved=new Map<string,{id:string;status:ReviewStatus;note:string}>();
   for(const record of snapshot.records){
-    let draft:Draft;
-    try{draft=JSON.parse(record.payload) as Draft;
-      if(!draft||!Array.isArray(draft.invoices)||!Array.isArray(draft.transfers))continue;
-    }catch{continue}
+    const draft=readReconciliationRecord(record.payload);
+    if(!draft)continue;
     const numbers=(draft.invoices||[]).map(inv=>invoiceDocumentNo(inv.number)).filter(Boolean);
     const hasPaper=numbers.length>0&&(draft.invoices||[]).every(inv=>!!invoiceDocumentNo(inv.number)&&inv.complete);
     const matched=record.status==='match'&&hasPaper;
@@ -200,11 +198,14 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodE
   });
 }
 
-function MovementSummary({rows}:{rows:ReviewRow[]}){
+function MovementSummary({transfers,from,to}:{transfers:LieutenantTransfer[];from:string;to:string}){
+  const sources=useMemo(()=>stockMovementSources(transfers).filter(source=>
+    source.transfer.date>=from&&source.transfer.date<=to),[transfers,from,to]);
+  const incomplete=sources.filter(source=>source.issues.length).length;
   const movements=useMemo(()=>{
     const totals=new Map<string,{code:string;unit:string;inward:number;outward:number;adjustment:number}>();
-    for(const {source} of rows){
-      if(source.issues.length||['canceled','cancellation'].includes(source.cancellationState))continue;
+    for(const source of sources){
+      if(source.issues.length)continue;
       for(const line of source.transfer.paste.split('\n').slice(1)){
         const [code,,quantity,unit,from,to]=line.split('\t');
         const qty=Number(quantity.replace(/,/g,''));
@@ -220,11 +221,12 @@ function MovementSummary({rows}:{rows:ReviewRow[]}){
       }
     }
     return [...totals.values()].sort((a,b)=>a.code.localeCompare(b.code));
-  },[rows]);
-  if(!movements.length)return null;
+  },[sources]);
+  if(!movements.length&&!incomplete)return null;
   return <details className="panel">
     <summary>صافي الحركة حسب كود SAP ووحدة الترحيل ({movements.length})</summary>
-    <p className="hint">صافي أولي من الملف، وليس رصيد SAP موثّقًا. لم تدخل مستندات الإلغاء Y وC في هذا الجدول. لا نجمع KG مع Carton أو Piece، وتبقى التسويات وحالة الإلغاء وتواريخها بحاجة للتحقق من سجل حركة المخزون.</p>
+    <p className="hint">صافي حركة من الملف حسب تاريخ كل مستند، وليس رصيد SAP الفعلي. تُحتسب مستندات الإلغاء عند إثبات المقابلة الكاملة مع الأصل، حتى لو وقعا في فترتين مختلفتين. لا نجمع KG مع Carton أو Piece.</p>
+    {incomplete>0&&<p className="amber" role="alert">يوجد {incomplete} مستندًا غير مكتمل الإثبات؛ الصافي أدناه جزئي ولا يثبت مطابقة الرصيد.</p>}
     <div className="table-scroll"><table><thead><tr><th>كود SAP</th><th>الوحدة</th><th>الوارد</th><th>الصادر</th><th>أثر التصحيحات الموقّع</th><th>صافي الحركة</th></tr></thead><tbody>
       {movements.map(row=><tr key={row.code+'|'+row.unit}><td dir="ltr">{row.code}</td><td>{row.unit}</td><td>{row.inward}</td><td>{row.outward}</td><td>{row.adjustment}</td><td>{Number((row.inward-row.outward+row.adjustment).toFixed(6))}</td></tr>)}
     </tbody></table></div>
@@ -1143,6 +1145,6 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       {selectedTransfer&&transfers.length>0&&!visible.length&&<p className="hint">لا توجد ترحيلات بهذه الفلاتر.</p>}
       {counts.review>0&&<p className="hint">هناك {counts.review} حركة تحتاج تدقيق العكسي أو الإلغاء أو بيانات المصدر. العكسي المطابق ليس إلغاء SAP؛ لا يُرسل كاش فان للجندي لمجرد عدم وجود فاتورة زرقاء.</p>}
     </section>
-    <MovementSummary rows={rows}/>
+    <MovementSummary transfers={transfers} from={from} to={to}/>
   </div>;
 }

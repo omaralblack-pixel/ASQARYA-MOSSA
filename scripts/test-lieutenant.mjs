@@ -11,7 +11,8 @@ const lieutenantCode=compile('app/lib/lieutenant.ts')
   .replace(/from ['"]\.\/reconcile['"]/, 'from "'+reconcileUrl+'"');
 const {parseLieutenantTransfers}=await import('data:text/javascript;base64,'+Buffer.from(lieutenantCode).toString('base64'));
 
-const stockCode=compile('app/lib/lieutenant-stock.ts');
+const stockCode=compile('app/lib/lieutenant-stock.ts')
+  .replace(/from ['"]\.\/reconcile['"]/, 'from "'+reconcileUrl+'"');
 const {classifyLieutenantContent,parseLieutenantStock,auditLieutenantStock}=
   await import('data:text/javascript;base64,'+Buffer.from(stockCode).toString('base64'));
 const balanceHeader=['#','رقم الصنف','اسم الصنف','المستودع','وحدة المخزون','الرصيد الفعلي بنهاية التاريخ'].join('\t');

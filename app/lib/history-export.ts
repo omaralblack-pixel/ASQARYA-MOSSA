@@ -1,4 +1,4 @@
-import {dateValue,fils,money,parseTransfer,transferNumbers,type Draft} from './reconcile';
+import {dateValue,fils,money,parseTransfer,readReconciliationRecord,transferNumbers,type Draft} from './reconcile';
 
 type HistoryRecord={id:string;branch:string;doc_date:string;payload:string};
 export const historyHeaders=['رقم الفاتورة الزرقاء','اسم الفاتورة / الفرع','تاريخ الفاتورة الزرقاء','ترحيلات المجموعة للمؤسسة','الترحيلات العكسية للمجموعة','ترحيلات بحاجة تحديد الاتجاه','حالة الفاتورة','مبلغ الفاتورة (د.أ)'];
@@ -6,7 +6,8 @@ export const historyHeaders=['رقم الفاتورة الزرقاء','اسم ا
 export function historyExportRows(records:HistoryRecord[]):string[][]{
  const rows:{date:string;values:string[]}[]=[];
  for(const record of records){
-  const group=JSON.parse(record.payload) as Draft;
+  const group=readReconciliationRecord(record.payload);
+  if(!group)throw Error('تعذّر تصدير السجل '+record.id+' لوجود بيانات غير مقروءة. أصلح السجل قبل تصدير كشف كامل.');
   const forward:string[]=[],reverse:string[]=[],unknown:string[]=[];
   for(const transfer of group.transfers||[]){
    const numbers=transferNumbers(transfer.number||'');

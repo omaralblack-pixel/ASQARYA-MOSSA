@@ -1,3 +1,4 @@
+import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
 import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
 import {isHistoricalSoldierRecord} from '../../lib/soldier-start';
@@ -6,7 +7,7 @@ import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
 import branches from '../../branches.json';
 import drivers from '../../drivers.json';
-import {reconcile,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
+import {reconcile,readReconciliationRecord,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
 export const dynamic='force-dynamic';
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة');return env.DB};
@@ -29,7 +30,9 @@ export async function GET(req:Request){try{await ensureSchema();const u=new URL(
   // while dropping bulky attachments and item-reference snapshots.
   // Keep invalid payloads visible to the reader instead of crashing JSON SQL.
   db().prepare(`SELECT id,branch,status,CASE WHEN json_valid(payload) THEN CASE
-   WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array' THEN json_object(
+   WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array'
+    AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object')
+    AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object') THEN json_object(
     'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'paste',json_extract(value,'$.paste'))) FROM json_each(payload,'$.transfers'))),
     'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END))) FROM json_each(payload,'$.invoices')))
    ) ELSE payload END ELSE payload END AS payload FROM reconciliations ORDER BY updated DESC`).all(),
@@ -76,7 +79,7 @@ export async function GET(req:Request){try{await ensureSchema();const u=new URL(
    .all<{id:string;branch:string;status:string;doc_date:string;payload:string}>();
  try{return json(collectInvoicesByDate(records.results,from,to))}
  catch(error){return json({error:error instanceof Error?error.message:'الفترة غير صالحة.'},400)}
-}if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,status,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
+}if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,status,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array' AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object') AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object') THEN json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) ELSE payload END ELSE payload END AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
 type StoredReconciliation = {
   id: string;
   branch: string;
@@ -91,15 +94,16 @@ async function findSavedTransfer(number: string) {
   const {results} = await db().prepare(`
     SELECT r.id, r.branch, r.version, r.payload FROM reconciliations r
     WHERE EXISTS (
-      SELECT 1 FROM json_each(r.payload, '$.transfers') t
-      WHERE instr('+' || replace(replace(replace(replace(json_extract(t.value, '$.number'), '،', '+'), ' ', ''), ',', ''), '٬', '') || '+', '+' || ? || '+') > 0
+      SELECT 1 FROM json_each(CASE WHEN json_valid(r.payload) THEN r.payload ELSE '{}' END, '$.transfers') t
+      WHERE t.type='object' AND instr('+' || replace(replace(replace(replace(json_extract(t.value, '$.number'), '،', '+'), ' ', ''), ',', ''), '٬', '') || '+', '+' || ? || '+') > 0
     )
     LIMIT 2
   `).bind(number).all<StoredReconciliation>();
   if (results.length > 1) return json({error: 'رقم الترحيل مكرر في السجل. راجع الترحيل قبل إضافته.'}, 409);
   const record = results[0];
   if (!record) return json({error: 'رقم الترحيل غير موجود في السجل.'}, 404);
-  const draft = JSON.parse(record.payload) as Draft;
+  const draft = readReconciliationRecord(record.payload);
+  if(!draft)return json({error:'بيانات الترحيل المحفوظ غير مقروءة؛ يلزم مراجعة هذا السجل.'},409);
   const transfer = draft.transfers.find(row => transferNumbers(row.number).includes(number));
   if (!transfer) return json({error: 'بيانات الترحيل غير متاحة.'}, 404);
   return json({
@@ -183,7 +187,8 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
   const old = d.id ? await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(id).first<StoredReconciliation>() : null;
   if (d.id && !old) return json({error: 'السجل غير موجود.'}, 404);
   if (old && old.version !== d.version) return json({error: 'عُدّل الكشف في جلسة أخرى. افتحه مجددًا قبل الحفظ.'}, 409);
-  const previous = old ? JSON.parse(old.payload) as Draft : undefined;
+  const previous = old ? readReconciliationRecord(old.payload) : undefined;
+  if(old&&!previous)return json({error:'بيانات الكشف المحفوظ غير مقروءة؛ لم يتم تعديلها.'},409);
   for (const invoice of previous?.invoices ?? []) {
     if (!invoice.manualNumber || !invoice.number) continue;
     const incoming = d.invoices.find(row => row.id === invoice.id);
@@ -214,10 +219,10 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
     : [];
   const sources = sourceRecords.map(record => ({
     record,
-    draft: JSON.parse(record.payload) as Draft,
+    draft: readReconciliationRecord(record.payload)!,
     numbers: claims.filter(source => source.recordId === record.id).map(source => source.number),
   }));
-  if (sourceRecords.length !== sourceIds.length ||
+  if (sources.some(source=>!source.draft)||sourceRecords.length !== sourceIds.length ||
       claims.some(source => sourceRecords.find(row => row.id === source.recordId)?.version !== source.version)) {
     return json({error: 'تغيّر سجل أحد الترحيلات المضافة. احذفه من الكشف وأعد إضافته للتحقق.'}, 409);
   }
@@ -239,14 +244,14 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
     }
   }
 
-  const prior = await db().prepare("SELECT r.id,json_extract(t.value,'$.number') AS number FROM reconciliations r, json_each(r.payload,'$.transfers') t WHERE r.id<>?")
+  const prior = await db().prepare("SELECT r.id,json_extract(t.value,'$.number') AS number FROM reconciliations r, json_each(CASE WHEN json_valid(r.payload) THEN r.payload ELSE '{}' END,'$.transfers') t WHERE r.id<>? AND t.type='object'")
     .bind(id).all<{id: string; number: string}>();
   const incomingNumbers = new Set(transferKeys);
   for (const row of prior.results) {
     const conflict = transferNumbers(row.number || '').find(number => incomingNumbers.has(number) && sourceByNumber.get(number) !== row.id);
     if (conflict) return json({error: 'الترحيل ' + conflict + ' محفوظ مسبقًا. ابحث عنه من زر «إضافة ترحيل» للتحقق من فاتورته.'}, 409);
   }
-  const priorInvoices = await db().prepare("SELECT r.id,json_extract(i.value,'$.number') AS number FROM reconciliations r, json_each(r.payload,'$.invoices') i WHERE r.id<>?")
+  const priorInvoices = await db().prepare("SELECT r.id,json_extract(i.value,'$.number') AS number FROM reconciliations r, json_each(CASE WHEN json_valid(r.payload) THEN r.payload ELSE '{}' END,'$.invoices') i WHERE r.id<>? AND i.type='object'")
     .bind(id).all<{id: string; number: string}>();
   const invoiceOwners = new Set(priorInvoices.results.map(row => invoiceDocumentNo(row.number)).filter(Boolean));
   for (const number of invoiceNumbers) {
@@ -347,7 +352,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
     soldierLineTotals:prepared.draft.soldierLineTotals,soldierManualLineKeys:prepared.draft.soldierManualLineKeys});
 }
 
-export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);if(Number(req.headers.get('content-length')||0)>3000000)return json({error:'حجم البيانات كبير'},400);const b:any=await req.json();await ensureSchema();if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
+export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);const b=await readJsonRequest(req);await ensureSchema();if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
 const before=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();
 const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
 let items=b.items;
@@ -436,8 +441,8 @@ if (b.action === 'lieutenantImport') {
  ]);
  const existing=new Set<string>(queued.results.map(x=>x.transfer_no));
  for(const row of groups.results){
-   let saved:Draft;
-   try{saved=JSON.parse(row.payload) as Draft}catch{continue}
+   const saved=readReconciliationRecord(row.payload);
+   if(!saved)continue;
    for(const transfer of saved.transfers||[])
      for(const number of transferNumbers(transfer.number||''))existing.add(number);
  }
@@ -454,4 +459,4 @@ if (b.action === 'lieutenantImport') {
  return json({added,existing:incoming.length-added,total:incoming.length});
  }
  if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources, b.overrideSoldier);
-return json({error:'طلب غير معروف'},400)}catch{return json({error:'تعذّر الحفظ. أعد المحاولة.'},500)}}
+return json({error:'طلب غير معروف'},400)}catch(error){if(error instanceof JsonRequestError)return json({error:error.message},error.status);return json({error:'تعذّر الحفظ. أعد المحاولة.'},500)}}

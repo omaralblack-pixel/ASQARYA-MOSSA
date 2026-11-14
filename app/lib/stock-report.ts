@@ -1,4 +1,4 @@
-import {dateValue,digits,numeric} from './reconcile';
+import {dateValue,digits,signedNumeric} from './reconcile';
 import {readSapImportRows} from './sap-import';
 
 type StockRow = {
@@ -30,9 +30,10 @@ export function stockReport(text:string,range:StockDateRange={}) {
     if((source!=='011'&&destination!=='011')||source===destination)continue;
     const date=dateValue(dateText);
     const sapCode=rawCode.toUpperCase();
-    const canceled=/^[-−]/.test(rawQuantity);
-    const quantity=numeric(canceled?rawQuantity.slice(1):rawQuantity);
-    if(!date||!sapCode||!rawUnit||quantity===null){
+    const signedQuantity=signedNumeric(rawQuantity);
+    const canceled=signedQuantity!==null&&signedQuantity<0;
+    const quantity=signedQuantity===null?null:Math.abs(signedQuantity);
+    if(!date||!/^[A-Z]{2,6}\d{3,10}$/.test(sapCode)||!rawUnit||quantity===null){
       // A damaged row outside a selected period cannot change its subtotal,
       // but missing/invalid dates must still be disclosed (period unknown).
       if(!date||(!range.from||date>=range.from)&&(!range.to||date<=range.to))

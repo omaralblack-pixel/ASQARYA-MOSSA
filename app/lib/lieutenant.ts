@@ -129,7 +129,7 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
     if(!u)current.issues.push('وحدة SAP غير معروفة للصنف '+code+': '+read(cells,'unit'));
     current.reverse ||= from==='011';
     current.signedAdjustment ||= negative;
-    current.lines.push([code,description,quantity,u||read(cells,'unit'),from,to].join('\t'));
+    current.lines.push([code,description,qty===null?quantity:String(negative?-qty:qty),u||read(cells,'unit'),from,to].join('\t'));
     grouped.set(number,current);
   }
   const transfers:LieutenantTransfer[]=[];

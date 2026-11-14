@@ -5,6 +5,7 @@ import {CalendarDays,Download,FileSearch,FolderOpen,AlertTriangle} from 'lucide-
 import {dateValue} from '../lib/reconcile';
 import {tableWorkbook} from '../lib/invoice-workbook';
 import type {CollectedInvoiceResult,CollectedInvoice,UndatedInvoice} from '../lib/invoice-collector';
+import {collectedInvoiceCounts} from '../lib/invoice-collector';
 
 export default function InstitutionAudit({onOpenInvoice}:{
   onOpenInvoice:(recordId:string,invoiceId:string)=>Promise<void>;
@@ -17,6 +18,7 @@ export default function InstitutionAudit({onOpenInvoice}:{
   const [opening,setOpening]=useState('');
   const [openError,setOpenError]=useState('');
   const [report,setReport]=useState<CollectedInvoiceResult|null>(null);
+  const counts=report?collectedInvoiceCounts(report):null;
 
   async function collect(){
     const from=dateValue(dateFrom),to=dateValue(dateTo);
@@ -92,12 +94,13 @@ export default function InstitutionAudit({onOpenInvoice}:{
       {error&&<p className="banner danger" role="alert">{error}</p>}
       {report&&<div>
         <div className="section-title">
-          <h2>نتيجة الفترة: {report.from} إلى {report.to} · {report.rows.length} فاتورة</h2>
+          <h2>نتيجة الفترة: {report.from} إلى {report.to} · {counts!.invoices} فاتورة</h2>
           <button type="button" className="button secondary" disabled={!report.rows.length}
             onClick={exportExcel}><Download size={16}/>سحب كشف Excel</button>
         </div>
-        {report.inferredDates>0&&<p className="banner info" role="status">
-          استرجعت تاريخ {report.inferredDates} فاتورة لم يكن فيها تاريخ محفوظ صالح، من تاريخ ترحيل SAP المؤكد (قبل الترحيل بيوم)،
+        {counts!.withoutNumber>0&&<p className="banner info" role="status">يوجد أيضًا {counts!.withoutNumber} سجل ترحيل بلا رقم فاتورة زرقاء؛ تظهر للمراجعة ولا تُحسب ضمن عدد الفواتير.</p>}
+        {counts!.inferredDates>0&&<p className="banner info" role="status">
+          استرجعت تاريخ {counts!.inferredDates} فاتورة لم يكن فيها تاريخ محفوظ صالح، من تاريخ ترحيل SAP المؤكد (قبل الترحيل بيوم)،
           دون تغيير تاريخها المحفوظ. التاريخ اليدوي، متى كان موجودًا، يظل هو المعتمد دائمًا. ستجد مصدر التاريخ في كشف Excel.
         </p>}
         {report.unreadableRecords>0&&<p className="banner danger" role="alert">
@@ -134,7 +137,7 @@ export default function InstitutionAudit({onOpenInvoice}:{
             <tbody>{report.rows.map(row=>{
               const key=row.recordId+':'+row.invoiceId;
               return <tr key={key}>
-                <td><b>{row.number||'غير مدخل'}</b></td>
+                <td><b>{row.number||'ترحيل بلا فاتورة زرقاء'}</b></td>
                 <td>{row.branch||'غير محدد'}</td>
                 <td dir="ltr">{row.date}
                   {row.dateSource==='manual'?<p className="hint">التاريخ اليدوي المعتمد</p>:row.dateSource==='transfer'&&<p className="hint">من تاريخ الترحيل</p>}

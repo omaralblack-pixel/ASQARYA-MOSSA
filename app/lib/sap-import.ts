@@ -1,4 +1,4 @@
-import {dateValue,digits,invoiceDocumentNo,numeric,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
+import {dateValue,digits,invoiceDocumentNo,signedNumeric,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
 
 const headers=['رقم الترحيل','تاريخ الترحيل','كود الفرع','اسم الفرع','Remarks','Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'];
 const normalize=(value:string)=>value.trim().toLowerCase();
@@ -73,7 +73,7 @@ export function parseSapImport(paste:string,branches:string[]):{groups:SapImport
     const entry=existing||{meta,lines:[],reversal:false,conflict:false};
     if(existing&&meta.some((value,index)=>value!==entry.meta[index]))entry.conflict=true;
     entry.lines.push(values.slice(5).join('\t'));
-    entry.reversal||=/has been canceled/i.test(values[4])||(numeric(values[7])??0)<0;
+    entry.reversal||=/has been cancel(?:ed|led)/i.test(values[4])||(signedNumeric(values[7])??0)<0;
     transfers.set(number,entry);
   }
 

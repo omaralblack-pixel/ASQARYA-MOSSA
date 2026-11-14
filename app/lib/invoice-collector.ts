@@ -1,4 +1,4 @@
-import {dateValue, invoiceDocumentNo, pageNumber, parseTransfer, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
+import {dateValue, invoiceDocumentNo, pageNumber, parseTransfer, readReconciliationRecord, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
 
 export type CollectedInvoice = {
   recordId: string; invoiceId: string; number: string; branch: string; date: string; dateSource: 'manual'|'invoice'|'transfer';
@@ -15,6 +15,13 @@ export type CollectedInvoiceResult = {
 };
 
 const close=(a:number,b:number)=>Math.abs(a-b)<0.000001;
+
+/** Invoice-free transfer cards remain visible without inflating invoice counts. */
+export function collectedInvoiceCounts(report:Pick<CollectedInvoiceResult,'rows'>){
+ const numbered=report.rows.filter(row=>!!invoiceDocumentNo(row.number));
+ return {invoices:numbered.length,withoutNumber:report.rows.length-numbered.length,
+  inferredDates:numbered.filter(row=>row.dateSource==='transfer').length};
+}
 
 /** Date on a saved invoice takes precedence. If missing or invalid, derive the
  * original system default (outgoing SAP posting date minus one day) ONLY when
@@ -84,12 +91,8 @@ export function collectInvoicesByDate(
   const rows:CollectedInvoice[]=[],undatedDetails:UndatedInvoice[]=[];
   let unreadableRecords=0,undatedInvoices=0,inferredDates=0;
   for(const record of records){
-    let draft:Draft;
-    try{
-      draft=JSON.parse(record.payload) as Draft;
-      if(!draft||typeof draft!=='object'||!Array.isArray(draft.invoices)||!Array.isArray(draft.transfers))throw Error('invalid');
-      if(draft.invoices.some(inv=>!inv||typeof inv!=='object'))throw Error('invalid invoice');
-    }catch{unreadableRecords++;continue}
+    const draft=readReconciliationRecord(record.payload);
+    if(!draft){unreadableRecords++;continue}
 
     const invoices=draft.invoices;
     const multi=invoices.length>1;

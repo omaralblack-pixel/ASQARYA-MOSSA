@@ -2,7 +2,7 @@
 
 import {useEffect,useMemo,useState,type ChangeEvent} from 'react';
 import {Search} from 'lucide-react';
-import {digits,invoiceDocumentNo,transferNumbers,type Draft} from '../lib/reconcile';
+import {digits,invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
 import {deleteSavedSapImport,maxSapFileBytes,readSavedSapImport,saveSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 
@@ -15,7 +15,8 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
   const add=(map:Map<string,Set<string>>,key:string,id:string)=>{const ids=map.get(key)||new Set<string>();ids.add(id);map.set(key,ids)};
   const transferOwners=new Map<string,Set<string>>();
   for(const record of records){
-    const draft=JSON.parse(record.payload) as Draft;
+    const draft=readReconciliationRecord(record.payload);
+    if(!draft)continue;
     for(const transfer of draft.transfers||[]){
       for(const number of transferNumbers(transfer.number||'')){byTransfer.set(number,record.id);add(transferOwners,number,record.id)}
     }

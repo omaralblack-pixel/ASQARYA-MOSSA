@@ -29,6 +29,10 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Reconciliation regression tests
         run: pnpm run test:institution
+      - name: System audit regression checks
+        run: |
+          node scripts/test-system-audit.mjs
+          node scripts/test-json-request.mjs
       - name: Core reconciliation and transfer regression tests
         run: |
           for test in scripts/test-reconcile.mjs scripts/test-add-transfer.mjs scripts/test-exchange.mjs scripts/test-history-export.mjs scripts/test-reverse-lookup.mjs scripts/test-serial-soldier.mjs scripts/test-sap-invoice-register.mjs; do
@@ -38,6 +42,7 @@ jobs:
         run: |
           node scripts/test-lieutenant.mjs
           node scripts/test-lieutenant-invoice-day.mjs
+          node scripts/test-lieutenant-opening-stock.mjs
       - name: SAP 011 closing stock query regression tests
         run: node scripts/test-sap-stock-query.mjs
       - name: Storage, invoice registry and uniqueness checks

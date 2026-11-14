@@ -10,6 +10,26 @@ export type TransferSource = {number: string; recordId: string; version: number}
 export type Draft={pageEntryOrder?:string[];excludedItems?:Record<string,string>;mode?:'manual';acceptedDifference?:{paper:number;calculated:number};checks?:Record<string,{signature:string;state:'match'|'difference';note?:string}>;pages?:Record<string,string>;id?:string;version?:number;branch:string;driver:string;date:string;transfers:Transfer[];invoices:Invoice[];notes:string;referenceSnapshot?:Item[];useCurrentReference?:boolean;linkedSapCodes?:string[];soldierLineAllocations?:Record<string,Record<string,number>>;soldierLineTotals?:Record<string,number>;soldierManualLineKeys?:string[];soldierOverride?:{at:string;version:number;scope:'page-sort-only'};};
 export function digits(v:string){return v.replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)))}
 export function numeric(v:unknown):number|null{const s=digits(String(v??'')).trim().replace(/٬/g,',').replace(/٫/g,'.');if(!s)return null;if(!/^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(s))return null;const n=Number(s.replace(/,/g,''));return Number.isFinite(n)?n:null}
+/** SAP correction quantities may be negative; ordinary invoice quantities may not. */
+export function signedNumeric(value:unknown):number|null{
+ const text=digits(String(value??'')).trim().replace(/^−/,'-');
+ const negative=text.startsWith('-');
+ const magnitude=numeric(/^[+-]/.test(text)?text.slice(1):text);
+ return magnitude===null?null:negative?-magnitude:magnitude;
+}
+/** Read historical data without allowing one damaged record to crash a whole report. */
+export function readReconciliationRecord(payload:unknown):Draft|null{
+ try{
+  const value=typeof payload==='string'?JSON.parse(payload):payload;
+  if(!value||typeof value!=='object'||!Array.isArray(value.invoices)||!Array.isArray(value.transfers))return null;
+  const valid=(row:unknown,fields:string[])=>!!row&&typeof row==='object'&&!Array.isArray(row)&&
+   fields.every(key=>(row as Record<string,unknown>)[key]===undefined||
+    (row as Record<string,unknown>)[key]===null||typeof (row as Record<string,unknown>)[key]==='string');
+  if(value.invoices.some((row:unknown)=>!valid(row,['number','date','amount','auditLines']))||
+     value.transfers.some((row:unknown)=>!valid(row,['number','date','paste'])))return null;
+  return value as Draft;
+ }catch{return null}
+}
 export function fils(v:string):number|null{
  const amount=digits(v).trim().replace(/^(\d+),(\d{1,2})$/,'$1.$2').replace(/^(\d+)،(\d{1,3})$/,'$1.$2');
  const n=numeric(amount);if(n===null||n<0||n>100000000||Math.abs(n*1000-Math.round(n*1000))>0.00001)return null;return Math.round(n*1000)}
@@ -185,7 +205,7 @@ export function withInvoiceDates<T extends Draft>(draft:T):T {
  })};
 }
 export function editInvoiceDate(invoices:Invoice[],id:string,date:string):Invoice[]{
- return invoices.map(invoice=>date||invoice.id===id?{...invoice,date,manualDate:!!date}:invoice);
+ return invoices.map(invoice=>invoice.id===id?{...invoice,date,manualDate:!!date}:invoice);
 }
 export function addTransferToDraft<T extends Draft>(draft: T, transfer: Transfer, branch: string, replaceId?: string): T {
  const originalDates = outgoingTransferDates(draft.transfers.filter(row => row.id !== replaceId));
@@ -226,7 +246,8 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
 
  const saved=new Map<string,{group:any;date:string|null;complete:boolean}>();
  for(const group of groups){
-  const draft=typeof group.payload==='string'?JSON.parse(group.payload):group.payload;
+  const draft=readReconciliationRecord(group.payload);
+  if(!draft){result.problems.push('تعذّر قراءة السجل '+group.id+'؛ لم يُحذف أو يُعدّل.');continue;}
   const complete=Boolean(draft.invoices?.length)&&draft.invoices.every((invoice:Invoice)=>invoiceDocumentNo(invoice.number)&&invoice.complete);
   for(const transfer of draft.transfers||[]){
    for(const number of transferNumbers(transfer.number||'')){

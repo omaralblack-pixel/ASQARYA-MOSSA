@@ -2,7 +2,7 @@
 
 import {useEffect, useMemo, useState} from 'react';
 import {Download, RefreshCw, Search} from 'lucide-react';
-import {dateValue, digits, fils, invoiceDocumentNo, money, transferNumbers, type Draft} from '../lib/reconcile';
+import {dateValue, digits, fils, invoiceDocumentNo, money, readReconciliationRecord, transferNumbers, type Draft} from '../lib/reconcile';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {sapInvoicesFromSavedFile,compareSapWithSavedInvoices,type SapRegisterSource} from '../lib/sap-invoice-register';
 
@@ -12,7 +12,8 @@ const headers = ['رقم الفاتورة', 'رقم الصفحة', 'أرقام �
 
 function registerRows(records: RecordSummary[], status: 'received' | 'pending' = 'received') {
   return records.flatMap(record => {
-    const group: Pick<Draft, 'transfers' | 'invoices'> & {summary?: {status?: string; acceptedDifference?: boolean}} = JSON.parse(record.payload);
+    const group=readReconciliationRecord(record.payload);
+    if(!group)return [];
     
     const transfers = new Map(group.transfers.flatMap(transfer => transferNumbers(transfer.number || '').map(number => [number, dateValue(transfer.date || '') || ''] as const)));
     return group.invoices.flatMap((invoice, index) => {

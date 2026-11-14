@@ -1,5 +1,5 @@
 import type {LieutenantTransfer} from './lieutenant';
-import type {Item} from './reconcile';
+import {digits,signedNumeric,type Item} from './reconcile';
 
 export type LieutenantFileKind='transfers'|'opening'|'balance'|'other';
 export type StockItem={code:string;name:string;warehouse:string;unit:string;quantity:number};
@@ -49,12 +49,57 @@ const normalizeUnit=(raw:string)=>{
   if(['bag','bags','كيس'].includes(value))return 'Bag';
   return raw.trim();
 };
-const normalizeWarehouse=(raw:string)=>/^\d+$/.test(raw.trim())?raw.trim().padStart(3,'0'):raw.trim();
-const number=(raw:string)=>{
-  const value=raw.trim().replace(/,/g,'');
-  return /^[+-]?\d+(?:\.\d+)?$/.test(value)?Number(value):NaN;
-};
+const normalizeWarehouse=(raw:string)=>/^\d+$/.test(digits(raw).trim())?digits(raw).trim().padStart(3,'0'):raw.trim();
+const number=(raw:string)=>signedNumeric(raw)??NaN;
 const round=(value:number)=>Number(value.toFixed(6));
+
+/** Preserve the dated physical movements of a proven cancellation pair.
+ * Dropping Y/C together erases a cancellation in a later accounting period.
+ * Without its exact counterpart, a current canceled flag cannot prove the
+ * historical balance and must leave the comparison incomplete.
+ */
+export function stockMovementSources(transfers:LieutenantTransfer[]):LieutenantTransfer[]{
+  const byNumber=new Map(transfers.map(source=>[source.transfer.number,source]));
+  const signatures=new Map<string,Map<string,number>|null>();
+  const amounts=(source:LieutenantTransfer)=>{
+    if(signatures.has(source.transfer.number))return signatures.get(source.transfer.number)!;
+    const totals=new Map<string,number>();
+    if(source.issues.length)return null;
+    for(const text of source.transfer.paste.replace(/\r/g,'').split('\n').slice(1)){
+      if(!text.trim())continue;
+      const [code,,rawQty,rawUnit,rawFrom,rawTo]=text.split('\t');
+      const quantity=signedNumeric(rawQty),from=normalizeWarehouse(rawFrom||''),to=normalizeWarehouse(rawTo||'');
+      if(!code||!rawUnit||quantity===null||from===to||(from!=='011'&&to!=='011'))return null;
+      const warehouses=[from,to].sort();
+      const key=[code.toUpperCase(),normalizeUnit(rawUnit),...warehouses].join('|');
+      totals.set(key,(totals.get(key)||0)+quantity*(from===warehouses[0]?1:-1));
+    }
+    const result=totals.size?totals:null;
+    signatures.set(source.transfer.number,result);return result;
+  };
+  const pairs=new Map<string,string[]>();
+  for(const source of transfers){
+    const reference=source.remarks.match(/inventory\s+transfer\s+no\.?\s*(\d{4,20})\s+has\s+been\s+cancel(?:ed|led)/i)?.[1];
+    const original=reference?byNumber.get(reference):undefined;
+    if(!original||source.transfer.number===reference||
+       (source.cancellationState!=='cancellation'&&original.cancellationState!=='canceled')||
+       !original.transfer.date||!source.transfer.date||source.transfer.date<original.transfer.date||
+       (original.branch&&source.branch&&original.branch!==source.branch))continue;
+    const before=amounts(original),after=amounts(source);
+    if(!before||!after||before.size!==after.size||
+       ![...before].every(([key,qty])=>after.has(key)&&Math.abs(qty+after.get(key)!)<0.000001))continue;
+    pairs.set(reference!,[...(pairs.get(reference!)||[]),source.transfer.number]);
+  }
+  const verified=new Set<string>();
+  for(const [original,cancellations] of pairs)if(cancellations.length===1){
+    verified.add(original);verified.add(cancellations[0]);
+  }
+  return transfers.map(source=>{
+    if(!['canceled','cancellation'].includes(source.cancellationState)||verified.has(source.transfer.number))return source;
+    return {...source,issues:[...source.issues,
+      'الترحيل '+source.transfer.number+' يحمل حالة إلغاء، لكن مستند المقابلة الكامل وتاريخه غير مثبتين؛ لا يمكن إثبات رصيد الفترة.']};
+  });
+}
 
 export function parseLieutenantStock(source:string,kind:'opening'|'balance'):StockRead{
   const lines=source.replace(/^\uFEFF/,'').replace(/\r/g,'').split('\n');
@@ -104,6 +149,7 @@ export function auditLieutenantStock(
   reference:Item[]=[],invoiceRequiredNumbers?:ReadonlySet<string>,
   openingConfirmed=false,
 ):StockAuditItem[]{
+  const sources=stockMovementSources(transfers);
   const definitions=reference.filter(row=>row.active).flatMap(row=>[row,...(row.sapAliases||[])]);
   const convert=(qty:number,code:string,sourceUnit:string,targetUnit:string):number|null=>{
     if(sourceUnit===targetUnit)return qty;
@@ -126,7 +172,7 @@ export function auditLieutenantStock(
       items.set(code+'|'+unit,{code,name,warehouse:'011',unit,quantity:0});
   };
   for(const row of opening.filter(row=>row.warehouse==='011'))addMissing(row.code,row.name,normalizeUnit(row.unit));
-  for(const source of transfers){
+  for(const source of sources){
     if(source.transfer.date&&(source.transfer.date<from||source.transfer.date>to))continue;
     for(const line of source.transfer.paste.split('\n').slice(1)){
       const [code,name,,unit]=line.split('\t');
@@ -134,9 +180,8 @@ export function auditLieutenantStock(
     }
   }
   const movement=new Map<string,{incoming:number;outgoing:number;adjustment:number;approvedIncoming:number;requiredIncoming:number;converted:boolean;issues:Set<string>}>();
-  for(const source of transfers){
-    if(source.transfer.date&&(source.transfer.date<from||source.transfer.date>to)||
-      source.cancellationState==='canceled'||source.cancellationState==='cancellation')continue;
+  for(const source of sources){
+    if(source.transfer.date&&(source.transfer.date<from||source.transfer.date>to))continue;
     for(const line of source.transfer.paste.split('\n').slice(1)){
       const [code,,rawQty,rawUnit,rawFrom,rawTo]=line.split('\t');
       const qty=number(rawQty||'');

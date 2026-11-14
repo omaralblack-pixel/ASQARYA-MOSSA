@@ -91,7 +91,10 @@ export function previewReplacements(inputs:ReplacementInput[],reference:Item[]):
   const bySap=new Map(sapReferences(reference).map(item=>[item.sapCode.toUpperCase(),item]));
   const proposed=inputs.map(input=>{
     const errors=[...input.errors];
-    const owner=input.institutionCode?byCode.get(input.institutionCode):bySap.get(input.sapCode);
+    const matched=input.institutionCode?byCode.get(input.institutionCode):bySap.get(input.sapCode);
+    // sapReferences projects aliases as primary-looking items. Always update
+    // the original institution item so its real primary SAP code is retained.
+    const owner=matched?byCode.get(matched.code):undefined;
     if(!owner)errors.push(input.institutionCode?'رقم المادة بالمؤسسة غير موجود في المرجع؛ عرّفه أولًا.':'كود SAP غير مربوط برقم مادة بالمؤسسة. لا يتم الربط بالاسم.');
     if(owner && !owner.active)errors.push('الصنف غير مفعّل في مرجع المؤسسة.');
     if(owner && input.institutionCode && input.sapCode!==owner.sapCode &&
@@ -117,8 +120,9 @@ export function previewReplacements(inputs:ReplacementInput[],reference:Item[]):
       cartonPieces:input.cartonPieces??owner.cartonPieces,
       kgPerPiece:input.kgPerPiece??owner.kgPerPiece,
     }:null;
-    if(next && next.sapUnit==='Carton' && (!next.cartonPieces || next.cartonPieces<=0))errors.push('يجب إدخال عدد حبات الكرتونة قبل تحويل كرتون إلى حبات.');
-    if(next && next.sapUnit==='KG' && (!next.kgPerPiece || next.kgPerPiece<=0))errors.push('يجب إدخال وزن الحبة قبل تحويل KG.');
+    const definition=changeAlias?next?.sapAliases?.find(alias=>alias.sapCode===input.sapCode):next;
+    if(definition?.sapUnit==='Carton' && (!definition.cartonPieces || definition.cartonPieces<=0))errors.push('يجب إدخال عدد حبات الكرتونة قبل تحويل كرتون إلى حبات.');
+    if(definition?.sapUnit==='KG' && (!definition.kgPerPiece || definition.kgPerPiece<=0))errors.push('يجب إدخال وزن الحبة قبل تحويل KG.');
     const change=!!(next&&owner&&JSON.stringify(owner)!==JSON.stringify(next));
     return {...input,targetCode:owner?.code||'',current:owner||null,proposed:next,change,
       status:errors.length?'error':change?'ready':'unchanged',

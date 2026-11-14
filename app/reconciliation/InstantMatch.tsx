@@ -5,7 +5,7 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {prepareReconciliation, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
 type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:string; version:number; branch:string};
@@ -40,7 +40,7 @@ async function saveJson(draft:Draft, sources:TransferSource[], overrideSoldier=f
   return data as {id:string;version:number;referenceSnapshot:Item[];summary:{status:string}};
 }
 function recordDraft(row:Summary):Partial<Draft> {
-  try { return JSON.parse(row.payload) as Draft; } catch { return {}; }
+  return readReconciliationRecord(row.payload)||{};
 }
 function matchesRecord(row:Summary, number:string, kind:SearchKind) {
   const saved = recordDraft(row);
@@ -163,7 +163,8 @@ export default function InstantMatch({
 
   async function loadRecord(record:Summary, target = '', searchKind:SearchKind = 'transfer') {
     const data = await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(record.id));
-    const saved = JSON.parse(data.record.payload) as Draft;
+    const saved = readReconciliationRecord(data.record.payload);
+    if(!saved)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
     setDraft(withInvoiceDates(fillSearchedAmount({...saved,mode:'manual',id:data.record.id,version:data.record.version,checks:saved.checks||{}},target,searchKind)));
     setSources({});
     setNotice('تم استرجاع الكشف المحفوظ. تقدر تعدّل الأسعار أو تضيف ترحيل بدون إنشاء سجل مكرر.');
@@ -219,7 +220,8 @@ export default function InstantMatch({
         if (first) {
           // Keep a previously saved, invoice-free transfer as the owner of the new invoice.
           const original = await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(first.row.id));
-          const base = JSON.parse(original.record.payload) as Draft;
+          const base = readReconciliationRecord(original.record.payload);
+          if(!base)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
           const other = proposed.transfers.filter(row=>row.number!==first.number);
           const baseTransfer = base.transfers.find(row=>transferNumbers(row.number).includes(first.number));
           if (!baseTransfer || transferNumbers(baseTransfer.number).length!==1)
@@ -299,7 +301,8 @@ export default function InstantMatch({
       }
       if (stored && !draft.id && draft.transfers.length===0) {
         const data=await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(stored.recordId));
-        const base=JSON.parse(data.record.payload) as Draft;
+        const base=readReconciliationRecord(data.record.payload);
+        if(!base)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
         setDraft(withInvoiceDates({...base,id:stored.recordId,version:stored.version,
           invoices:draft.invoices,branch:draft.branch||stored.branch,mode:'manual',checks:{}}));
         setSources({});
