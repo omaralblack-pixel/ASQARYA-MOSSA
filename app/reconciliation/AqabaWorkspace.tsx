@@ -27,7 +27,7 @@ export default function AqabaWorkspace(){
  const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[],journal:[]});
  const [packs,PACK]=useState<Record<string,number>>({});
  const [working,W]=useState(false),[error,E]=useState(''),[message,M]=useState(''),[partial,PART]=useState(false);
- const [search,Q]=useState('');
+ const [search,Q]=useState(''),[priceSearch,PRICESEARCH]=useState('');
  const official=useMemo(()=>officialPaste.trim()?readAqabaOfficial(officialPaste):null,[officialPaste]);
  const blue=useMemo(()=>bluePaste.trim()?readAqabaBlue(bluePaste):null,[bluePaste]);
  const transfers=useMemo(()=>transferPaste.trim()?readAqabaTransfers(transferPaste):null,[transferPaste]);
@@ -67,6 +67,15 @@ export default function AqabaWorkspace(){
   }
   return [...byItem.values()].sort((a,b)=>a.item.localeCompare(b.item));
  },[journalAudit.rows]);
+ const priceReference=useMemo(()=>{
+  const latest=new Map<string,BlueLine>();
+  for(const row of mergedBlue){
+    const previous=latest.get(row.item);
+    if(!previous||row.date>previous.date||(row.date===previous.date&&row.invoice>previous.invoice))latest.set(row.item,row);
+  }
+  return [...latest.values()].sort((a,b)=>a.item.localeCompare(b.item,'en',{numeric:true}))
+    .filter(row=>(row.item+' '+row.description+' '+row.invoice).toLowerCase().includes(priceSearch.toLowerCase().trim()));
+ },[mergedBlue,priceSearch]);
  const results=useMemo(()=>compareAqaba(mergedBlue,mergedOfficial),[mergedBlue,mergedOfficial]);
  const triplets=useMemo(()=>reviewAqabaTransfers(mergedBlue,mergedTransfers,packs),[mergedBlue,mergedTransfers,packs]);
  const invoices=useMemo(()=>{
@@ -123,7 +132,7 @@ export default function AqabaWorkspace(){
   }catch(e){E((e instanceof Error?e.message:String(e))+' — قد تكون دفعات سابقة حُفظت؛ حدّث السجل قبل إعادة اللصق.')}
   finally{W(false)}
  };
- const matched=results.filter(x=>!x.differences.length&&!x.issues.some(y=>y.includes('الفاتورة الرسمية'))).length;
+ const matched=results.filter(x=>!x.differences.length&&!x.issues.length).length;
  return <div dir="rtl" className="aqaba-workspace">
   <div className="page-title"><div><p className="eyebrow">الزبون {AQABA_CUSTOMER} · المستودع 011</p>
    <h1>مؤسسة العقبة — الفواتير والمطابقة</h1><p>من 01/11/2026؛ فصل كامل عن بيانات مؤسسة عمّان. لا يُعتبر أي مستند سببًا لخصم المخزون ما لم تثبته حركات SAP.</p></div>
@@ -170,6 +179,25 @@ export default function AqabaWorkspace(){
    <div className="row-actions"><span>{blue?.items.length||0} بند صالح · {blue?.issues.length||0} ملاحظات</span>
     <button type="button" className="button primary" disabled={working||!blue?.items.length} onClick={()=>save('blue')}><Save size={16}/>حفظ الزرقاء وأسعارها</button></div>
    {!!blue?.issues.length&&<details><summary>ملاحظات قراءة الزرقاء</summary>{blue.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
+  </section>
+  <section className="panel" aria-label="مرجع أسعار العقبة">
+   <div className="section-title"><FileText size={20}/><div>
+     <h2>مرجع أسعار العقبة — الفواتير الزرقاء</h2>
+     <p>يعرض آخر سعر لكل كود SAP من الفواتير الزرقاء، ويحفظ تاريخ كل سعر وفاتورته. أسعار Excel بتاريخ 03/11/2026 مستقلة تمامًا عن عمّان وعن فواتير AR الرسمية.</p>
+   </div></div>
+   <div className="form-grid"><label>البحث عن صنف أو فاتورة
+     <input type="search" value={priceSearch} onChange={e=>PRICESEARCH(e.target.value)} placeholder="كود SAP أو رقم الفاتورة"/>
+   </label></div>
+   <p className="hint">الأسعار بالدينار لكل حبة كما هي في الزرقاء. الشدّات المستنتجة من Excel تُحفظ للمرجعية فقط ولا تُعتمد كوحدات SAP قبل التأكد منها.</p>
+   {!priceReference.length?<p className="hint">لا توجد أسعار زرقاء محفوظة في هذه الفترة.</p>:
+   <div style={{overflowX:'auto',maxHeight:420,overflowY:'auto'}}><table>
+     <thead><tr><th>كود SAP</th><th>الصنف</th><th>السعر بالدينار</th><th>الوحدة</th><th>الفاتورة الزرقاء</th><th>تاريخ السعر</th><th>المصدر</th></tr></thead>
+     <tbody>{priceReference.map(row=><tr key={row.item}><td dir="ltr">{row.item}</td>
+       <td>{row.description}</td><td>{row.price.toFixed(3)}</td><td>{row.unit}</td>
+       <td>{row.invoice}</td><td>{row.date}</td>
+       <td>{row.sourceFile?'Excel — 03/11/2026':'فاتورة مدخلة'}</td>
+     </tr>)}</tbody>
+   </table></div>}
   </section>
   <section className="panel">
    <div className="section-title"><CheckCircle2 size={20}/><div><h2>مراجعة الربط والمطابقة الجزئية</h2>
