@@ -107,7 +107,7 @@ export function readAqabaBlue(source:string):ReadResult<BlueLine>{
  official:field(header,['أرقام الفواتير الرسمية','الفاتورة الرسمية','official invoices']),
  transfers:field(header,['أرقام الترحيلات','الترحيلات','transfers']),
  };
- if(['invoice','date','item','qty','unit','price'].some(k=>ix[k]<0))
+ if(['invoice','date','item','qty','unit','price'].some(k=>(ix as Record<string,number>)[k]<0))
   return {items,issues:['الأعمدة المطلوبة: رقم الفاتورة الزرقاء، التاريخ، كود SAP، الكمية، الوحدة، السعر.']};
  const seen=new Set<string>();
  for(let n=1;n<rows.length;n++){
