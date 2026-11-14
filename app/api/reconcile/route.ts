@@ -229,14 +229,19 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
 
   const sourceByNumber = new Map<string, string>();
   for (const source of sources) {
-    const invoice = source.draft.invoices.map(row => invoiceDocumentNo(row.number)).find(Boolean);
-    if (invoice) return json({error: 'الترحيل ' + source.numbers[0] + ' مرتبط بالفاتورة الزرقاء ' + invoice + '.'}, 409);
+    const sourceInvoices = source.draft.invoices.map(row => invoiceDocumentNo(row.number)).filter(Boolean).sort();
+    const correcting = claims.filter(claim => claim.recordId === source.record.id).every(claim =>
+      claim.correctInvoice === true && Array.isArray(claim.expectedInvoices) &&
+      JSON.stringify([...claim.expectedInvoices].sort()) === JSON.stringify(sourceInvoices));
+    if (sourceInvoices.length && !correcting)
+      return json({error: 'الترحيل ' + source.numbers[0] + ' مرتبط بالفاتورة الزرقاء ' + sourceInvoices[0] + '. استخدم خيار تصحيح الربط الخاطئ.'}, 409);
     for (const number of source.numbers) {
       const saved = source.draft.transfers.find(row => transferNumbers(row.number).includes(number));
       const index = ts.findIndex(value => transferNumbers(value).includes(number));
       if (!saved || transferNumbers(saved.number).length !== 1 || transferNumbers(ts[index]).length !== 1) {
         return json({error: 'بنود الترحيل ' + number + ' محفوظة مع أرقام أخرى في جدول واحد. يلزم فصل الجدول أولًا.'}, 409);
       }
+      if (claims.find(claim=>claim.number===number)?.correctInvoice && (d.transfers[index].paste!==saved.paste || d.transfers[index].date!==saved.date || source.draft.branch!==d.branch)) return json({error:'تصحيح الربط ينقل بنود وتاريخ الترحيل الأصلي إلى فاتورة من الفرع نفسه فقط.'},409);
       if (!parseTransfer(d.transfers[index].paste, {allowReverse: true}).lines.length) {
         return json({error: 'أدخل بنود SAP للترحيل ' + number + ' قبل الحفظ.'}, 400);
       }

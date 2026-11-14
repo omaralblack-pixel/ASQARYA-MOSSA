@@ -292,3 +292,22 @@ assert.ok(stockUI.includes('document.body.appendChild(link)'),
   'Temporary Excel download link must be attached for reliable browser behavior');
 
 console.log('PASS: direct transfer addition, SAP branch recovery, date-filtered stock, cancellation, duplicate guards and atomic rollback');
+
+// A data-entry mistake may be corrected explicitly, without weakening ordinary merge guards.
+const wrong = await saved(draft(transfer('2616391', 2), '2632305247'));
+const right = await saved(draft(transfer('2616390', 3), '2630806229'));
+const moving = await claim('2616391');
+const corrected = addTransferToDraft(right, moving.transfer, branch);
+assert.equal((await save(corrected, [moving.source])).status, 409);
+const correction = {...moving.source, correctInvoice: true, expectedInvoices: ['2632305247']};
+assert.equal((await save(corrected, [{...correction, expectedInvoices: ['2632305248']}])).status, 409);
+const tampered = {...corrected, transfers: corrected.transfers.map(t=>t.number==='2616391'?{...t,paste:t.paste+'\nFVL00302\tpeas\t1\tCarton\t001\t011'}:t)};
+assert.equal((await save(tampered, [correction])).status, 409);
+const movedResponse = await save(corrected, [correction]);
+assert.equal(movedResponse.status, 200, JSON.stringify(await movedResponse.json()));
+assert.equal(read(wrong.id), undefined);
+assert.deepEqual(JSON.parse(read(right.id).payload).transfers.map(t=>t.number), ['2616390','2616391']);
+assert.equal((await claim('2616391')).source.recordId, right.id);
+assert.ok(archives().some(row=>JSON.parse(row.source_record).id===wrong.id));
+assert.equal((await save(corrected, [correction])).status, 409, 'stale correction cannot run twice');
+console.log('PASS: explicit invoice correction, original transfer integrity, archive and stale-save protection');
