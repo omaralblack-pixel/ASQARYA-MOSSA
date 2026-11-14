@@ -32,4 +32,26 @@ const matched=p.compareAqaba(blue.items,correct.items);
 assert.equal(matched[0].differences.length,0);
 assert.equal(matched[0].officialNumbers[0],'260063818');
 assert.equal(matched[0].transferNumbers[0],'2615754');
+
+const transferHeader=['رقم الترحيل','DocEntry','التاريخ','Remarks','حالة الإلغاء','رقم السطر','كود الصنف','اسم الصنف','الوحدة','الكمية','من المستودع','إلى المستودع'].join('\t');
+const tranRow=(i,item,qty)=>['2615754','89101','2026-11-03','مؤسسة العقبة','N',i,item,'بنود','Piece',qty,'001','011'].join('\t');
+const transfer=p.readAqabaTransfers([transferHeader,tranRow(1,'CHS00561',600)].join('\n'));
+assert.equal(transfer.items.length,1);
+assert.equal(transfer.items[0].classified,'aqaba-remark');
+const secondBlue=p.readAqabaBlue([blueHeading,
+ ['2650710368','2026-11-03','CHS00561','صنف','0','Piece','0.313','260063818','2615754'].join('\t')].join('\n'));
+const group=p.reviewAqabaTransfers([...blue.items,...secondBlue.items],transfer.items);
+assert.equal(group.length,1);
+assert.equal(group[0].blueInvoices.length,2);
+assert.equal(group[0].differences.length,0);
+const oinmHeader=['معرف حركة المخزون','التاريخ','نوع حركة SAP','DocEntry','رقم المستند','رقم السطر','كود الصنف','اسم الصنف','المستودع','الوارد','الصادر','رقم الزبون'].join('\t');
+const incoming=['12345','2026-11-03','67','89101','2615754','0','CHS00561','جبنة','011','600','0',''].join('\t');
+const outgoing=['12346','2026-11-03','13','260063818','260063818','0','CHS00561','جبنة','011','0','600','C0006751'].join('\t');
+const journal=p.readAqabaJournal([oinmHeader,incoming,outgoing].join('\n'));
+assert.equal(journal.items.length,2);
+const stock=p.auditAqabaJournal(journal.items,correct.items,transfer.items);
+assert.equal(stock.physical.net,0);
+assert.equal(stock.aqabaEvidence.incoming,600);
+assert.equal(stock.aqabaEvidence.outgoing,600);
+
 console.log('Aqaba parser and cancellation handling passed');
