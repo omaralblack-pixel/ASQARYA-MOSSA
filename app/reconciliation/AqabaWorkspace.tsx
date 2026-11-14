@@ -55,6 +55,18 @@ export default function AqabaWorkspace(){
  const journalAudit=useMemo(()=>auditAqabaJournal(
    mergedJournal.filter(x=>x.date>=from&&x.date<=to),mergedOfficial,mergedTransfers),
    [mergedJournal,mergedOfficial,mergedTransfers,from,to]);
+ const stockRows=useMemo(()=>{
+  const byItem=new Map<string,{item:string;incoming:number;outgoing:number;aqabaIncoming:number;aqabaOutgoing:number}>();
+  for(const row of journalAudit.rows){
+    const current=byItem.get(row.item)||{item:row.item,incoming:0,outgoing:0,aqabaIncoming:0,aqabaOutgoing:0};
+    current.incoming+=row.incoming;current.outgoing+=row.outgoing;
+    if(row.assigned==='aqaba-evidence'){
+      current.aqabaIncoming+=row.incoming;current.aqabaOutgoing+=row.outgoing;
+    }
+    byItem.set(row.item,current);
+  }
+  return [...byItem.values()].sort((a,b)=>a.item.localeCompare(b.item));
+ },[journalAudit.rows]);
  const results=useMemo(()=>compareAqaba(mergedBlue,mergedOfficial),[mergedBlue,mergedOfficial]);
  const triplets=useMemo(()=>reviewAqabaTransfers(mergedBlue,mergedTransfers,packs),[mergedBlue,mergedTransfers,packs]);
  const invoices=useMemo(()=>{
@@ -188,11 +200,15 @@ export default function AqabaWorkspace(){
     <button className="button primary" disabled={working||!journal?.items.length} onClick={()=>save('inventory')}><Save size={16}/>حفظ حركة OINM</button></div>
    {!!journal?.issues.length&&<details><summary>ملاحظات قراءة حركة المستودع</summary>{journal.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
    <p className="hint">التقرير للفترة {from} إلى {to}، وهو صافي الحركة خلال الفترة وليس الرصيد النهائي دون افتتاحي SAP.</p>
-   <div className="stats"><div className="stat"><span>الوارد الفعلي لكل 011</span><strong>{journalAudit.physical.incoming.toFixed(3)}</strong></div>
-    <div className="stat"><span>الصادر الفعلي لكل 011</span><strong>{journalAudit.physical.outgoing.toFixed(3)}</strong></div>
-    <div className="stat"><span>صافي الحركة الفعلية لكامل 011</span><strong>{journalAudit.physical.net.toFixed(3)}</strong></div>
-    <div className="stat"><span>حركات غير منسوبة</span><strong>{journalAudit.unassigned.length}</strong></div></div>
-   <p className="hint">مجاميع OINM قد تجمع أصنافًا بوحدات مخزون مختلفة؛ لا تُستخدم كرصيد موحد قابل للمقارنة. يلزم التجميع لكل كود ووحدته. الحركات التي نُسبت للعقبة من المستندات المثبتة: وارد {journalAudit.aqabaEvidence.incoming.toFixed(3)} وصادر {journalAudit.aqabaEvidence.outgoing.toFixed(3)}.</p>
+   <p>عدد حركات OINM في الفترة: <b>{journalAudit.rows.length}</b> · حركات غير مصنفة: <b>{journalAudit.unassigned.length}</b></p>
+   <p className="hint">الأرصدة والكميات تُعرض حسب كود الصنف في وحدة المخزون الخاصة به، ولا نجمع الأصناف المختلفة في رصيد واحد.</p>
+   {stockRows.length>0&&<div style={{overflowX:'auto'}}><table>
+     <thead><tr><th>كود SAP</th><th>وارد 011</th><th>صادر 011</th><th>صافي 011</th><th>وارد منسوب للعقبة بدليل</th><th>صادر منسوب للعقبة بدليل</th></tr></thead>
+     <tbody>{stockRows.map(row=><tr key={row.item}><td>{row.item}</td>
+      <td>{row.incoming.toFixed(3)}</td><td>{row.outgoing.toFixed(3)}</td>
+      <td>{(row.incoming-row.outgoing).toFixed(3)}</td><td>{row.aqabaIncoming.toFixed(3)}</td><td>{row.aqabaOutgoing.toFixed(3)}</td>
+     </tr>)}</tbody>
+   </table></div>}
    {journalAudit.issues.map((issue,i)=><p className="amber" key={i}>{issue}</p>)}
   </section>
   <section className="panel">
