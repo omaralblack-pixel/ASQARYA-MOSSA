@@ -296,4 +296,17 @@ assert.ok(!screen.includes('معتمدة ماليًا فقط'));
 assert.ok(screen.includes('dailyCounts.match+dailyCounts.late'));
 assert.ok(screen.includes('رقم الترحيل العكسي:'));
 assert.ok(screen.includes('كاش فان مسوّى'));
+assert.ok(screen.includes("match:'مطابقة',late:'مطابقة'"),
+  'Financially approved invoices must display a clean match without a late label');
+assert.ok(screen.includes("'تفاصيل الفاتورة'"),
+  'An absent historical page allocation must not display zero invoice items');
+const reverseExtraCard=card('2617991','2026-11-07',line('CHS00033',1,'Piece','011','001'));
+const approvedWithReverse={...record([paper],[saved,reverseExtraCard]),status:'match'};
+const unrelatedReverse=live('2617991','2026-11-07',[line('CHS00033',1,'Piece','011','001')],{reverse:true});
+const approvedReverseResult=audit([approvedWithReverse],[src,unrelatedReverse,extendedSource],'2026-11-08')[0];
+assert.equal(approvedReverseResult.financiallyMatchedGroup,true);
+assert.equal(approvedReverseResult.sapStatus,'partial',
+  'A linked outgoing SAP document should be tracked as a reverse, not generic unreadable proof');
+assert.ok(approvedReverseResult.notes.some(note=>note.includes('2617991')&&note.includes('حركة عكسية')),
+  'Explain the direction of the linked reverse document');
 console.log('PASS: Saved operator approval, unapproved quantity checks, SAP cutoff, delay, cancellation, shared quantities and no-write safeguards.');
