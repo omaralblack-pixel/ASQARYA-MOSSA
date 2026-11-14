@@ -66,8 +66,8 @@ assert.ok(validateCancellationDecision(input('linked','transfer','2619101')).err
 assert.ok(validateCancellationDecision(input('linked','invoice','abc')).error);
 assert.ok(validateCancellationDecision(input('ignore','invoice','2630806229')).error);
 assert.ok(validateCancellationDecision(input('ignore','','','x'.repeat(601))).error);
-assert.equal(validateCancellationDecision(input('keep','invoice','2630806229','مغطاة\\nفاتورة مثبتة')).value?.note,
-  'مغطاة\\nفاتورة مثبتة','Multiline explanations must be saved and printed');
+assert.equal(validateCancellationDecision(input('keep','invoice','2630806229','مغطاة\nفاتورة مثبتة')).value?.note,
+  'مغطاة\nفاتورة مثبتة','Multiline explanations must be saved and printed');
 assert.ok(validateCancellationDecision({...input('ignore'),transferNo:'x'}).error);
 const route=fs.readFileSync('app/api/reconcile/route.ts','utf8');
 assert.ok(route.includes("u.searchParams.has('lieutenantCancellationDecisions')"));
