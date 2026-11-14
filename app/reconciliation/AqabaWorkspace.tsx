@@ -1,12 +1,12 @@
 'use client';
 import {useEffect,useMemo,useState} from 'react';
-import {readAqabaOfficial,readAqabaBlue,compareAqaba,AQABA_CUSTOMER,
- type AqabaLine,type BlueLine} from '../lib/aqaba';
+import {readAqabaOfficial,readAqabaBlue,readAqabaTransfers,compareAqaba,reviewAqabaTransfers,AQABA_CUSTOMER,
+ type AqabaLine,type BlueLine,type AqabaTransfer} from '../lib/aqaba';
 import {defaultAqabaDates,officialAqabaQuery,transferAqabaQuery} from '../lib/aqaba-query';
 import {CheckCircle2,AlertTriangle,Copy,FileText,RefreshCw,Save} from 'lucide-react';
 
 const initial=defaultAqabaDates();
-type ResponseData={official:AqabaLine[];blue:BlueLine[]};
+type ResponseData={official:AqabaLine[];blue:BlueLine[];transfers:AqabaTransfer[]};
 const template=[
  'رقم الفاتورة الزرقاء\tالتاريخ\tكود SAP\tاسم الصنف\tالكمية\tالوحدة\tالسعر\tأرقام الفواتير الرسمية\tأرقام الترحيلات',
  '2650710367\t2026-11-03\tCHS00561\tجبنة فيتا جولد\t600\tPiece\t0.313\t260063818\t2615754',
@@ -23,12 +23,14 @@ async function request(body?:unknown):Promise<any>{
 }
 export default function AqabaWorkspace(){
  const [from,F]=useState(initial.from),[to,T]=useState(initial.to);
- const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState('');
- const [saved,S]=useState<ResponseData>({official:[],blue:[]});
+ const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState('');
+ const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[]});
+ const [packs,PACK]=useState<Record<string,number>>({});
  const [working,W]=useState(false),[error,E]=useState(''),[message,M]=useState('');
  const [search,Q]=useState('');
  const official=useMemo(()=>officialPaste.trim()?readAqabaOfficial(officialPaste):null,[officialPaste]);
  const blue=useMemo(()=>bluePaste.trim()?readAqabaBlue(bluePaste):null,[bluePaste]);
+ const transfers=useMemo(()=>transferPaste.trim()?readAqabaTransfers(transferPaste):null,[transferPaste]);
  const mergedOfficial=useMemo(()=>{
   const byKey=new Map(saved.official.map(x=>[x.key,x] as const));
   for(const row of official?.items||[])byKey.set(row.key,row);
@@ -39,7 +41,13 @@ export default function AqabaWorkspace(){
   for(const row of blue?.items||[])byKey.set(row.key,row);
   return [...byKey.values()];
  },[saved.blue,blue]);
+ const mergedTransfers=useMemo(()=>{
+  const byKey=new Map(saved.transfers.map(x=>[x.key,x] as const));
+  for(const row of transfers?.items||[])byKey.set(row.key,row);
+  return [...byKey.values()];
+ },[saved.transfers,transfers]);
  const results=useMemo(()=>compareAqaba(mergedBlue,mergedOfficial),[mergedBlue,mergedOfficial]);
+ const triplets=useMemo(()=>reviewAqabaTransfers(mergedBlue,mergedTransfers,packs),[mergedBlue,mergedTransfers,packs]);
  const invoices=useMemo(()=>{
   const by=new Map<string,AqabaLine[]>();
   for(const line of mergedOfficial){
@@ -53,22 +61,40 @@ export default function AqabaWorkspace(){
  },[mergedOfficial,search]);
  const [expanded,EXP]=useState('');
  const load=async()=>{const data=await request() as ResponseData;S(data)};
- useEffect(()=>{load().catch(e=>E(e.message))},[]);
+ useEffect(()=>{
+  load().catch(e=>E(e.message));
+  fetch('/api/reconcile',{cache:'no-store'}).then(async res=>{
+   if(!res.ok)throw Error('المرجع غير متاح');
+   return res.json();
+  }).then(data=>{
+   const seen:Record<string,number>={};
+   for(const item of data.reference||[]){
+    for(const def of [item,...(item.sapAliases||[])]){
+     const pack=Number(def.cartonPieces);
+     if(/^[A-Z]{2,6}\d{3,10}$/.test(def.sapCode)&&Number.isInteger(pack)&&pack>0){
+       if(seen[def.sapCode]!==undefined&&seen[def.sapCode]!==pack)delete seen[def.sapCode];
+       else seen[def.sapCode]=pack;
+     }
+    }
+   }
+   PACK(seen);
+  }).catch(()=>{});
+ },[]);
  const copy=async(type:'official'|'transfer')=>{
   try{
    const query=type==='official'?officialAqabaQuery(from,to):transferAqabaQuery(from,to);
    await navigator.clipboard.writeText(query);M('تم نسخ كويري SAP.');
   }catch(e){E('تعذّر نسخ الكويري تلقائيًا. '+(e instanceof Error?e.message:''))}
  };
- const save=async(type:'official'|'blue')=>{
-  const read=type==='official'?official:blue;
+ const save=async(type:'official'|'blue'|'transfer')=>{
+  const read=type==='official'?official:type==='blue'?blue:transfers;
   if(!read?.items.length){E('لا توجد سطور صالحة للحفظ.');return}
   if(read.issues.length&&!window.confirm('هناك '+read.issues.length+' ملاحظة قراءة. هل تريد حفظ البنود الصالحة فقط مع مراجعة الملاحظات؟'))return;
   W(true);E('');M('');
   try{
    let added=0,updated=0,unchanged=0;
    for(let i=0;i<read.items.length;i+=50){
-    const out=await request({action:type==='official'?'aqabaOfficial':'aqabaBlue',
+    const out=await request({action:type==='official'?'aqabaOfficial':type==='blue'?'aqabaBlue':'aqabaTransfer',
       items:read.items.slice(i,i+50)});
     added+=out.added;updated+=out.updated;unchanged+=out.unchanged;
    }
@@ -104,6 +130,16 @@ export default function AqabaWorkspace(){
    {!!official?.issues.length&&<details><summary>ملاحظات قراءة الفواتير الرسمية</summary>{official.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
   </section>
   <section className="panel">
+   <div className="section-title"><FileText size={20}/><div><h2>لصق ترحيلات SAP — مؤسسة العقبة</h2>
+    <p>ألصق نتائج كويري الترحيلات بالأعمدة والعناوين. نقرأ Remarks لتحديد العقبة؛ البنود الغامضة تبقى بحاجة مراجعة ولا تُنسب لعمّان تلقائيًا.</p></div></div>
+   <textarea dir="ltr" style={{minHeight:155,width:'100%'}} aria-label="كشف ترحيلات SAP لمؤسسة العقبة"
+     placeholder="رقم الترحيل ثم DocEntry ثم التاريخ ثم Remarks وحالة الإلغاء وباقي الأعمدة..."
+     value={transferPaste} onChange={e=>TP(e.target.value)}/>
+   <div className="row-actions"><span>{transfers?.items.length||0} بند ترحيل صالح · {transfers?.issues.length||0} ملاحظات</span>
+    <button type="button" className="button primary" disabled={working||!transfers?.items.length} onClick={()=>save('transfer')}><Save size={16}/>حفظ ترحيلات العقبة</button></div>
+   {!!transfers?.issues.length&&<details><summary>ملاحظات قراءة الترحيلات</summary>{transfers.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
+  </section>
+  <section className="panel">
    <div className="section-title"><FileText size={20}/><div><h2>لصق الفواتير الزرقاء وأسعار العقبة</h2>
     <p>ألصق بنود الزرقاء بالأعمدة المطلوبة؛ سعر العقبة يُحفظ مع الفاتورة والتاريخ ولا يغير أسعار مؤسسة عمّان.</p></div></div>
    <details><summary>مثال تنسيق اللصق (بالعناوين)</summary><pre dir="ltr" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{template}</pre></details>
@@ -117,10 +153,20 @@ export default function AqabaWorkspace(){
     <p>نتيجة الزرقاء ↔ الفواتير الرسمية فقط؛ الترحيلات وOINM لا تزال تحتاج فحصًا مستقلًا. اختلاف الوحدة يظل فرقًا حتى تثبت الشدّة.</p></div></div>
    <div className="stats"><div className="stat"><span>فواتير رسمية</span><strong>{new Set(mergedOfficial.filter(x=>x.kind==='IN').map(x=>x.document)).size}</strong></div>
     <div className="stat"><span>فواتير زرقاء</span><strong>{new Set(mergedBlue.map(x=>x.invoice)).size}</strong></div>
-    <div className="stat"><span>زرقاء دون فروق رسمية مثبتة</span><strong>{matched}</strong></div></div>
+    <div className="stat"><span>زرقاء دون فروق رسمية مثبتة</span><strong>{matched}</strong></div>
+    <div className="stat"><span>مستندات الترحيل</span><strong>{new Set(mergedTransfers.map(x=>x.document)).size}</strong></div></div>
    {!results.length?<p className="hint">لا توجد فواتير زرقاء محفوظة بعد. الصق الفواتير أولًا ثم أربط أرقام الفواتير الرسمية.</p>:<div style={{overflowX:'auto'}}><table><thead><tr><th>الزرقاء</th><th>الفاتورة الرسمية</th><th>الترحيلات</th><th>حالة الفحص</th><th>تفاصيل</th></tr></thead>
     <tbody>{results.map(x=><tr key={x.invoice}><td>{x.invoice}</td><td>{x.officialNumbers.join('، ')||'غير مربوط'}</td><td>{x.transferNumbers.join('، ')||'غير مربوط'}</td><td>{x.status}</td><td>{x.issues.map((v,i)=><p key={i} className="red">{v}</p>)}{x.differences.map(d=><p key={d.key}>{d.key}: الزرقاء {d.blue} / الرسمية {d.official} / الفرق {d.difference}</p>)}</td></tr>)}</tbody>
    </table></div>}
+  </section>
+  <section className="panel">
+   <div className="section-title"><AlertTriangle size={20}/><div><h2>مطابقة مجموعات الترحيل والزرقاء</h2>
+    <p>إذا أكثر من فاتورة زرقاء مرتبطة بنفس الترحيل، تُجمع فواتير المجموعة قبل التدقيق. كل فرق بالوحدة يبقى ظاهرًا، ولا نعتمد حركة المخزون دون OINM.</p></div></div>
+   {!triplets.length?<p className="hint">لا توجد فواتير زرقاء مرتبطة لفحص الترحيلات.</p>:
+    <div style={{overflowX:'auto'}}><table><thead><tr><th>الفواتير الزرقاء</th><th>ترحيلات SAP</th><th>النتيجة</th><th>فروقات / ملاحظات</th></tr></thead>
+     <tbody>{triplets.map((t,i)=><tr key={i}><td>{t.blueInvoices.join('، ')}</td><td>{t.transferNumbers.join('، ')||'غير مربوط'}</td><td>{t.state==='quantity-aligned-not-stock-verified'?'الكميات متساوية مبدئيًا؛ بانتظار OINM':t.differences.length?'فرق كميات':'بحاجة مراجعة'}</td>
+      <td>{t.issues.map((issue,j)=><p key={j} className="red">{issue}</p>)}{t.differences.map(d=><p key={d.key}>{d.key}: الزرقاء {d.blue} / الترحيل {d.transferred} / الفرق {d.difference}</p>)}</td></tr>)}</tbody>
+    </table></div>}
   </section>
   <section className="panel">
    <div className="section-title"><AlertTriangle size={20}/><div><h2>سجل جميع المستندات الرسمية</h2>
