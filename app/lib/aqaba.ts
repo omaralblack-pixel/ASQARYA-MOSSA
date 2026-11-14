@@ -156,3 +156,114 @@ export function compareAqaba(blue:BlueLine[],official:AqabaLine[]){
     differences,issues};
  });
 }
+
+
+export type AqabaTransfer={
+ key:string;document:string;docEntry:string;date:string;row:number;remarks:string;
+ canceled:string;item:string;description:string;unit:string;quantity:number;
+ from:string;to:string;classified:'aqaba-remark'|'unclassified';
+};
+/** A transfer is an AQABA candidate when Remarks mention Aqaba. Customer ownership
+ * is never established just by the shared destination warehouse 011. */
+export function readAqabaTransfers(source:string):ReadResult<AqabaTransfer>{
+ const {rows,header}=table(source),issues:string[]=[],items:AqabaTransfer[]=[];
+ const fields={
+  doc:['رقم الترحيل','transfer number','docnum'],entry:['docentry'],
+  date:['التاريخ','posting date'],remark:['remarks','comments','الملاحظات'],
+  canceled:['حالة الإلغاء','canceled'],row:['رقم السطر','line number'],
+  item:['كود الصنف','item no.','itemcode'],description:['اسم الصنف','description'],
+  unit:['الوحدة','uom'],qty:['الكمية','quantity'],
+  from:['من المستودع','from warehouse'],to:['إلى المستودع','to warehouse'],
+ } as const;
+ const ix=Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,field(header,[...v])]));
+ if(['doc','date','row','item','qty','from','to','remark','canceled'].some(k=>ix[k]<0))
+  return {items,issues:['كشف الترحيلات ناقص: رقم الترحيل، التاريخ، السطر، الصنف، الكمية، من وإلى، Remarks، حالة الإلغاء.']};
+ const at=(r:string[],k:string)=>ix[k]<0?'':(r[ix[k]]||'').trim();
+ const seen=new Set<string>();
+ for(let i=1;i<rows.length;i++){
+  const r=rows[i],document=digits(at(r,'doc')),docEntry=digits(at(r,'entry')),
+  day=date(at(r,'date')),row=number(at(r,'row')),quantity=number(at(r,'qty')),
+  item=at(r,'item').toUpperCase(),from=digits(at(r,'from')).padStart(3,'0'),
+  to=digits(at(r,'to')).padStart(3,'0'),canceled=at(r,'canceled').toUpperCase();
+  if(!/^\d{4,20}$/.test(document)||!day||day<AQABA_START||
+    !Number.isInteger(row)||row!<1||quantity===null||quantity<0||
+    !/^[A-Z]{2,6}\d{3,10}$/.test(item)||!['001','002','009','011'].includes(from)||
+    !['001','002','009','011'].includes(to)||from===to||
+    (from!=='011'&&to!=='011')||!['N','Y','C'].includes(canceled)){
+   issues.push('السطر '+(i+1)+': ترحيل غير صالح أو خارج مسارات العقبة.');continue;
+  }
+  const key=[docEntry||document,day,row].join('|');
+  if(seen.has(key)){issues.push('سطر ترحيل مكرر: '+document+' / '+row);continue}
+  seen.add(key);
+  const remarks=at(r,'remark');
+  const classified=/(?:العقب[ةه]|عقب[ةه]|aqaba|akaba)/i.test(remarks)?'aqaba-remark':'unclassified';
+  if(classified==='unclassified')issues.push('الترحيل '+document+': لا يوجد دليل عقبة في Remarks؛ بحاجة تأكيد.');
+  items.push({key,document,docEntry,date:day,row:row!,remarks,canceled,item,
+    description:at(r,'description'),unit:normalizeAqabaUnit(at(r,'unit')),
+    quantity,from,to,classified});
+ }
+ if(!items.length)issues.push('لا توجد ترحيلات SAP صالحة.');
+ return {items,issues};
+}
+export type AqabaTripleReview={
+ blueInvoices:string[];transferNumbers:string[];officialNumbers:string[];
+ issues:string[];differences:{key:string;blue:number;transferred:number;difference:number}[];
+ state:'incomplete'|'quantity-difference'|'quantity-aligned-not-stock-verified';
+};
+/** Multiple blue pages often share one SAP transfer. Compare the combined
+ * connected group, never the entire transfer against each blue page individually.
+ * Even aligned quantities do not prove a stock movement without OINM.
+ */
+export function reviewAqabaTransfers(
+ blue:BlueLine[],transfers:AqabaTransfer[],cartonPieces:Record<string,number>={},
+):AqabaTripleReview[]{
+ const invoices=new Map<string,BlueLine[]>();
+ for(const row of blue)invoices.set(row.invoice,[...(invoices.get(row.invoice)||[]),row]);
+ const owners=[...invoices.keys()],parent=new Map(owners.map(n=>[n,n]));
+ const root=(x:string):string=>{const p=parent.get(x)!;return p===x?x:root(p)};
+ const byTransfer=new Map<string,string>();
+ for(const [invoice,rows] of invoices)for(const no of rows.flatMap(r=>r.transferNumbers)){
+  const prior=byTransfer.get(no);
+  if(prior)parent.set(root(invoice),root(prior));
+  else byTransfer.set(no,invoice);
+ }
+ const groups=new Map<string,BlueLine[]>();
+ for(const [invoice,rows] of invoices){const r=root(invoice);groups.set(r,[...(groups.get(r)||[]),...rows])}
+ const result:AqabaTripleReview[]=[];
+ const converted=(row:{item:string;quantity:number;unit:string},issues:string[])=>{
+  const pack=cartonPieces[row.item],unit=normalizeAqabaUnit(row.unit);
+  if(unit==='Piece')return {key:row.item+'|Piece',qty:row.quantity};
+  if(unit==='Carton'&&Number.isInteger(pack)&&pack>0)
+    return {key:row.item+'|Piece',qty:row.quantity*pack};
+  if(!unit)issues.push('الصنف '+row.item+': وحدة القياس مفقودة.');
+  return {key:row.item+'|'+(unit||'UNKNOWN'),qty:row.quantity};
+ };
+ for(const rows of groups.values()){
+  const blueInvoices=[...new Set(rows.map(r=>r.invoice))].sort(),
+    transferNumbers=[...new Set(rows.flatMap(r=>r.transferNumbers))],
+    officialNumbers=[...new Set(rows.flatMap(r=>r.officialNumbers))],
+    matching=transfers.filter(r=>transferNumbers.includes(r.document)),
+    issues:string[]=[];
+  if(!transferNumbers.length)issues.push('لا يوجد رقم ترحيل مرتبط بالفواتير الزرقاء.');
+  for(const no of transferNumbers)if(!matching.some(r=>r.document===no))issues.push('الترحيل '+no+' غير موجود بالكشف.');
+  if(matching.some(r=>r.classified!=='aqaba-remark'))issues.push('يوجد ترحيل لم تثبت نسبته للعقبة من Remarks.');
+  if(matching.some(r=>r.canceled!=='N'))issues.push('ترحيل ملغي أو مستند إلغاء: راجع الأصل والمقابل وحركة OINM.');
+  if(matching.some(r=>r.from==='011'))issues.push('ترحيل عكسي من 011: يحتاج تدقيق أثر الحركة الأصلي.');
+  const left=new Map<string,number>(),right=new Map<string,number>();
+  for(const row of rows){
+   const q=converted(row,issues);left.set(q.key,(left.get(q.key)||0)+q.qty);
+  }
+  for(const row of matching.filter(r=>r.canceled==='N')){
+   const q=converted(row,issues);right.set(q.key,(right.get(q.key)||0)+(row.to==='011'?q.qty:-q.qty));
+  }
+  const all=[...new Set([...left.keys(),...right.keys()])];
+  const differences=matching.length&&transferNumbers.every(n=>matching.some(r=>r.document===n))?
+    all.map(key=>({key,blue:left.get(key)||0,transferred:right.get(key)||0,
+      difference:Number(((left.get(key)||0)-(right.get(key)||0)).toFixed(6))}))
+      .filter(x=>Math.abs(x.difference)>0.000001):[];
+  if(differences.length)issues.push('فرق بين كميات الزرقاء وصافي ترحيلات SAP.');
+  result.push({blueInvoices,transferNumbers,officialNumbers,issues,differences,
+   state:issues.length?'incomplete':differences.length?'quantity-difference':'quantity-aligned-not-stock-verified'});
+ }
+ return result;
+}
