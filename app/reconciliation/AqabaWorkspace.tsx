@@ -1,12 +1,12 @@
 'use client';
 import {useEffect,useMemo,useState} from 'react';
-import {readAqabaOfficial,readAqabaBlue,readAqabaTransfers,compareAqaba,reviewAqabaTransfers,AQABA_CUSTOMER,
- type AqabaLine,type BlueLine,type AqabaTransfer} from '../lib/aqaba';
-import {defaultAqabaDates,officialAqabaQuery,transferAqabaQuery} from '../lib/aqaba-query';
+import {readAqabaOfficial,readAqabaBlue,readAqabaTransfers,readAqabaJournal,auditAqabaJournal,compareAqaba,reviewAqabaTransfers,AQABA_CUSTOMER,
+ type AqabaLine,type BlueLine,type AqabaTransfer,type AqabaMovement} from '../lib/aqaba';
+import {defaultAqabaDates,officialAqabaQuery,transferAqabaQuery,aqabaInventoryQuery} from '../lib/aqaba-query';
 import {CheckCircle2,AlertTriangle,Copy,FileText,RefreshCw,Save} from 'lucide-react';
 
 const initial=defaultAqabaDates();
-type ResponseData={official:AqabaLine[];blue:BlueLine[];transfers:AqabaTransfer[]};
+type ResponseData={official:AqabaLine[];blue:BlueLine[];transfers:AqabaTransfer[];journal:AqabaMovement[]};
 const template=[
  'رقم الفاتورة الزرقاء\tالتاريخ\tكود SAP\tاسم الصنف\tالكمية\tالوحدة\tالسعر\tأرقام الفواتير الرسمية\tأرقام الترحيلات',
  '2650710367\t2026-11-03\tCHS00561\tجبنة فيتا جولد\t600\tPiece\t0.313\t260063818\t2615754',
@@ -23,14 +23,15 @@ async function request(body?:unknown):Promise<any>{
 }
 export default function AqabaWorkspace(){
  const [from,F]=useState(initial.from),[to,T]=useState(initial.to);
- const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState('');
- const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[]});
+ const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState(''),[journalPaste,JP]=useState('');
+ const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[],journal:[]});
  const [packs,PACK]=useState<Record<string,number>>({});
  const [working,W]=useState(false),[error,E]=useState(''),[message,M]=useState('');
  const [search,Q]=useState('');
  const official=useMemo(()=>officialPaste.trim()?readAqabaOfficial(officialPaste):null,[officialPaste]);
  const blue=useMemo(()=>bluePaste.trim()?readAqabaBlue(bluePaste):null,[bluePaste]);
  const transfers=useMemo(()=>transferPaste.trim()?readAqabaTransfers(transferPaste):null,[transferPaste]);
+ const journal=useMemo(()=>journalPaste.trim()?readAqabaJournal(journalPaste):null,[journalPaste]);
  const mergedOfficial=useMemo(()=>{
   const byKey=new Map(saved.official.map(x=>[x.key,x] as const));
   for(const row of official?.items||[])byKey.set(row.key,row);
@@ -46,6 +47,14 @@ export default function AqabaWorkspace(){
   for(const row of transfers?.items||[])byKey.set(row.key,row);
   return [...byKey.values()];
  },[saved.transfers,transfers]);
+ const mergedJournal=useMemo(()=>{
+  const byKey=new Map(saved.journal.map(x=>[x.key,x] as const));
+  for(const row of journal?.items||[])byKey.set(row.key,row);
+  return [...byKey.values()];
+ },[saved.journal,journal]);
+ const journalAudit=useMemo(()=>auditAqabaJournal(
+   mergedJournal.filter(x=>x.date>=from&&x.date<=to),mergedOfficial,mergedTransfers),
+   [mergedJournal,mergedOfficial,mergedTransfers,from,to]);
  const results=useMemo(()=>compareAqaba(mergedBlue,mergedOfficial),[mergedBlue,mergedOfficial]);
  const triplets=useMemo(()=>reviewAqabaTransfers(mergedBlue,mergedTransfers,packs),[mergedBlue,mergedTransfers,packs]);
  const invoices=useMemo(()=>{
@@ -80,21 +89,21 @@ export default function AqabaWorkspace(){
    PACK(seen);
   }).catch(()=>{});
  },[]);
- const copy=async(type:'official'|'transfer')=>{
+ const copy=async(type:'official'|'transfer'|'inventory')=>{
   try{
-   const query=type==='official'?officialAqabaQuery(from,to):transferAqabaQuery(from,to);
+   const query=type==='official'?officialAqabaQuery(from,to):type==='transfer'?transferAqabaQuery(from,to):aqabaInventoryQuery(from,to);
    await navigator.clipboard.writeText(query);M('تم نسخ كويري SAP.');
   }catch(e){E('تعذّر نسخ الكويري تلقائيًا. '+(e instanceof Error?e.message:''))}
  };
- const save=async(type:'official'|'blue'|'transfer')=>{
-  const read=type==='official'?official:type==='blue'?blue:transfers;
+ const save=async(type:'official'|'blue'|'transfer'|'inventory')=>{
+  const read=type==='official'?official:type==='blue'?blue:type==='transfer'?transfers:journal;
   if(!read?.items.length){E('لا توجد سطور صالحة للحفظ.');return}
   if(read.issues.length&&!window.confirm('هناك '+read.issues.length+' ملاحظة قراءة. هل تريد حفظ البنود الصالحة فقط مع مراجعة الملاحظات؟'))return;
   W(true);E('');M('');
   try{
    let added=0,updated=0,unchanged=0;
    for(let i=0;i<read.items.length;i+=50){
-    const out=await request({action:type==='official'?'aqabaOfficial':type==='blue'?'aqabaBlue':'aqabaTransfer',
+    const out=await request({action:type==='official'?'aqabaOfficial':type==='blue'?'aqabaBlue':type==='transfer'?'aqabaTransfer':'aqabaJournal',
       items:read.items.slice(i,i+50)});
     added+=out.added;updated+=out.updated;unchanged+=out.unchanged;
    }
@@ -118,6 +127,7 @@ export default function AqabaWorkspace(){
     <label>إلى تاريخ<input type="date" min="2026-11-01" value={to} onChange={e=>T(e.target.value)}/></label>
     <button className="button secondary" type="button" onClick={()=>copy('official')}><Copy size={16}/>نسخ كويري الفواتير والإلغاءات</button>
     <button className="button secondary" type="button" onClick={()=>copy('transfer')}><Copy size={16}/>نسخ كويري ترحيلات 011</button>
+    <button className="button secondary" type="button" onClick={()=>copy('inventory')}><Copy size={16}/>نسخ كويري OINM لحركة 011 الفعلية</button>
    </div>
    <p className="hint">كويري الفواتير يشمل IN وCN وDN وRE بحالات N وY وC، وكويري الترحيلات يشمل كل دخول وخروج من 011. لا تحذف المستند الملغي؛ نحتاجه لتفسير المقابل. الترحيل لا يُصنّف للعقبة إلا إذا ثبت من Remarks أو من الربط اليدوي.</p>
   </section>
@@ -167,6 +177,23 @@ export default function AqabaWorkspace(){
      <tbody>{triplets.map((t,i)=><tr key={i}><td>{t.blueInvoices.join('، ')}</td><td>{t.transferNumbers.join('، ')||'غير مربوط'}</td><td>{t.state==='quantity-aligned-not-stock-verified'?'الكميات متساوية مبدئيًا؛ بانتظار OINM':t.differences.length?'فرق كميات':'بحاجة مراجعة'}</td>
       <td>{t.issues.map((issue,j)=><p key={j} className="red">{issue}</p>)}{t.differences.map(d=><p key={d.key}>{d.key}: الزرقاء {d.blue} / الترحيل {d.transferred} / الفرق {d.difference}</p>)}</td></tr>)}</tbody>
     </table></div>}
+  </section>
+  <section className="panel">
+   <div className="section-title"><AlertTriangle size={20}/><div><h2>حركات المخزون الفعلية من OINM</h2>
+    <p>ألصق كشف OINM للمستودع 011 كاملًا، بما فيه حركات عمّان والأصناف غير المصنفة. لا نخصم AR Invoice فوق OINM مرة أخرى.</p></div></div>
+   <textarea dir="ltr" style={{minHeight:160,width:'100%'}} value={journalPaste}
+     aria-label="سجل حركة المخزون OINM" onChange={e=>JP(e.target.value)}
+     placeholder="معرف حركة المخزون ثم التاريخ ونوع الحركة وDocEntry وباقي الأعمدة..."/>
+   <div className="row-actions"><span>{journal?.items.length||0} حركة صالحة · {journal?.issues.length||0} ملاحظات</span>
+    <button className="button primary" disabled={working||!journal?.items.length} onClick={()=>save('inventory')}><Save size={16}/>حفظ حركة OINM</button></div>
+   {!!journal?.issues.length&&<details><summary>ملاحظات قراءة حركة المستودع</summary>{journal.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
+   <p className="hint">التقرير للفترة {from} إلى {to}، وهو صافي الحركة خلال الفترة وليس الرصيد النهائي دون افتتاحي SAP.</p>
+   <div className="stats"><div className="stat"><span>الوارد الفعلي لكل 011</span><strong>{journalAudit.physical.incoming.toFixed(3)}</strong></div>
+    <div className="stat"><span>الصادر الفعلي لكل 011</span><strong>{journalAudit.physical.outgoing.toFixed(3)}</strong></div>
+    <div className="stat"><span>صافي الحركة الفعلية لكامل 011</span><strong>{journalAudit.physical.net.toFixed(3)}</strong></div>
+    <div className="stat"><span>حركات غير منسوبة</span><strong>{journalAudit.unassigned.length}</strong></div></div>
+   <p className="hint">مجاميع OINM قد تجمع أصنافًا بوحدات مخزون مختلفة؛ لا تُستخدم كرصيد موحد قابل للمقارنة. يلزم التجميع لكل كود ووحدته. الحركات التي نُسبت للعقبة من المستندات المثبتة: وارد {journalAudit.aqabaEvidence.incoming.toFixed(3)} وصادر {journalAudit.aqabaEvidence.outgoing.toFixed(3)}.</p>
+   {journalAudit.issues.map((issue,i)=><p className="amber" key={i}>{issue}</p>)}
   </section>
   <section className="panel">
    <div className="section-title"><AlertTriangle size={20}/><div><h2>سجل جميع المستندات الرسمية</h2>
