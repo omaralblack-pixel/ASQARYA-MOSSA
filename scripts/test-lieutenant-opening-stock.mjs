@@ -20,7 +20,7 @@ new Function('exports','require',transpiled.outputText)(exports,name=>{
  if(name==='./reconcile')return core;
  throw Error('Unexpected runtime import: '+name);
 });
-const {auditLieutenantStock}=exports;
+const {auditLieutenantStock,completeOpeningSnapshot}=exports;
 const row=(code,quantity,unit='Piece')=>({code,name:code,warehouse:'011',unit,quantity});
 const audit=(closing,opening,confirmed)=>auditLieutenantStock(
   closing,opening,[],new Set(),'2026-11-01','2026-11-12',[],undefined,confirmed,
@@ -62,3 +62,13 @@ assert.equal(noActual.quantity,null);
 assert.equal(noActual.difference,null);
 
 console.log('11/01 confirmed opening snapshot missing-item-zero regression tests passed.');
+
+assert.equal(completeOpeningSnapshot(null,'2026-11-01'),false);
+assert.equal(completeOpeningSnapshot({date:'2026-11-02',items:[row('FVL00368',5)],issues:[]},'2026-11-01'),false);
+assert.equal(completeOpeningSnapshot({date:'2026-11-01',items:[row('FVL00368',5)],issues:['incomplete']},'2026-11-01'),false);
+const partialBaseline=audit([row('FVL00368',5),row('CHS00066',7)],[row('FVL00368',5)],completeOpeningSnapshot(null,'2026-11-01'));
+assert.equal(partialBaseline[0].opening,5);
+assert.equal(partialBaseline[0].difference,0);
+assert.equal(partialBaseline[1].opening,null,'An individual approval cannot fabricate a warehouse-wide zero baseline');
+assert.equal(partialBaseline[1].difference,null);
+console.log('PASS: partial approved baseline preserves five rice pieces and leaves every unknown opening unresolved.');

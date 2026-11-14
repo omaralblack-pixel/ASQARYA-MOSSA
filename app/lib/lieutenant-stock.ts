@@ -11,6 +11,10 @@ export type StockAuditItem=Omit<StockItem,'quantity'>&{
   requiredIncoming:number;uncoveredIncoming:number|null;movementComplete:boolean;
   converted:boolean;openingAssumedZero:boolean;issues:string[];
 };
+/** A saved item approval does not certify a complete warehouse baseline. */
+export function completeOpeningSnapshot(snapshot:{date:string;items:StockItem[];issues:string[]}|null,from:string):boolean{
+  return !!snapshot&&snapshot.date===from&&snapshot.items.length>0&&snapshot.issues.length===0;
+}
 const clean=(value:string)=>value.replace(/^\uFEFF/,'').toLowerCase()
   .replace(/[\s._\-:،#]+/g,'').trim();
 const fields={

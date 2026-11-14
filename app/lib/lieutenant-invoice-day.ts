@@ -457,12 +457,15 @@ export function auditInvoicesForDay(
       movements,cancellationDates,corrective,sourceLastDate,groupTransferNumbers);
     let state:DayInvoiceState='match';
     if(financiallyMatchedGroup){
-      state=[...postedDates].some(date=>date>row.date)?'late':'match';
+      state='match';
     }else if(notes.length)state='review';
     else if(items.some(item=>item.difference!==null&&item.difference< -epsilon))state='extra';
     else if(items.some(item=>item.difference!==null&&item.difference>epsilon))
       state=anyTransfer?'short':'pending';
-    else if([...postedDates].some(date=>date>row.date))state='late';
+    else {
+      state='review';
+      notes.push('الكميات متساوية حسب البيانات المتاحة، لكن الفاتورة لم تُعتمد ماليًا بعد.');
+    }
     // If the supplied SAP export stops before the requested as-of date,
     // future non-posting must never be advertised as a verified shortfall.
     if((state==='pending'||state==='short')&&sourceLastDate<asOf){

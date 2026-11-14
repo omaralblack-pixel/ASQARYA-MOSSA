@@ -53,10 +53,10 @@ assert.equal(future.length,1);
 assert.equal(future[0].state,'pending','Future postings must not count as already received');
 assert.equal(future[0].items[0].posted,0);
 const later=audit([record([paper],[saved])],[src],'2026-11-03');
-assert.equal(later[0].state,'late','Invoice day and SAP posting day must be independent');
+assert.equal(later[0].state,'review','Invoice day and SAP posting day must be independent');
 assert.equal(later[0].items[0].posted,100);
 const present=audit([record([paper],[saved])],[live('2617001','2026-11-01',[line('DAR00005',100)])],'2026-11-01');
-assert.equal(present[0].state,'match','Same-day receipt must be matched without delay label');
+assert.equal(present[0].state,'review','Equal SAP quantities cannot grant financial approval');
 const partial=audit([record([paper],[saved])],[live('2617001','2026-11-03',[line('DAR00005',80)])],'2026-11-03');
 assert.equal(partial[0].state,'short');
 assert.equal(partial[0].items[0].difference,20);
@@ -71,7 +71,7 @@ const mixed=card('2617002','2026-11-03',line('DAR00005',100),line('CHS00033',12)
 const group=record([paper,paper2],[mixed],{pages:{'i:11371486':'1','i:11064245':'2'}});
 const grouped=audit([group],[live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],'2026-11-03');
 assert.equal(grouped.length,2);
-assert.deepEqual(grouped.map(x=>x.state),['late','late'],
+assert.deepEqual(grouped.map(x=>x.state),['review','review'],
   'Confirmed per-page allocations must not double-count an SAP transfer');
 assert.deepEqual(grouped.map(x=>x.items.map(y=>y.code)),[['11371486'],['11064245']]);
 assert.equal(grouped.reduce((sum,x)=>sum+x.items.reduce((n,item)=>n+(item.posted??0),0),0),112,
@@ -92,14 +92,14 @@ assert.equal(notEnough[0].state,'review',
 // SAP stock posting, not the blue-invoice date, determines the receipt.
 const cartons=audit([record([paper],[saved])],
   [live('2617001','2026-11-03',[line('DAR00005',5,'Carton')])],'2026-11-03');
-assert.equal(cartons[0].state,'late');
+assert.equal(cartons[0].state,'review');
 assert.equal(cartons[0].items[0].posted,100,'Carton quantity must use the recorded SAP pack definition');
 
 // Signed SAP corrections are not rejected as ordinary negative invoice rows.
 const signed=live('2617004','2026-11-05',[line('DAR00005',-20)],{signedAdjustment:true});
 signed.remarks='Inventory transfer no. 2617001 has been canceled';
 const beforeCorrection=audit([record([paper],[saved])],[src,signed],'2026-11-03');
-assert.equal(beforeCorrection[0].state,'late','Future correction must not backdate its stock effect');
+assert.equal(beforeCorrection[0].state,'review','Future correction must not backdate its stock effect');
 const afterCorrection=audit([record([paper],[saved])],[src,signed],'2026-11-05');
 assert.equal(afterCorrection[0].state,'short');
 assert.equal(afterCorrection[0].items[0].posted,80);
@@ -118,18 +118,18 @@ const laterCanceled=live('2617001','2026-11-03',[line('DAR00005',100)],{cancella
 const cancelDocument=live('2617020','2026-11-05',[line('DAR00005',100,'Piece','011','001')],
   {cancellationState:'cancellation',reverse:true});
 cancelDocument.remarks='Inventory transfer no. 2617001 has been canceled';
-assert.equal(audit([record([paper],[saved])],[laterCanceled,cancelDocument],'2026-11-03')[0].state,'late');
+assert.equal(audit([record([paper],[saved])],[laterCanceled,cancelDocument],'2026-11-03')[0].state,'review');
 assert.equal(audit([record([paper],[saved])],[laterCanceled,cancelDocument],'2026-11-05')[0].state,'pending');
 
 const pastedPaper=record([{...paper,quantities:{},
   auditLines:'رقم المادة\tالكمية\n11371486\t100'}],[saved]);
-assert.equal(audit([pastedPaper],[src],'2026-11-03')[0].state,'late',
+assert.equal(audit([pastedPaper],[src],'2026-11-03')[0].state,'review',
   'Pasted invoice column headers must not create false item errors');
 
 const missingAmounts={...record([{...paper,quantities:{},auditLines:''}],[saved]),status:'match'};
 const missingPaperResult=audit([missingAmounts],[src],'2026-11-03')[0];
-assert.equal(missingPaperResult.state,'late',
-  'The operator-approved invoice must be matched, with SAP delay kept visible');
+assert.equal(missingPaperResult.state,'match',
+  'The operator-approved invoice must be matched, with actual SAP posting dates preserved');
 assert.equal(missingPaperResult.financiallyMatchedGroup,true);
 assert.equal(missingPaperResult.items[0].expected,null,
   'Unknown paper quantity must never appear as zero');
@@ -155,7 +155,7 @@ const unknownSplit={...record([{...paper,quantities:{},auditLines:''},
 const financiallyApprovedSplit=audit([unknownSplit],
   [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],
   '2026-11-03');
-assert.deepEqual(financiallyApprovedSplit.map(row=>row.state),['late','late'],
+assert.deepEqual(financiallyApprovedSplit.map(row=>row.state),['match','match'],
   'Previously approved financial groups must match without inventing per-page quantities');
 assert.ok(financiallyApprovedSplit.every(row=>row.postedDates.includes('2026-11-03')),
   'The dates of approved group transfers remain visible without page allocation');
@@ -171,20 +171,20 @@ assert.equal(malformedResult.state,'review',
   'Invalid source rows remain a review, not financial-only acceptance');
 assert.equal(malformedResult.items[0].difference,null);
 const approvedMalformed=audit([{...malformedPaper,status:'match'}],[src],'2026-11-03')[0];
-assert.equal(approvedMalformed.state,'late',
+assert.equal(approvedMalformed.state,'match',
   'Incomplete saved quantity details must not reopen the operator approval');
 assert.equal(approvedMalformed.items[0].expected,null);
 const approvedUnallocated=audit([{...group,status:'match',
   payload:JSON.stringify({...JSON.parse(group.payload),pages:{}})}],
   [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],'2026-11-03');
-assert.deepEqual(approvedUnallocated.map(row=>row.state),['late','late'],
+assert.deepEqual(approvedUnallocated.map(row=>row.state),['match','match'],
   'Saved approval must not require reassigning previously checked pages');
 const staleSummary={...missingAmounts,status:'review',
   payload:JSON.stringify({...JSON.parse(missingAmounts.payload),summary:{status:'match'}})};
 assert.equal(audit([staleSummary],[src],'2026-11-03')[0].state,'review',
   'A stale summary must not override the current saved review status');
 assert.equal(audit([{...record([paper],[saved]),status:'match'}],
-  [live('2617001','2026-11-03',[line('DAR00005',80)])],'2026-11-03')[0].state,'late',
+  [live('2617001','2026-11-03',[line('DAR00005',80)])],'2026-11-03')[0].state,'match',
   'The saved operator decision remains authoritative while numeric differences stay in details');
 const approvedWithoutSource=audit([missingAmounts],[],'2026-11-03')[0];
 assert.equal(approvedWithoutSource.state,'match');
@@ -310,3 +310,15 @@ assert.equal(approvedReverseResult.sapStatus,'partial',
 assert.ok(approvedReverseResult.notes.some(note=>note.includes('2617991')&&note.includes('حركة عكسية')),
   'Explain the direction of the linked reverse document');
 console.log('PASS: Saved operator approval, unapproved quantity checks, SAP cutoff, delay, cancellation, shared quantities and no-write safeguards.');
+
+const stockScreen=fs.readFileSync('app/reconciliation/StockReport.tsx','utf8');
+assert.ok(stockScreen.includes("match:'مطابقة'"));
+assert.ok(!stockScreen.includes('مطابقة — ترحيل متأخر'));
+for(const asOf of ['2026-11-01','2026-11-03','2026-11-14']){
+ const approved=audit([{...record([paper],[saved]),status:'match'}],[src],asOf)[0];
+ const unapproved=audit([record([paper],[saved])],[src],asOf)[0];
+ assert.equal(approved.state,'match');
+ assert.notEqual(unapproved.state,'match');
+ assert.notEqual(unapproved.state,'late');
+}
+console.log('PASS: every financial match requires saved approval across all cutoffs and both screens.');

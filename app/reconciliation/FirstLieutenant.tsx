@@ -6,6 +6,7 @@ import CancelledTransferReview from './CancelledTransferReview';
 import {AlertTriangle,CheckCircle2,Copy,FileArchive,FileUp,RefreshCw,Search,ShieldCheck,Trash2} from 'lucide-react';
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenant';
+import {lieutenantImportPlan,type ImportDocumentResult} from '../lib/lieutenant-import-plan';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
@@ -13,7 +14,7 @@ import {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey,type 
 import {lieutenantApprovals} from '../lib/lieutenant-coverage';
 import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState,type DaySapStatus} from '../lib/lieutenant-invoice-day';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
-import {auditLieutenantStock,stockMovementSources,classifyLieutenantContent,parseLieutenantStock,
+import {auditLieutenantStock,completeOpeningSnapshot,stockMovementSources,classifyLieutenantContent,parseLieutenantStock,
   type StockItem,type StockAuditItem,type LieutenantFileKind} from '../lib/lieutenant-stock';
 
 type FileKind=LieutenantFileKind;
@@ -64,7 +65,7 @@ function explainStockDifference(item:StockAuditItem,canCompare:boolean):string{
     ' عن المتوقع من الترحيلات. تفاصيل العكسي والإلغاء موجودة أسفل الصنف؛ لا يُثبت سبب الفرق إلا بمستند مطابق.';
 }
 type StockEvidence={
-  number:string;date:string;kind:string;quantity:number;unit:string;effect:number|null;
+  number:string;date:string;kind:string;direction:string;quantity:number;unit:string;effect:number|null;
   counted:boolean;counterpart?:string;note:string;
 };
 /** Scan SAP source documents rather than attributing every residual balance
@@ -76,22 +77,18 @@ function stockDifferenceEvidence(
   const movement=analyzeLieutenantMovements(transfers,periodTo);
   const warehouse=(value:string)=>/^\d+$/.test(value.trim())?
     value.trim().padStart(3,'0'):value.trim();
-  for(const source of transfers){
+  for(const source of stockMovementSources(transfers)){
     const number=source.transfer.number,date=source.transfer.date;
     if(!date||date<periodFrom||date>periodTo)continue;
     const status=movement.get(number);
-    const excluded=source.cancellationState==='canceled'||source.cancellationState==='cancellation';
-    const interested=source.reverse||source.signedAdjustment||excluded||
-      status?.kind==='sap-canceled'||status?.kind==='reversed'||
-      status?.kind==='cancellation-review'||status?.kind==='cashvan-pending';
-    if(!interested)continue;
     const kind=source.cancellationState==='canceled'?'ترحيل ملغى في SAP':
       source.cancellationState==='cancellation'?'مستند إلغاء SAP':
       source.signedAdjustment?'تصحيح كمية سالبة':
       source.reverse?'ترحيل عكسي':
       status?.kind==='sap-canceled'?'ترحيل أصلي مقابل إلغاء':
       status?.kind==='reversed'?'ترحيل أصلي له عكسي مطابق':
-      status?.kind==='cashvan-pending'?'كاش فان دون تسوية مثبتة':'حالة إلغاء تحتاج مراجعة';
+      status?.kind==='cashvan-pending'?'كاش فان دون تسوية مثبتة':
+      status?.kind==='cancellation-review'?'حالة إلغاء تحتاج مراجعة':'ترحيل وارد';
     for(const line of source.transfer.paste.replace(/\r/g,'').split('\n').slice(1)){
       if(!line.trim())continue;
       const [rawCode,,rawQuantity,unit,rawFrom,rawTo]=line.split('\t');
@@ -101,9 +98,9 @@ function stockDifferenceEvidence(
       if(!/^[A-Z]{2,6}\d{3,10}$/.test(code)||!Number.isFinite(quantity)||
         !(from==='011'||to==='011')||from===to)continue;
       const effect=to==='011'?quantity: -quantity;
-      const evidence:StockEvidence={number,date,kind,quantity,unit:unit||'—',
-        effect:excluded||source.issues.length?null:effect,
-        counted:!excluded&&!source.issues.length,counterpart:status?.counterpart,
+      const evidence:StockEvidence={number,date,kind,direction:from+' → '+to,quantity,unit:unit||'—',
+        effect:source.issues.length?null:effect,
+        counted:!source.issues.length,counterpart:status?.counterpart,
         note:source.issues.length?'مستند يحتاج مراجعة بيانات SAP':
           status?.note||source.remarks||''};
       result.set(code,[...(result.get(code)||[]),evidence]);
@@ -276,6 +273,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [sharedSource,setSharedSource]=useState<SavedSapImport|null>(null);
   const [transferSourceName,setTransferSourceName]=useState('');
   const [importProgress,setImportProgress]=useState('');
+  const [importDocuments,setImportDocuments]=useState<ImportDocumentResult[]>([]);
   const [invoiceDay,setInvoiceDay]=useState(()=>todayLocal().slice(0,8)+'01');
   const [invoiceAsOf,setInvoiceAsOf]=useState(todayLocal);
   const [dailyInvoices,setDailyInvoices]=useState<DayInvoiceData|null>(null);
@@ -543,21 +541,16 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     if(opening?.date===from)
       for(const item of opening.items)if(!byKey.has(item.code+'|'+item.unit))
         byKey.set(item.code+'|'+item.unit,item);
-    // The user-approved opening baseline covers warehouse 011 at the selected
-    // start date. A code absent from that baseline means zero opening stock.
-    // Never infer zero when the baseline is unavailable or its source has errors.
-    const approvedOpening=snapshot.openingStock.some(item=>
-      item.snapshot_date===from&&item.warehouse==='011'&&Number.isFinite(Number(item.quantity)));
-    const openingSourceValid=opening?.date===from&&opening.items.length>0&&opening.issues.length===0;
-    const openingSourceDamaged=opening?.date===from&&opening.issues.length>0;
-    const openingConfirmed=(approvedOpening||openingSourceValid)&&!openingSourceDamaged;
+    // Individually approved rows prove only their own quantities. Only a full,
+    // dated and clean opening export can prove zero for an omitted item.
+    const openingConfirmed=completeOpeningSnapshot(opening,from);
     return auditLieutenantStock(closing.items,[...byKey.values()],
       canCompare?transfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to,
       reference,invoiceRequiredNumbers,openingConfirmed);
   },[closing,opening,snapshot.openingStock,from,to,transfers,approvedTransferNumbers,canCompare,reference,invoiceRequiredNumbers]);
   const coverageReady=canCompare&&recordsReady;
   const uncoveredItems=stockRows.filter(item=>item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001);
-  const incompleteItems=stockRows.filter(item=>!item.movementComplete);
+  const incompleteItems=stockRows.filter(item=>!item.movementComplete||item.opening===null||item.quantity===null);
   const [stockQueryText,setStockQueryText]=useState('');
   const [stockFilter,setStockFilter]=useState('all');
   const stockEvidence=useMemo(()=>stockDifferenceEvidence(transfers,from,to),[transfers,from,to]);
@@ -565,16 +558,17 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     (stockFilter==='difference'?item.difference!==null&&Math.abs(item.difference)>0.000001:
     !coverageReady?true:
     stockFilter==='uncovered'?item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001:
-    stockFilter==='incomplete'?!item.movementComplete:item.movementComplete&&item.requiredIncoming>0&&item.uncoveredIncoming===0))&&
+    stockFilter==='incomplete'?(!item.movementComplete||item.opening===null||item.quantity===null):item.movementComplete&&item.requiredIncoming>0&&item.uncoveredIncoming===0))&&
     (!stockQueryText||(item.code+' '+item.name).toLowerCase().includes(stockQueryText.trim().toLowerCase())));
 
   async function enqueue(source:LieutenantTransfer[],key:string){
     // Cash Van, the exact reverse, SAP-canceled and cancellation documents
     // are inventory-control cases, not missing blue invoices.
-    const movements=analyzeLieutenantMovements(source,to);
-    const inPeriod=source.filter(row=>row.transfer.date>=from&&row.transfer.date<=to);
-    const valid=inPeriod.filter(row=>!row.issues.length&&movements.get(row.transfer.number)?.kind==='normal');
-    const skipped=inPeriod.length-valid.length;
+    const plan=lieutenantImportPlan(source,from,to);
+    setImportDocuments(plan);
+    const wanted=new Set(plan.filter(row=>row.state==='pending').map(row=>row.number));
+    const valid=source.filter(row=>wanted.has(row.transfer.number));
+    const skipped=plan.length-valid.length;
     let added=0,existing=0;
     const batches:Array<Array<{number:string;date:string;paste:string;branch:string;remarks:string;reverse:boolean;cancellationMentioned:boolean;cancellationState:string;invoiceNumbers:string[]}>>=[];
     let batch:typeof batches[number]=[];
@@ -593,11 +587,20 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     if(batch.length)batches.push(batch);
     for(const [index,payload] of batches.entries()){
       setImportProgress('جارٍ تحديث ترحيلات الفترة: دفعة '+(index+1)+' من '+batches.length+'…');
-      const result=await checkedJson<{added:number;existing:number}>('/api/reconcile',{
+      const result=await checkedJson<{added:number;existing:number;documents:{number:string;state:'added'|'existing'}[]}>('/api/reconcile',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'lieutenantImport',sourceFile:key,transfers:payload}),
       });
+      if(!Array.isArray(result.documents)||result.documents.length!==payload.length||
+        new Set(result.documents.map(row=>row.number)).size!==payload.length||
+        payload.some(row=>!result.documents.some(doc=>doc.number===row.number&&['added','existing'].includes(doc.state))))
+        throw Error('الخادم لم يؤكد تصنيف كل مستند في الدفعة؛ أعد الفحص لإكمال الناقص.');
       added+=result.added;existing+=result.existing;
+      for(const doc of result.documents){
+        const target=plan.find(row=>row.number===doc.number)!;
+        target.state=doc.state;target.reason=doc.state==='added'?'أكد الخادم حفظه بقائمة الجندي':'محفوظ مسبقًا؛ لم يُكرر';
+      }
+      setImportDocuments(plan.map(row=>({...row})));
     }
     await refreshSnapshot();
     setImportProgress('');
@@ -874,7 +877,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     </section>
     <section className="panel" aria-label="الأرصدة الافتتاحية المعتمدة">
       <div className="section-title"><div><h2>الأرصدة الافتتاحية المعتمدة — المستودع 011</h2>
-        <p>الرصيد المسجل قبل أول حركة في تاريخ البداية. الأصناف غير الموجودة في الكشف الافتتاحي المعتمد لنفس التاريخ تعتبر رصيدها الافتتاحي صفرًا؛ ولا يُسجل هذا الصفر كترحيل أو فاتورة.</p></div></div>
+        <p>الرصيد المسجل قبل أول حركة في تاريخ البداية. اعتماد رصيد صنف منفرد يخص ذلك الصنف فقط. لا يُفترض صفر لبقية الأصناف إلا عند توفر كشف افتتاحي كامل ومعتمد لنفس التاريخ.</p></div></div>
       {snapshot.openingStock.length>0?
         <div className="table-scroll"><table><thead><tr>
           <th>تاريخ الرصيد</th><th>كود الصنف</th><th>اسم الصنف</th><th>المستودع</th><th>الوحدة</th><th>الرصيد الافتتاحي</th><th>الاعتماد</th>
@@ -952,6 +955,12 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       {error&&<p role="alert" className="banner error"><AlertTriangle size={16}/> {error}</p>}
       {message&&<p role="status" className="banner info">{message}</p>}
       {importProgress&&<p role="status" className="banner info">{importProgress}</p>}
+      {!!importDocuments.length&&<details><summary>نتيجة تصنيف مستندات SAP ({importDocuments.length})</summary>
+        <p className="hint">المعلّق لم يؤكد الخادم حفظه بعد؛ أعد الفحص لإكمال الناقص. تبقى الدفعات المحفوظة والملف الأصلي محفوظين.</p>
+        <div className="table-scroll"><table><thead><tr><th>رقم المستند</th><th>التصنيف</th><th>السبب</th></tr></thead>
+          <tbody>{importDocuments.map(row=><tr key={row.number}><td dir="ltr">{row.number}</td>
+            <td>{{pending:'لم يُؤكد حفظه بعد',added:'مضاف',existing:'موجود مسبقًا',excluded:'مستبعد من جندي الفواتير'}[row.state]}</td><td>{row.reason||'بانتظار تأكيد الخادم'}</td></tr>)}</tbody></table></div>
+      </details>}
       {opening&&<div className="banner info"><div>
         كشف افتتاحي مفتوح: {opening.items.length} صنفًا · تاريخ الرصيد: {opening.date||'غير محدد'}.
         {!opening.date&&<button type="button" className="button secondary small" disabled={busy}
@@ -993,8 +1002,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <strong>ملاحظات كشف الرصيد ({closing.issues.length}):</strong>
           <ul>{closing.issues.slice(0,10).map((note,i)=><li key={i}>{note}</li>)}</ul></div>}
         {!recordsReady&&<p className="banner warn">قاعدة المطابقات لم تُقرأ بالكامل؛ عمود الفواتير المعتمدة غير متاح حاليًا، وليس صفرًا.</p>}
+        {canCompare&&stockRows.some(item=>item.opening===null)&&<p className="banner warn" role="status">الافتتاحي غير مثبت لـ {stockRows.filter(item=>item.opening===null).length} صنفًا؛ تبقى ظاهرة لكن الفرق «—» وسببه غير مثبت حتى إرفاق كشف افتتاحي كامل. هذا لا يعني أن الفروقات السابقة صُفّرت أو سُوّيت.</p>}
         <p className="hint">«غير مغطى بفواتير معتمدة» = الوارد الذي يحتاج فاتورة − الوارد المغطى بفواتير مشيّكة ومعتمدة ومؤكد ورقها. لا تدخل حركات الكاش فان أو الإلغاء أو العكسي المسوّى بالكامل ضمن المطلوب له فواتير. هذه المقارنة لا تثبت أن الفاتورة رُحّلت على SAP.</p>
-        <p className="hint">«المتوقع من الترحيلات» = الافتتاحي + الوارد − الصادر + أثر التصحيحات الموقّع. الصنف الغائب عن كشف الافتتاحي المعتمد لنفس تاريخ البداية يُحسب افتتاحيه صفرًا. إذا كان كشف الافتتاحي غير متوفر أو فيه أخطاء أو تعارض تحويل وحدات، تبقى القيمة «—» ولا يُفترض الصفر. مطابقة رصيد المستودع النهائية تحتاج جميع حركات OINM، بما فيها البيع والتسويات.</p>
+        <p className="hint">«المتوقع من الترحيلات» = الافتتاحي + الوارد − الصادر + أثر التصحيحات الموقّع. الصنف الغائب عن كشف افتتاحي كامل ومعتمد لنفس تاريخ البداية يُحسب افتتاحيه صفرًا؛ اعتماد صنف منفرد لا يثبت اكتمال الكشف. إذا كان كشف الافتتاحي غير متوفر أو فيه أخطاء أو تعارض تحويل وحدات، تبقى القيمة «—» ولا يُفترض الصفر. مطابقة رصيد المستودع النهائية تحتاج جميع حركات OINM، بما فيها البيع والتسويات.</p>
         <div className="table-controls no-print">
           <label>بحث في الأصناف<input type="search" value={stockQueryText} onChange={event=>setStockQueryText(event.target.value)} placeholder="كود SAP أو اسم الصنف"/></label>
           <label>عرض الأصناف<select value={stockFilter} disabled={!canCompare} onChange={event=>setStockFilter(event.target.value)}>
@@ -1059,24 +1069,24 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
                 {item.issues.map(note=><p className="red" key={note}>{note}</p>)}
               </div>
               <details className="lieutenant-balance-evidence">
-                <summary>الترحيلات العكسية والملغية والتصحيحات ({evidence.length})</summary>
+                <summary>كل المستندات المؤثرة: وارد وعكسي وإلغاء وتصحيح ({evidence.length})</summary>
                 <p className="hint">{explainStockDifference(item,canCompare)}</p>
                 <p className="hint">عكسي: {reversed.length} · إلغاء/ملغى: {canceled.length} · حركات محسوبة في الصافي: {verified.length}.
                   الوثائق أدناه تُظهر أثر كل حركة؛ لا يعني وجود عكسي أو إلغاء أنه سبب الفرق المتبقي، فقد يكون محسوبًا بالفعل.</p>
                 {evidence.length>0?<div className="table-scroll"><table className="lieutenant-balance-evidence-table">
-                  <thead><tr><th>رقم المستند</th><th>التاريخ</th><th>نوع الحركة</th>
+                  <thead><tr><th>رقم المستند</th><th>التاريخ</th><th>نوع الحركة</th><th>الاتجاه</th>
                     <th>كمية المستند</th><th>أثرها على صافي 011</th><th>المستند المقابل</th></tr></thead>
                   <tbody>{evidence.map((doc,i)=><tr key={doc.number+'|'+i}>
                     <td dir="ltr">{doc.number}</td><td dir="ltr">{doc.date}</td>
-                    <td>{doc.kind}</td><td dir="ltr">{doc.quantity.toFixed(3)} {stockUnit(doc.unit)}</td>
-                    <td dir="ltr">{!doc.counted?'مستبعد من الصافي':
+                    <td>{doc.kind}</td><td dir="ltr">{doc.direction}</td><td dir="ltr">{doc.quantity.toFixed(3)} {stockUnit(doc.unit)}</td>
+                    <td dir="ltr">{!doc.counted?'أثر غير مثبت — بيانات ناقصة':
                       doc.unit===item.unit&&doc.effect!==null?
                         (doc.effect>0?'+':'')+doc.effect.toFixed(3):
                         'الوحدة مختلفة — راجع التحويل'}</td>
                     <td dir="ltr">{doc.counterpart||'—'}</td>
                   </tr>)}</tbody>
                 </table></div>:
-                  <p>لا تظهر مستندات عكسية أو إلغاءات أو تصحيحات لهذا الصنف ضمن كشف SAP والفترة المحددة.</p>}
+                  <p>لا تظهر حركات لهذا الصنف ضمن كشف SAP والفترة المحددة.</p>}
                 {evidence.some(doc=>doc.note)&&<p className="hint">ملاحظات SAP: {Array.from(new Set(evidence.map(doc=>doc.note).filter(Boolean))).slice(0,4).join(' · ')}</p>}
               </details>
             </article>;
@@ -1144,7 +1154,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       </tr></thead><tbody>{visible.slice(0,rowLimit).map(row=><tr key={row.source.transfer.number}>
         <td dir="ltr"><b>{row.source.transfer.number}</b></td>
         <td dir="ltr">{row.source.transfer.date}</td><td>{row.source.branch||'غير محدد'}</td>
-        <td>{row.source.reverse?'صادر من 011':'وارد إلى 011'}</td>
+        <td>{row.source.cancellationState==='cancellation'?'إلغاء SAP':row.source.signedAdjustment?'تصحيح موقّع':row.source.reverse?'عكسي من 011':'وارد إلى 011'}</td>
         <td><span className={'badge '+(completeStatuses.has(row.status)?'match':row.status==='review'||row.status==='missing'?'difference':'review')}>
           {completeStatuses.has(row.status)?<CheckCircle2 size={13}/>:<AlertTriangle size={13}/>}
           {recordsReady?statusText[row.status]:'حالة الفاتورة غير متاحة'}

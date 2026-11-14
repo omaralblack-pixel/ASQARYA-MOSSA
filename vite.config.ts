@@ -1,3 +1,4 @@
+import {execFileSync} from "node:child_process";
 import vinext from "vinext";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
@@ -18,6 +19,7 @@ const managedLinux = readExecutionProfile() === "managed-linux";
 const localBindingConfig = (command: "build" | "serve") => ({
   main: "./worker/index.ts",
   keep_vars: true,
+  version_metadata: { binding: "CF_VERSION_METADATA" },
   compatibility_flags: ["nodejs_compat"],
   vars: { SUPABASE_URL: "https://kgzmusavcsbsxqftdjcg.supabase.co" },
   ratelimits: [{ name: "INSTITUTION_LOGIN_LIMIT", namespace_id: "1001", simple: { limit: 5, period: 60 as const } }],
@@ -53,6 +55,7 @@ export default defineConfig(async ({ command }) => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    define: {"__ASQARYA_COMMIT__": JSON.stringify(execFileSync("git", ["rev-parse", "HEAD"], {encoding:"utf8"}).trim())},
     server: {
       ...(managedLinux
         ? { host: "0.0.0.0", allowedHosts: ["terminal.local"] }

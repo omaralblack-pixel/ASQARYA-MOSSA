@@ -10,6 +10,7 @@ import branches from '../../branches.json';
 import drivers from '../../drivers.json';
 import {reconcile,readReconciliationRecord,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
 export const dynamic='force-dynamic';
+declare const __ASQARYA_COMMIT__:string;
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة');return env.DB};
 async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();return r?JSON.parse(String(r.value)):defaults as Item[]}
@@ -26,6 +27,7 @@ async function currentPageSortingCatalog():Promise<AuditCatalog>{
  return saved.catalog;
 }
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);
+if(u.searchParams.has('version'))return json({commit:typeof __ASQARYA_COMMIT__==='string'?__ASQARYA_COMMIT__:'unknown',workerVersion:env.CF_VERSION_METADATA?.id||null});
 if(u.searchParams.has('lieutenantCancellationDecisions')){
  const rows=await db().prepare(
    'SELECT transfer_no,decision,related_type,related_number,note,revision,updated_at FROM lieutenant_cancellation_decisions ORDER BY transfer_no'
@@ -509,7 +511,9 @@ if (b.action === 'lieutenantImport') {
    }),sourceFile,new Date().toISOString()));
  const results=queries.length?await db().batch(queries):[];
  const added=results.reduce((count,result)=>count+(result.meta.changes||0),0);
- return json({added,existing:incoming.length-added,total:incoming.length});
+ const addedNumbers=new Set(pending.filter((_,index)=>(results[index]?.meta.changes||0)>0).map(row=>row.number));
+ return json({added,existing:incoming.length-added,total:incoming.length,
+   documents:incoming.map(row=>({number:row.number,state:addedNumbers.has(row.number)?'added':'existing'}))});
  }
  if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources, b.overrideSoldier);
 return json({error:'طلب غير معروف'},400)}catch(error){if(error instanceof JsonRequestError)return json({error:error.message},error.status);return json({error:'تعذّر الحفظ. أعد المحاولة.'},500)}}

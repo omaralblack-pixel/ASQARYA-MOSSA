@@ -148,8 +148,8 @@ export default function StockReport(){
 
 type InvoiceComparisonData=DayInvoiceData&{reference:Item[]};
 const invoiceStates:Record<DayInvoiceState,string>={
-  match:'مطابقة حسب الاعتماد / البيانات المتاحة',
-  late:'مطابقة — ترحيل متأخر',
+  match:'مطابقة',
+  late:'مطابقة',
   pending:'بانتظار الترحيل',
   short:'نقص كمية مثبت',
   extra:'زيادة كمية مثبتة',
@@ -227,7 +227,7 @@ function InvoiceComparison({file,selectedFrom,selectedTo,invalidRange}:{
         <div className="stat"><span>فواتير الفترة</span><strong>{report.rows.filter(row=>!row.cashVan).length}</strong></div>
         <div className="stat"><span>كاش فان مسوّى</span><strong>{counts['cashvan-settled']}</strong></div>
         <div className="stat"><span>كاش فان بحاجة تسوية</span><strong>{counts['cashvan-pending']}</strong></div>
-        <div className="stat"><span>مطابقة أو معتمدة</span><strong>{counts.match+counts.late}</strong></div>
+        <div className="stat"><span>مطابقة ماليًا</span><strong>{counts.match+counts.late}</strong></div>
         <div className="stat"><span>نقص أو زيادة مثبتة</span><strong>{counts.short+counts.extra}</strong></div>
         <div className="stat"><span>بانتظار الترحيل</span><strong>{counts.pending}</strong></div>
         <div className="stat"><span>تحتاج مراجعة</span><strong>{counts.review}</strong></div>

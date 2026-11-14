@@ -6,6 +6,7 @@ declare namespace Cloudflare {
     SUPABASE_URL?: string;
     SUPABASE_STORAGE_SECRET?: string;
     DB?: D1Database;
+    CF_VERSION_METADATA?: {id:string;tag?:string;timestamp?:string};
     BUCKET?: R2Bucket;
   }
 }
