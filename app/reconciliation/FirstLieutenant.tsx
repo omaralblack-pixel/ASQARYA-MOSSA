@@ -121,7 +121,7 @@ const sapDayNames:Record<DaySapStatus,string>={
   review:'حركة SAP تحتاج مراجعة',
 };
 const dailyStateNames:Record<DayInvoiceState,string>={
-  match:'مطابقة',late:'مطابقة — ترحيل متأخر',pending:'بانتظار الترحيل',
+  match:'مطابقة',late:'مطابقة',pending:'بانتظار الترحيل',
   short:'نقص في الترحيل',extra:'كمية زائدة',
   review:'تحتاج مراجعة بيانات',
   'cashvan-settled':'كاش فان — مسوّى بعكسي/إلغاء',
@@ -807,13 +807,12 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <div className="stat"><span>ترحيل SAP مثبت</span><strong>{dailySapCounts.posted}</strong></div>
           <div className="stat"><span>إثبات SAP غير مكتمل</span><strong>{dailySapCounts.waiting+dailySapCounts.missing+
             dailySapCounts.reversed+dailySapCounts.partial+dailySapCounts.review}</strong></div>
-          <div className="stat"><span>منها ترحيل متأخر</span><strong>{dailyCounts.late}</strong></div>
           <div className="stat"><span>بانتظار ترحيل</span><strong>{dailyCounts.pending}</strong></div>
           <div className="stat"><span>نقص أو زيادة مثبت</span><strong>{dailyCounts.short+dailyCounts.extra}</strong></div>
           <div className="stat"><span>تحتاج مراجعة بيانات</span><strong>{dailyCounts.review}</strong></div>
         </div>
         {dailyReport.rows.length>0&&dailyInvoiceCount>0&&dailyCounts.match+dailyCounts.late===dailyInvoiceCount&&dailySapCounts.posted===dailyInvoiceCount&&
-          <p><span className="badge match"><CheckCircle2 size={14}/> جميع فواتير اليوم مطابقة ماليًا وترحيلاتها مثبتة في SAP حتى تاريخ الفحص؛ الترحيلات المتأخرة معلّمة.</span></p>}
+          <p><span className="badge match"><CheckCircle2 size={14}/> جميع فواتير اليوم مطابقة ماليًا وترحيلاتها مثبتة في SAP حتى تاريخ الفحص.</span></p>}
         {dailySkuTotals.length>0&&<details className="lieutenant-stock-details">
           <summary>إجمالي الأصناف لجميع فواتير اليوم ({dailySkuTotals.length} صنف)</summary>
           <p className="hint">تجميع بالكود المعتمد للمؤسسة وبالحبة. الكميات التفصيلية غير المسجلة تُعرض بشرطة (—)، ولا تغيّر اعتماد الفواتير المحفوظ.</p>
@@ -851,7 +850,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
                result.sapStatus==='partial'||result.sapStatus==='reversed'?'difference':'review')}>
                {sapDayNames[result.sapStatus||'missing']}
              </span>}</td>
-             <td><details><summary>{result.cashVan?'عرض تسوية الكاش فان':'عرض الأصناف ('+result.items.length+')'}</summary>
+             <td><details><summary>{result.cashVan?'عرض تسوية الكاش فان':result.items.length?'عرض الأصناف ('+result.items.length+')':'تفاصيل الفاتورة'}</summary>
+              {!result.cashVan&&!result.items.length&&result.financiallyMatchedGroup&&
+                <p className="hint">تفاصيل الأصناف غير محفوظة على مستوى هذه الفاتورة، وهذا لا يعني أن أصنافها صفر. اعتمادك المالي ما زال مطابقًا.</p>}
               {result.notes.length>0&&<ul>{result.notes.map(note=><li key={note}>{note}</li>)}</ul>}
               {result.items.length>0&&<table><thead><tr>
                 <th>رقم المؤسسة</th><th>الصنف</th><th>كمية الفاتورة (حبة)</th>
