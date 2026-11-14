@@ -66,7 +66,7 @@ export default function AqabaWorkspace(){
   fetch('/api/reconcile',{cache:'no-store'}).then(async res=>{
    if(!res.ok)throw Error('المرجع غير متاح');
    return res.json();
-  }).then(data=>{
+  }).then((data:any)=>{
    const seen:Record<string,number>={};
    for(const item of data.reference||[]){
     for(const def of [item,...(item.sapAliases||[])]){
