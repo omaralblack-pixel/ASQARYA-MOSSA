@@ -99,7 +99,7 @@ function verifyInvoiceSap(
   source:LieutenantTransfer[],bySource:Map<string,LieutenantTransfer>,
   movements:ReturnType<typeof analyzeLieutenantMovements>,
   cancellationDates:Map<string,string>,corrective:Map<string,LieutenantTransfer[]>,
-  sourceLastDate:string,
+  sourceLastDate:string,groupTransferNumbers:ReadonlySet<string>=new Set(),
 ):{status:DaySapStatus;notes:string[]}{
   const notes:string[]=[];
   if(!linkedNumbers.length)
@@ -120,9 +120,17 @@ function verifyInvoiceSap(
       waiting++;
       notes.push('الترحيل '+number+' بتاريخ '+date+' بعد نهاية فحص '+asOf+'؛ لم يُحتسب.');continue;
     }
-    if(current.reverse||current.signedAdjustment||current.cancellationState==='cancellation'){
-      unknown++;
-      notes.push('المستند '+number+' ليس ترحيل وارد فعّالًا إلى 011.');continue;
+    if(current.reverse){
+      changed++;
+      notes.push('المستند '+number+' حركة عكسية خارجة من المستودع 011، وليست واردًا جديدًا. يُراجع أثر العكسي على رصيد SAP مستقلًا عن اعتماد الفاتورة المالي.');continue;
+    }
+    if(current.signedAdjustment){
+      changed++;
+      notes.push('المستند '+number+' حركة تصحيح كمية موقّعة على SAP، وليست واردًا جديدًا. يُراجع أثر التصحيح دون إلغاء اعتماد الفاتورة المالي.');continue;
+    }
+    if(current.cancellationState==='cancellation'){
+      changed++;
+      notes.push('المستند '+number+' مستند إلغاء في SAP، وليس ترحيل وارد جديدًا. يُراجع أصله وأثره دون إلغاء اعتماد الفاتورة المالي.');continue;
     }
     const parsed=sourceLines(current);
     if(parsed.issues.length||parsed.excluded.length||!parsed.lines.some(line=>
@@ -162,7 +170,8 @@ function verifyInvoiceSap(
   const explicitlyRelated=source.filter(item=>
     item.branch===branch&&item.invoiceNumbers?.includes(invoiceNumber)&&
     item.transfer.date&&item.transfer.date<=asOf&&
-    !linkedNumbers.includes(item.transfer.number));
+    !linkedNumbers.includes(item.transfer.number)&&
+    !groupTransferNumbers.has(item.transfer.number));
   if(explicitlyRelated.length){
     unknown++;
     notes.push('وجدت ترحيلات أخرى تذكر رقم هذه الفاتورة في Remarks ولم تُربط بها: '+
@@ -277,13 +286,13 @@ export function auditInvoicesForDay(
         items:[],notes:cashNotes,cashVan:true,reverseNumbers};
     }
     if(!invoice)notes.push('الفاتورة غير موجودة في سجل المجموعة.');
-    if(!invoice?.complete)notes.push('الفاتورة الورقية غير مؤكدة الاكتمال.');
+    if(!invoice?.complete&&!financiallyMatchedGroup)notes.push('الفاتورة الورقية غير مؤكدة الاكتمال.');
     if(duplicateNumbers.get(row.branch+'|'+row.number)!>1)
       notes.push('رقم الفاتورة مكرر في السجل؛ لا تجمع كمياتها مرتين.');
-    if(row.unresolvedTransferNumbers.length||row.groupConfirmedTransfers.length)
+    if(!financiallyMatchedGroup&&(row.unresolvedTransferNumbers.length||row.groupConfirmedTransfers.length))
       notes.push('المجموعة متعددة الصفحات وفيها ترحيلات لم يثبت توزيع بنودها على هذه الفاتورة.');
     const paper=invoice?paperQuantities(invoice):{totals:new Map<string,number>(),issues:['بيانات الفاتورة غير متاحة.']};
-    notes.push(...paper.issues);
+    if(!financiallyMatchedGroup)notes.push(...paper.issues);
     // Missing/partially readable paper quantities are unknown, NEVER zero.
     const paperKnown=!!invoice?.complete&&paper.issues.length===0&&paper.totals.size>0;
     const references=draft?.referenceSnapshot?.length?draft.referenceSnapshot:currentReference;
@@ -443,8 +452,9 @@ export function auditInvoicesForDay(
         postedDates.add(current.transfer.date);
       }
     }
+    const groupTransferNumbers=new Set((draft?.transfers||[]).flatMap(transfer=>transferNumbers(transfer.number||'')));
     const sapCheck=verifyInvoiceSap(row.number,row.branch,allNumbers,asOf,source,bySource,
-      movements,cancellationDates,corrective,sourceLastDate);
+      movements,cancellationDates,corrective,sourceLastDate,groupTransferNumbers);
     let state:DayInvoiceState='match';
     if(financiallyMatchedGroup){
       state=[...postedDates].some(date=>date>row.date)?'late':'match';
