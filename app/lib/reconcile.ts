@@ -180,6 +180,24 @@ export function invoiceDocumentNo(value: unknown) {
  const number = documentNo(String(value ?? ''));
  return /^0+$/.test(number) ? '' : number;
 }
+/** SAP notes may include labels, branch names and multiple invoice numbers. */
+export function sapInvoiceNumbers(remarks:string):string[]{
+ const text=digits(remarks).replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g,'');
+ // SAP-generated request references are not blue invoices. Keep independent notes.
+ const notes=text.split(/\|\||[\r\n]+/).map(note=>note.split(/based\s+on\s+inventory\s+transfer\s+request/i)[0]).join(' ');
+ return [...new Set((notes.match(/(?<!\d)\d{10}(?!\d)/g)||[]).filter(number=>!!invoiceDocumentNo(number)))];
+}
+/** Populate a new empty invoice card only; saved and manually edited numbers win. */
+export function withSapInvoiceNumbers<T extends Draft>(draft:T,numbers:string[],transferNo:string):T{
+ const unique=[...new Set(numbers.filter(number=>/^\d{10}$/.test(number)&&invoiceDocumentNo(number)))];
+ if(!unique.length||unique.length>30||draft.id||draft.invoices.length!==1)return draft;
+ const empty=draft.invoices[0];
+ if(invoiceDocumentNo(empty.number)||empty.manualNumber||empty.amount.trim()||empty.complete||
+    empty.auditLines?.trim()||Object.keys(empty.quantities||{}).length||empty.attachments?.length)return draft;
+ return withInvoiceDates({...draft,invoices:unique.map((number,index)=>index===0
+   ?{...empty,number,dateTransferNos:[transferNo]}
+   :{id:empty.id+'-sap-'+number,number,date:'',amount:'',complete:false,quantities:{},dateTransferNos:[transferNo]})});
+}
 export function matchesInvoiceNumbers(invoices:Invoice[],numbers:string[]):boolean{
  const openNumbers=new Set(invoices.map(invoice=>invoiceDocumentNo(invoice.number)).filter(Boolean));
  return numbers.length===openNumbers.size&&numbers.every(number=>openNumbers.has(number));

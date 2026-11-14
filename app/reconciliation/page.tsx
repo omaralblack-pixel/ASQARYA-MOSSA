@@ -15,7 +15,7 @@ import AqabaWorkspace from './AqabaWorkspace';
 import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
 import {ArrowLeftRight,Check,CheckCircle2,AlertTriangle,Plus,Trash2,ClipboardPaste,FileText,CalendarDays,History,Settings2,Search,Save,Printer,Upload,ChevronDown,ArrowUpRight,RefreshCw,Copy,PackageCheck} from 'lucide-react';
-import {prepareReconciliation,readReconciliationRecord,withInvoiceDates,editInvoiceDate,addTransferToDraft,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation,readReconciliationRecord,withInvoiceDates,editInvoiceDate,addTransferToDraft,withSapInvoiceNumbers,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource} from '../lib/reconcile';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
 const uid=()=>typeof crypto.randomUUID==='function'?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const newInvoice=():Invoice=>({id:uid(),number:'',date:'',amount:'',complete:false,quantities:{},attachments:[]});
@@ -175,7 +175,8 @@ function editTransfer(index:number,transfer:Transfer,lookup=false){
   const valid=index===0&&(numberChanged||lookup)&&imported&&!transfer.paste.trim()&&!duplicate&&(!owner||owner===draft.id)
     &&(!draft.branch||!imported.branch||draft.branch===imported.branch);
   const updated=valid?{...transfer,number:normalized,date:imported.transfer.date,paste:imported.transfer.paste}:transfer;
-  change({transfers:draft.transfers.map((row,i)=>i===index?updated:row),...(valid&&!draft.branch?{branch:imported.branch}:{})});
+  const next={...draft,transfers:draft.transfers.map((row,i)=>i===index?updated:row),...(valid&&!draft.branch?{branch:imported.branch}:{})};
+  change(valid?withSapInvoiceNumbers(next,imported.invoices,normalized):next);
   if(valid)N('تم تعبئة تاريخ وبنود الترحيل '+normalized+' من معاينة SAP.');
 }
 async function lookupTransfer(id:string,number:string){
@@ -197,7 +198,7 @@ async function lookupTransfer(id:string,number:string){
       D(current => {
         const row = current?.transfers.find(transfer => transfer.id === id);
         return current && row && digits(row.number).trim() === normalized && !row.paste.trim()
-          ? addTransferToDraft(current, candidate.transfer, candidate.branch, id)
+          ? withSapInvoiceNumbers(addTransferToDraft(current, candidate.transfer, candidate.branch, id),candidate.invoiceNumbers,normalized)
           : current;
       });
       if (candidate.source) {
@@ -230,7 +231,7 @@ async function lookupTransfer(id:string,number:string){
       D(current=>{
         const row=current?.transfers.find(transfer=>transfer.id===id);
         return current&&row&&digits(row.number).trim()===normalized&&!row.paste.trim()
-          ?addTransferToDraft(current,unreadable.transfer,current.branch,id):current;
+          ?withSapInvoiceNumbers(addTransferToDraft(current,unreadable.transfer,current.branch,id),unreadable.invoices,normalized):current;
       });
       N('تمت تعبئة الترحيل '+normalized+' من SAP باستخدام فرع المؤسسة المحدد في الكشف؛ راجع الفرع قبل الحفظ.');
       return;
@@ -300,12 +301,13 @@ async function findTransferForAddition(number: string, saved: StoredTransfer | n
     transfer: {...transfer, number},
     branch: saved?.branch || member?.branch || (fallbackBranch?addingTo.branch:''),
     branchFromSelection: !savedPaste && fallbackBranch,
+    invoiceNumbers: !correctInvoice&&!savedPaste&&!member?.reverseMovement?member?.invoices||[]:[],
     source: fromAnotherRecord ? {number, recordId: saved.recordId, version: saved.version, ...(correctInvoice?{correctInvoice:true,expectedInvoices:saved.invoiceNumbers}:{})} : undefined,
   };
 }
-function stageTransfer(transfer: Transfer, branch: string, source?: TransferSource, replaceId?: string) {
+function stageTransfer(transfer: Transfer, branch: string, source?: TransferSource, replaceId?: string, invoiceNumbers:string[]=[]) {
   const cardId = replaceId || uid();
-  D(current => current ? addTransferToDraft(current, {...transfer, id: cardId}, branch, replaceId) : current);
+  D(current => current ? withSapInvoiceNumbers(addTransferToDraft(current, {...transfer, id: cardId}, branch, replaceId),invoiceNumbers,transfer.number) : current);
   if (source) setTransferSources(current => ({...current, [cardId]: source}));
 }
 async function addTransferFromSavedFile() {
@@ -341,7 +343,7 @@ async function addTransferFromSavedFile() {
       return;
     }
     if(correctTransferInvoice && saved?.invoiceNumbers.length && !confirm('نقل الترحيل '+number+' من الفاتورة '+saved.invoiceNumbers.join('، ')+' إلى '+draft.invoices.map(i=>i.number).filter(Boolean).join('، ')+'؟ يتم تثبيت التصحيح عند حفظ الكشف مع حفظ نسخة من السجل السابق.'))return;
-    stageTransfer(candidate.transfer, candidate.branch, candidate.source, blankCard?.id);
+    stageTransfer(candidate.transfer, candidate.branch, candidate.source, blankCard?.id, candidate.invoiceNumbers);
     setCorrectTransferInvoice(false);
     setSearchTransferOpen(false);
     N(candidate.branchFromSelection

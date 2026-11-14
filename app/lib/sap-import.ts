@@ -1,4 +1,4 @@
-import {dateValue,digits,invoiceDocumentNo,signedNumeric,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
+import {dateValue,digits,sapInvoiceNumbers,signedNumeric,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
 
 const headers=['رقم الترحيل','تاريخ الترحيل','كود الفرع','اسم الفرع','Remarks','Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'];
 const normalize=(value:string)=>value.trim().toLowerCase();
@@ -29,11 +29,7 @@ export function canUseSelectedBranchForSapMember(member:SapTransfer,selectedBran
     member.issues.length===1 && member.issues[0]==='الفرع غير معروف';
 }
 
-function readInvoices(remarks:string){
-  const prefix=digits(remarks).split(/based on inventory transfer request/i)[0].split('||')[0].trim();
-  if(!/^\d+(?:[\s,،;؛/+&-]+\d+)*$/.test(prefix))return [];
-  return [...new Set((prefix.match(/\d+/g)||[]).filter(number=>/^\d{10}$/.test(number)&&invoiceDocumentNo(number)))];
-}
+const readInvoices=sapInvoiceNumbers;
 
 export function readSapImportRows(paste:string):{rows:string[][];issues:string[]}{
   const rows=paste.replace(/^\uFEFF/,'').split(/\r?\n/);

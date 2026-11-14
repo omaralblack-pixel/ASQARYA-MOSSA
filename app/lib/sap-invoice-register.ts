@@ -1,4 +1,4 @@
-import {dateValue, digits, invoiceDocumentNo, signedNumeric, readReconciliationRecord, transferNumbers, type Draft} from './reconcile';
+import {dateValue, digits, invoiceDocumentNo, sapInvoiceNumbers, signedNumeric, readReconciliationRecord, transferNumbers, type Draft} from './reconcile';
 import {readSapImportRows} from './sap-import';
 
 // A read-only view of the SAME Supabase-hosted SAP import used by the import screen.
@@ -25,12 +25,7 @@ export type SapRegisterCheck=SapRegisterInvoice&{
   savedAmount:string;
 };
 const normWarehouse=(value:string)=>digits(value).trim().padStart(3,'0');
-function invoiceNumbersFromRemarks(remarks:string):string[]{
-  const first=digits(remarks).split(/based on inventory transfer request/i)[0].split('||')[0].trim();
-  // Match the same numeric-prefix invoice format the SAP import accepts.
-  if(!/^\d+(?:[\s,،;؛/+&-]+\d+)*$/.test(first))return [];
-  return [...new Set((first.match(/\d+/g)||[]).filter(v=>/^\d{10}$/.test(v)&&!!invoiceDocumentNo(v)))];
-}
+const invoiceNumbersFromRemarks=sapInvoiceNumbers;
 export function sapInvoicesFromSavedFile(text:string):SapRegisterSource{
   const source=readSapImportRows(text);
   const docs=new Map<string,string[][]>();

@@ -97,3 +97,40 @@ assert.ok(instant.includes('فتحته كفاتورة جديدة غير محفو
 console.log('PASS: Invoice search checks all statuses, SAP-only results stay distinct, financial matches do not imply page allocations.');
 
 console.log('PASS: permanent SAP invoice comparison deduplicates transfers, excludes reverse/canceled, and retains paper receipt distinctions');
+
+const {sapInvoiceNumbers,withSapInvoiceNumbers}=loadTs('app/lib/reconcile.ts');
+const {parseSapImport}=loadTs('app/lib/sap-import.ts');
+const {parseLieutenantTransfers}=loadTs('app/lib/lieutenant.ts');
+const remarksCases=[
+  ['فاتورة زرقاء رقم: 2630806229 — فرع السرو',['2630806229']],
+  ['فرع السرو || فاتورة ٢٦٣٠٨٠٦٢٢٩ و ۲۶۳۰۸۰۶۲۳۰',['2630806229','2630806230']],
+  ['2630806229 / 2630806230، 2630806229',['2630806229','2630806230']],
+  ['2630806229 Based On Inventory Transfer Request 1234567890',['2630806229']],
+  ['Based On Inventory Transfer Request 1234567890 || فاتورة 2630806229',['2630806229']],
+  ['ترحيل 2616391 بتاريخ 14/11/2026 بدون فاتورة',[]],
+  ['126308062291 0000000000',[]],
+  ['فاتورة \u200f2630806229\u200e',['2630806229']],
+];
+for(const [remarks,expected] of remarksCases){
+  assert.deepEqual(sapInvoiceNumbers(remarks),expected,remarks);
+  const file=[header,row('2616391',remarks,'001','011')].join('\n');
+  assert.deepEqual(parseSapImport(file,['21 — السرو']).groups[0].members[0].invoices,expected);
+  assert.deepEqual(sapInvoicesFromSavedFile(file).invoices.map(i=>i.number).sort(),[...expected].sort());
+  assert.deepEqual(parseLieutenantTransfers(file,['21 — السرو']).transfers[0].invoiceNumbers,expected);
+}
+const blank={branch:'',driver:'',date:'2026-11-14',notes:'',transfers:[],invoices:[{
+  id:'invoice-1',number:'',date:'',amount:'',complete:false,quantities:{},attachments:[],
+}]};
+const populated=withSapInvoiceNumbers(blank,['2630806229','2630806230','2630806229'],'2616391');
+assert.deepEqual(populated.invoices.map(i=>i.number),['2630806229','2630806230']);
+assert.equal(populated.invoices[0].id,'invoice-1');
+assert.equal(new Set(populated.invoices.map(i=>i.id)).size,2);
+assert.deepEqual(blank.invoices.map(i=>i.number),[''],'Input is immutable');
+for(const changes of [{number:'2630806000'},{manualNumber:true},{amount:'10.000'},
+  {complete:true},{quantities:{item:'2'}},{attachments:[{key:'a'}]},{auditLines:'saved lines'}]){
+ const draft={...blank,invoices:[{...blank.invoices[0],...changes}]};
+ assert.equal(withSapInvoiceNumbers(draft,['2630806229'],'2616391'),draft,'Preserve existing invoice work');
+}
+assert.equal(withSapInvoiceNumbers({...blank,id:'saved'},['2630806229'],'2616391').invoices[0].number,'');
+assert.equal(withSapInvoiceNumbers(populated,['2630806000'],'2616392'),populated);
+console.log('PASS: labeled/bilingual Remarks, multiple invoices, SAP request exclusion and protected manual/saved invoice cards.');

@@ -5,7 +5,7 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, withSapInvoiceNumbers, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
 type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:string; version:number; branch:string};
@@ -309,7 +309,8 @@ export default function InstantMatch({
       } else {
         const chosen = stored?.transfer || member?.transfer || {id:uuid(),number:searched,date:localDate(),paste:''};
         const item = {...chosen,id:uuid(),number:searched};
-        update(addTransferToDraft(draft,item,stored?.branch||member?.branch||''));
+        update(withSapInvoiceNumbers(addTransferToDraft(draft,item,stored?.branch||member?.branch||''),
+          !stored&&!member?.reverseMovement?member?.invoices||[]:[],searched));
         if (stored && stored.recordId!==draft.id) {
           setSources(current=>({...current,[item.id]:{number:searched,recordId:stored.recordId,version:stored.version}}));
         }

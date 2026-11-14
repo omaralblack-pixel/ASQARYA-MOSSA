@@ -1,4 +1,4 @@
-import {dateValue,digits,numeric,type Transfer} from './reconcile';
+import {dateValue,digits,numeric,sapInvoiceNumbers,type Transfer} from './reconcile';
 
 /** Read every SAP transfer touching warehouse 011, regardless of counterparty.
  * Supports both the original SAP export and the Arabic aliases in the 011 query.
@@ -61,7 +61,7 @@ const cancellation=(raw:string):CancellationState=>{
   if(value==='C'||value==='CANCELLATION')return 'cancellation';
   return 'unknown';
 };
-const invoices=(remarks:string)=>[...new Set(remarks.match(/\b\d{10}\b/g)||[])];
+const invoices=sapInvoiceNumbers;
 type Group={meta:{date:string;branchCode:string;branchName:string;remarks:string;state:CancellationState};lines:string[];issues:string[];reverse:boolean;signedAdjustment:boolean};
 const lineHeader=['Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'].join('\t');
 
