@@ -17,7 +17,7 @@ async function request(body?:unknown):Promise<any>{
  }:{cache:'no-store'});
  if(!(res.headers.get('content-type')||'').includes('application/json'))
    throw Error('خادم العقبة لم يُرجع JSON؛ تحقق من الاتصال أو جلسة الدخول.');
- const data=await res.json();
+ const data:any=await res.json();
  if(!res.ok)throw Error(data.error||'تعذّر الاتصال بشاشة العقبة.');
  return data;
 }
