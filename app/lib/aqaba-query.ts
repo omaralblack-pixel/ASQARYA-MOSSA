@@ -64,3 +64,29 @@ export function transferAqabaQuery(from:string,to:string){
  'ORDER BY H."DocDate", H."DocNum", L."LineNum";'
  ].join('\n');
 }
+
+
+/** Physical 011 movements for ALL customers and types. This is intentionally
+ * not restricted to C0006751: 011 is shared, and transfers have no CardCode. */
+export function aqabaInventoryQuery(from:string,to:string){
+ if(!/^\d{4}-\d\d-\d\d$/.test(from)||!/^\d{4}-\d\d-\d\d$/.test(to)||from>to||from<AQABA_START)
+  throw Error('فترة غير صحيحة');
+ return [
+ 'SELECT TO_NVARCHAR(M."TransNum") AS "معرف حركة المخزون",',
+ 'TO_VARCHAR(M."DocDate", \\'YYYY-MM-DD\\') AS "التاريخ",',
+ 'TO_NVARCHAR(M."TransType") AS "نوع حركة SAP",',
+ 'TO_NVARCHAR(M."CreatedBy") AS "DocEntry",',
+ 'TO_NVARCHAR(M."BASE_REF") AS "رقم المستند",',
+ 'M."DocLineNum" AS "رقم السطر",',
+ 'M."ItemCode" AS "كود الصنف",',
+ 'M."Dscription" AS "اسم الصنف",',
+ 'M."Warehouse" AS "المستودع",',
+ 'M."InQty" AS "الوارد",',
+ 'M."OutQty" AS "الصادر",',
+ 'M."CardCode" AS "رقم الزبون"',
+ 'FROM "OINM" M',
+ "WHERE M.\"Warehouse\" = '011'",
+ "AND M.\"DocDate\" BETWEEN TO_DATE('"+from+"', 'YYYY-MM-DD') AND TO_DATE('"+to+"', 'YYYY-MM-DD')",
+ 'ORDER BY M."DocDate", M."TransNum", M."DocLineNum";'
+ ].join('\n');
+}
