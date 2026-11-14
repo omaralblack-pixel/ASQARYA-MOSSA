@@ -40,3 +40,30 @@ assert json.loads(rows['wrong-shape'])['transfers']=='bad'
 assert len(rows['projection'])<len(saved)/100
 assert c.execute("SELECT payload FROM reconciliations WHERE id='projection'").fetchone()[0]==saved
 print('PASS: lieutenant read projection preserves links, true/false approval flags and malformed records, reduces response size, and never modifies stored invoices')
+
+
+# Cancellation review is a separate durable operator annotation; SAP movements
+# and financially approved invoice records are never mutated by these writes.
+c.execute("""INSERT INTO lieutenant_cancellation_decisions
+ (transfer_no,decision,related_type,related_number,note,revision,updated_at)
+ VALUES (?,?,?,?,?,1,?) ON CONFLICT(transfer_no) DO NOTHING""",
+ ('2619101','ignore','','','تمام، تجاهل مراجعة الإلغاء','2026-11-14T09:00:00Z'))
+assert c.execute("SELECT decision,revision FROM lieutenant_cancellation_decisions WHERE transfer_no='2619101'").fetchone()==('ignore',1)
+assert c.execute("""INSERT INTO lieutenant_cancellation_decisions
+ (transfer_no,decision,related_type,related_number,note,revision,updated_at)
+ VALUES (?,?,?,?,?,1,?) ON CONFLICT(transfer_no) DO NOTHING""",
+ ('2619101','linked','invoice','2630806229','duplicate','2026-11-14T09:01:00Z')).rowcount==0
+update="""UPDATE lieutenant_cancellation_decisions
+ SET decision=?,related_type=?,related_number=?,note=?,revision=revision+1,updated_at=?
+ WHERE transfer_no=? AND revision=?"""
+assert c.execute(update,('linked','transfer','2619102','مرتبط بالترحيل','2026-11-14T09:02:00Z','2619101',1)).rowcount==1
+assert c.execute(update,('keep','invoice','2630806229','لا تلغيه','2026-11-14T09:03:00Z','2619101',1)).rowcount==0, 'stale updates cannot overwrite a newer decision'
+assert c.execute(update,('keep','invoice','2630806229','الفاتورة تغطيه','2026-11-14T09:03:00Z','2619101',2)).rowcount==1
+saved=c.execute("SELECT decision,related_type,related_number,note,revision FROM lieutenant_cancellation_decisions WHERE transfer_no='2619101'").fetchone()
+assert saved==('keep','invoice','2630806229','الفاتورة تغطيه',3)
+assert c.execute('SELECT status,payload FROM reconciliations WHERE id=?',('g',)).fetchone()==('review','{}')
+assert c.execute('SELECT count(*) FROM lieutenant_cancellation_decisions').fetchone()[0]==1
+assert c.execute('DELETE FROM lieutenant_cancellation_decisions WHERE transfer_no=? AND revision=?',('2619101',2)).rowcount==0
+assert c.execute('DELETE FROM lieutenant_cancellation_decisions WHERE transfer_no=? AND revision=?',('2619101',3)).rowcount==1
+assert c.execute('SELECT count(*) FROM lieutenant_cancellation_decisions').fetchone()[0]==0
+print('PASS: durable cancellation decisions, manual invoice/document links, stale-write guard, reversible review and unchanged invoice data')
