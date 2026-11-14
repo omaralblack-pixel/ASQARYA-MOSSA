@@ -6,13 +6,13 @@ import {defaultAqabaDates,officialAqabaQuery,transferAqabaQuery,aqabaInventoryQu
 import {CheckCircle2,AlertTriangle,Copy,FileText,RefreshCw,Save} from 'lucide-react';
 
 const initial=defaultAqabaDates();
-type ResponseData={official:AqabaLine[];blue:BlueLine[];transfers:AqabaTransfer[];journal:AqabaMovement[]};
+type ResponseData={official:AqabaLine[];blue:BlueLine[];transfers:AqabaTransfer[];journal:AqabaMovement[];partial?:boolean};
 const template=[
  'رقم الفاتورة الزرقاء\tالتاريخ\tكود SAP\tاسم الصنف\tالكمية\tالوحدة\tالسعر\tأرقام الفواتير الرسمية\tأرقام الترحيلات',
  '2650710367\t2026-11-03\tCHS00561\tجبنة فيتا جولد\t600\tPiece\t0.313\t260063818\t2615754',
 ].join('\n');
-async function request(body?:unknown):Promise<any>{
- const res=await fetch('/api/aqaba',body?{
+async function request(body?:unknown,query=''):Promise<any>{
+ const res=await fetch('/api/aqaba'+query,body?{
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),
  }:{cache:'no-store'});
  if(!(res.headers.get('content-type')||'').includes('application/json'))
@@ -26,7 +26,7 @@ export default function AqabaWorkspace(){
  const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState(''),[journalPaste,JP]=useState('');
  const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[],journal:[]});
  const [packs,PACK]=useState<Record<string,number>>({});
- const [working,W]=useState(false),[error,E]=useState(''),[message,M]=useState('');
+ const [working,W]=useState(false),[error,E]=useState(''),[message,M]=useState(''),[partial,PART]=useState(false);
  const [search,Q]=useState('');
  const official=useMemo(()=>officialPaste.trim()?readAqabaOfficial(officialPaste):null,[officialPaste]);
  const blue=useMemo(()=>bluePaste.trim()?readAqabaBlue(bluePaste):null,[bluePaste]);
@@ -81,9 +81,9 @@ export default function AqabaWorkspace(){
    .sort((a,b)=>b.first.date.localeCompare(a.first.date)||b.first.document.localeCompare(a.first.document,'en',{numeric:true}));
  },[mergedOfficial,search]);
  const [expanded,EXP]=useState('');
- const load=async()=>{const data=await request() as ResponseData;S(data)};
+ const load=async()=>{if(!from||!to||from>to)return;const data=await request(undefined,'?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)) as ResponseData;S(data);PART(data.partial===true)};
+ useEffect(()=>{load().catch(e=>E(e.message))},[from,to]);
  useEffect(()=>{
-  load().catch(e=>E(e.message));
   fetch('/api/reconcile',{cache:'no-store'}).then(async res=>{
    if(!res.ok)throw Error('المرجع غير متاح');
    return res.json();
@@ -130,6 +130,7 @@ export default function AqabaWorkspace(){
    <button type="button" className="button secondary" onClick={()=>{E('');void load().then(()=>M('تم تحديث سجل العقبة.')).catch(e=>E(e.message))}}><RefreshCw size={16}/>تحديث السجل</button>
   </div>
   {error&&<div className="banner error" role="alert">{error}</div>}
+  {partial&&<div className="banner error" role="alert">عدد سطور SAP يتجاوز حد العرض في هذه الفترة. النتائج جزئية؛ ضيّق الفترة ولا تعتمد المطابقة قبل تحميل جميع المستندات.</div>}
   {message&&<div className="banner info" role="status">{message}</div>}
   <section className="panel">
    <div className="section-title"><FileText size={20}/><div><h2>كويريات SAP للعقبة</h2>
