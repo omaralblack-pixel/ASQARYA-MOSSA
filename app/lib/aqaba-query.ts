@@ -1,6 +1,8 @@
 import {AQABA_START,AQABA_CUSTOMER} from './aqaba';
 export function defaultAqabaDates(now=new Date()){
- const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
+ const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now);
+ const get=(key:string)=>parts.find(p=>p.type===key)?.value||'00';
+ const today=get('year')+'-'+get('month')+'-'+get('day');
  const d=new Date(today+'T12:00:00Z');d.setUTCMonth(d.getUTCMonth()-1);
  const from=d.toISOString().slice(0,10);
  return {from:from<AQABA_START?AQABA_START:from,to:today};
@@ -14,7 +16,7 @@ export function officialAqabaQuery(from:string,to:string){
  "'"+kind+"' AS \"نوع المستند\",",
  'TO_NVARCHAR(H."DocNum") AS "رقم الفاتورة",',
  'TO_NVARCHAR(H."DocEntry") AS "DocEntry",',
- 'TO_VARCHAR(H."DocDate", ''YYYY-MM-DD'') AS "التاريخ",'.replace("''YYYY-MM-DD''","'YYYY-MM-DD'"),
+ 'TO_VARCHAR(H."DocDate", \'YYYY-MM-DD\') AS "التاريخ",'
  'H."CardCode" AS "رقم الزبون",',
  'H."CardName" AS "اسم الزبون",',
  'L."LineNum" + 1 AS "رقم السطر",',
