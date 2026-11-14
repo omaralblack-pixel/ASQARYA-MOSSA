@@ -19,8 +19,8 @@ except sqlite3.IntegrityError: pass
 print('PASS: duplicate invoice across branches, same-group edit, same branch new invoice, atomic lock')
 
 
-// The lieutenant importer must examine document identifiers, not download every
-// previously saved invoice payload for each 10-document SAP batch.
+# The lieutenant importer must examine document identifiers, not download every
+# previously saved invoice payload for each SAP batch.
 import pathlib
 route=pathlib.Path('app/api/reconcile/route.ts').read_text(encoding='utf8')
 import_fragment=route.split("if (b.action === 'lieutenantImport') {",1)[1].split("if (b.action === 'save')",1)[0]
