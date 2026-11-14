@@ -15,6 +15,10 @@ export type CancellationReviewRow={
   source:LieutenantTransfer;kind:string;automaticReason:string;
   counterparts:string[];directions:string[];proven:boolean;
 };
+const unsafeControl=(value:string,allowMultiline=false)=>[...value].some(char=>{
+  const code=char.charCodeAt(0);
+  return code===127||(code<32&&!(allowMultiline&&(code===9||code===10||code===13)));
+});
 /** A manual decision documents the operator's review. It NEVER changes
  * SAP cancellation flags, physical inventory math, or approved invoices. */
 export function validateCancellationDecision(input:unknown):
@@ -33,7 +37,7 @@ export function validateCancellationDecision(input:unknown):
   if(!/^\d{4,20}$/.test(transferNo))return {error:'رقم الترحيل غير صالح.'};
   if(!['ignore','linked','keep'].includes(decision))
     return {error:'اختر تجاوزًا أو ربط مستند أو عدم الإلغاء بسبب فاتورة.'};
-  if(note.length>600||/\p{Cc}/u.test(note))
+  if(note.length>600||unsafeControl(note,true))
     return {error:'الملاحظة طويلة أو تتضمن رموز تحكم غير مسموحة (الحد 600 حرف).'};
   if(decision==='ignore'){
     if(relatedType||relatedNumber)return {error:'قرار التجاوز لا يحتاج مستندًا مقابلًا.'};
@@ -45,7 +49,7 @@ export function validateCancellationDecision(input:unknown):
     return {value:{transferNo,decision:'keep',relatedType:'invoice',relatedNumber,note}};
   }
   if(!['invoice','transfer','other'].includes(relatedType)||!relatedNumber||
-    relatedNumber.length>100||/\p{Cc}/u.test(relatedNumber))
+    relatedNumber.length>100||unsafeControl(relatedNumber))
     return {error:'اختر نوع المستند المرتبط وأدخل رقمه أو وصفه.'};
   if(relatedType==='invoice'&&!/^\d{10}$/.test(relatedNumber))
     return {error:'رقم الفاتورة الزرقاء يجب أن يكون 10 أرقام.'};
