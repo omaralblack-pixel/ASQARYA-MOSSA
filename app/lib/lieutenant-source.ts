@@ -36,7 +36,7 @@ export function mergeLieutenantScans(primary:LieutenantScan,older:LieutenantScan
   const recovered=older.transfers.filter(row=>!numbers.has(row.transfer.number));
   return {...primary,transfers:[...primary.transfers,...recovered]};
 }
-const cancellationReference=/inventory\\s+transfer\\s+no\\.?\\s*(\\d{4,20})\\s+has\\s+been\\s+cancel(?:ed|led)/ig;
+const cancellationReference=/inventory\s+transfer\s+no\.?\s*(\d{4,20})\s+has\s+been\s+cancel(?:ed|led)/ig;
 function missingCancellationOriginals(scan:LieutenantScan):string[]{
   const seen=new Set(scan.transfers.map(row=>row.transfer.number));
   const missing=new Set<string>();
