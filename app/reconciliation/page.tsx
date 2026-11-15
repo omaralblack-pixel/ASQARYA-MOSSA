@@ -568,7 +568,7 @@ function exportText(){
  const blob=new Blob([txt],{type:'text/tab-separated-values;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
  a.href=url;a.download='institution-personal-check-sheet'+(selectedPage===null?'':'-page-'+selectedPage)+'.tsv';a.click();URL.revokeObjectURL(url);
 }
-async function save(overrideSoldier=false) {
+async function save() {
   if (!draft || busy) return;
   await run(async () => {
     const ready=prepared?.draft??draft;
@@ -578,15 +578,15 @@ async function save(overrideSoldier=false) {
       const source = transferSources[row.id];
       return source && transferNumbers(row.number).includes(source.number) ? [source] : [];
     });
-    const saved = await api({action: 'save', draft: savedDraft, transferSources: sources, overrideSoldier});
+    const saved = await api({action: 'save', draft: savedDraft, transferSources: sources});
     setTransferSources(current => Object.fromEntries(Object.entries(current).filter(([, source]) => !sources.includes(source))));
     D(current => current && current.transfers[0]?.id === draft.transfers[0]?.id
       ? {...current, id: saved.id, version: saved.version, referenceSnapshot: saved.referenceSnapshot,
           useCurrentReference: false, linkedSapCodes: undefined,
-          soldierOverride:saved.soldierOverride}
+}
       : current);
     N(draft.invoices.some(invoice => invoiceDocumentNo(invoice.number))
-? (overrideSoldier?'تم اعتماد المطابقة بقرارك، وتم تجاوز ملاحظات جندي توزيع الصفحات.':'تم حفظ الفاتورة وترحيلاتها.')
+? 'تم حفظ الفاتورة وترحيلاتها.'
 : 'تم حفظ الترحيل في السجل.');
     if(sapPreview.groups.length){
       try{
