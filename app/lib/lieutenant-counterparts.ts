@@ -133,7 +133,8 @@ export function analyzeLieutenantMovements(
   for(const correction of transfers){
     if(!correction.signedAdjustment||correction.cancellationState==='canceled'||correction.cancellationState==='cancellation')continue;
     const originalNo=correction.remarks.match(officialCancellation)?.[1];
-    if(originalNo) signedReferences.set(originalNo,[...(signedReferences.get(originalNo)||[]),correction.transfer.number]);
+    if(originalNo&&correction.transfer.date<=periodEnd)
+      signedReferences.set(originalNo,[...(signedReferences.get(originalNo)||[]),correction.transfer.number]);
     const original=originalNo?byNumber.get(originalNo):undefined;
     const allNegative=correction.transfer.paste.split('\n').slice(1)
       .every(line=>Number((line.split('\t')[2]||'').replace(/,/g,''))<0);
