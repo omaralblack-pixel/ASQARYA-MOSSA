@@ -49,132 +49,60 @@ assert.ok(result.blockers.some(e=>e.includes('مكرر')));
 result=evaluateSerial([row(5,'2624002303','186.400')],[record('g1',[invoice('2624002303','186.400')],[{number:'2611001',paste:header+'\nDAR00001\tA\t1\tPiece\t001\t011\nDAR00002\tB\t1\tPiece\t002\t011'}])]);
 assert.deepEqual(result.blockers,[],'Multiple valid directions in a single SAP transfer are not an error');
 assert.equal(result.rows[0].transfers[0].kind,'adjustment','Mixed transfer is listed as adjustment, not falsely main or dry');
-const refs=[{code:'11001',sapCode:'DAR00001',active:true},{code:'11002',sapCode:'DAR00002',active:true}];
-const group=record('g-multi',[invoice('2624002303','186.400'),invoice('2624002304','591.160')],[transfer('2612001','DAR00001','001','011'),transfer('2612002','DAR00002','002','011')],{
-  referenceSnapshot:refs,pages:{'i:11001':'1','i:11002':'2'}
+const group=record('g-multi',[invoice('2624002303','186.400'),invoice('2624002304','591.160')],
+ [transfer('2612001','DAR00001','001','011'),transfer('2612002','DAR00002','002','011')],{
+  pages:{'s:DAR00001':'1','s:DAR00002':'2'}, // Historical personal marks are ignored.
 });
 result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[group]);
-assert.deepEqual(result.blockers,[]);
-assert.deepEqual(result.rows.map(x=>x.transfers.map(t=>t.number)),[['2612001'],['2612002']],'No transfer may leak between invoices');
-const ambiguous=record('g-multi',[invoice('2624002303','186.400'),invoice('2624002304','591.160')],[transfer('2612001','DAR00001','001','011')]);
-result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[ambiguous]);
-assert.ok(result.blockers.some(e=>e.includes('لا يمكن ربط')));
+assert.deepEqual(result.blockers,[],'Personal page marks must never block invoice receipt');
+assert.deepEqual(result.rows.map(r=>r.transfers),[[],[]],
+ 'A page number is not evidence of transfer ownership by an individual invoice');
+assert.deepEqual(result.rows.map(r=>r.unassignedTransfers.map(t=>t.number)),
+ [['2612001','2612002'],['2612001','2612002']]);
+assert.deepEqual(result.count,{received:2,pending:0,missing:0,review:0});
+const withoutPersonalPages={...JSON.parse(group.payload),pages:{'s:DAR00001':'99','s:DAR00002':'0'},
+ soldierLineAllocations:{},soldierLineTotals:{},soldierManualLineKeys:[]};
+const noPages=record('g-multi-nopage',withoutPersonalPages.invoices,withoutPersonalPages.transfers,withoutPersonalPages);
+const same=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[noPages]);
+assert.deepEqual(same.rows.map(r=>({state:r.state,transfers:serialInvoiceColumns(r)})),
+ result.rows.map(r=>({state:r.state,transfers:serialInvoiceColumns(r)})),
+ 'Page markers and old soldier allocations must not change serial results');
+assert.deepEqual(same.blockers,[]);
+const ambiguous=record('g-ambiguous',[invoice('2624002303','186.400'),invoice('2624002304','591.160')],
+ [transfer('2612001','DAR00001','001','011')]);
+assert.deepEqual(evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[ambiguous]).blockers,[],
+ 'Shared but valid transfer is a group link, not an allocation error');
 const legacyRecord=record('g-legacy',[
  {...invoice('2624002303','186.400'),date:'2026-11-09'},
  {...invoice('2624002304','591.160'),date:'2026-11-09'}
 ],[transfer('2612001','DAR00001','001','011'),transfer('2612002','DAR00002','002','011')]);
 result=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[legacyRecord]);
-assert.deepEqual(result.blockers,[],'Approved historical group may export without saved page numbers');
-assert.equal(result.count.received,2,'Both old MATCH invoices must remain received');
-assert.deepEqual(result.rows.map(r=>r.unassignedTransfers.map(t=>t.number)),
- [['2612001','2612002'],['2612001','2612002']],
- 'Group-certified transfers must not be falsely assigned to individual invoice pages');
-assert.equal(result.rows.every(r=>r.reason.includes('مؤكدان')),true);
-assert.equal(result.legacyWarnings.length,4);
-// Regression: Gardenz invoices 2624002303/04 were previously blank in Saja K:Q
-// because approved historical group transfers were retained separately.
-assert.deepEqual(result.rows.map(r=>serialInvoiceColumns(r)),
- [['2612001','2612002'],['2612001','2612002']],
- 'Both Saja invoice rows must list approved historical group transfer numbers');
-assert.deepEqual(result.rows.map(r=>r.transfers),[[],[]],
- 'The export must not fabricate saved invoice-page ownership');
-// If a transfer is independently allocated and a different approved transfer is
-// group-level, show both once with their correct main/dry warehouse columns.
+assert.deepEqual(result.blockers,[]);
+assert.equal(result.legacyWarnings.length,0,'No legacy page cutoff or warning is needed');
+assert.deepEqual(result.rows.map(serialInvoiceColumns),[['2612001','2612002'],['2612001','2612002']]);
+assert.deepEqual(result.rows.map(r=>r.transfers),[[],[]]);
+const numbers=['2616429','2616430','2616428','2616431','2616527','2616405','2616406',
+ '2616465','2616423','2616424','2616432','2616433','2616417','2616418','2616419','2616538','2616529'];
+const seventeen=record('g17',[invoice('2624002303','186.400'),invoice('2624002304','591.160')],
+ numbers.map(n=>transfer(n,'DAR00001','001','011')));
+const seventeenResult=evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002304','591.160')],[seventeen]);
+assert.deepEqual(seventeenResult.blockers,[],
+ 'Seventeen valid group transfers without invoice pages must not be errors');
+assert.equal(seventeenResult.rows[0].unassignedTransfers.length,17);
+assert.deepEqual(seventeenResult.count,{received:2,pending:0,missing:0,review:0});
+assert.equal(new Set(serialInvoiceColumns(seventeenResult.rows[0]).filter(Boolean)).size,17);
+const unapprovedOld=record('g-unapproved',[invoice('2624002303','186.400'),invoice('2624002304','591.160')],
+ [transfer('2612001','DAR00001','001','011')],{summary:{status:'review'}});
+assert.equal(evaluateSerial([row(5,'2624002303','186.400')],[unapprovedOld]).rows[0].state,'review',
+ 'A page bypass must never override an unapproved financial record');
+const badTransfer=record('g-invalid',[invoice('2624002303','186.400')],[{number:'2612001',paste:'bad SAP lines'}]);
+const badResult=evaluateSerial([row(5,'2624002303','186.400')],[badTransfer]);
+assert.equal(badResult.rows[0].state,'review','Invalid transfer evidence remains a real blocker');
+assert.ok(badResult.blockers.some(e=>e.includes('غير مقروءة')));
 assert.deepEqual(serialInvoiceColumns({
  transfers:[{number:'2615908',kind:'main'}],
  unassignedTransfers:[{number:'2615908',kind:'main'},{number:'2615826',kind:'dry'}],
-}),['2615908','2615826'],'Keep existing main and shared dry numbers without duplicating them');
-const fallbackApproved=record('fallback',[
- {...invoice('2624002303','186.400'),date:'2026-11-09'},
- {...invoice('2624002304','591.160'),date:'2026-11-09'}
-],[transfer('2612001','DAR00001','001','011')],{summary:undefined});
-fallbackApproved.status='match';
-const fallbackReport=evaluateSerial([row(5,'2624002303','186.400')],[fallbackApproved]);
-assert.deepEqual(fallbackReport.blockers,[],
- 'Old records with a MATCH database status but no embedded summary are still approved');
-assert.equal(fallbackReport.rows[0].state,'received');
-
-const oldNov10=record('g-10',[
- {...invoice('2624002303','186.400'),date:'2026-11-10'},
- {...invoice('2624002304','591.160'),date:'2026-11-10'}
-],[transfer('2612001','DAR00001','001','011'),transfer('2612002','DAR00002','002','011')]);
-assert.deepEqual(evaluateSerial([row(5,'2624002303','186.400')],[oldNov10]).blockers,[],
- 'November 10 belongs to historic records before cutoff');
-const newRecord=record('g-new',[
- {...invoice('2624002303','186.400'),date:'2026-11-11'},
- {...invoice('2624002304','591.160'),date:'2026-11-11'}
-],[transfer('2612001','DAR00001','001','011')]);
-assert.ok(evaluateSerial([row(5,'2624002303','186.400')],[newRecord]).blockers
- .some(e=>e.includes('لا يمكن ربط')),
- 'New invoices still require their page allocations');
-const newResult=evaluateSerial([row(5,'2624002303','186.400')],[newRecord]);
-assert.deepEqual(serialInvoiceColumns(newResult.rows[0]),['2612001',''],
- 'Newer groups without invoice-page allocations still display saved group transfer number');
-assert.equal(newResult.rows[0].state,'review',
- 'Showing a shared group transfer must not falsely approve a new unallocated invoice');
-// Actual Gardenz pattern: two already approved invoices in one group with no
-// individual page allocations still need both of the group's transfer numbers.
-const gardenz=record('garden',[
- {...invoice('2624002303','186.400'),date:'2026-11-01'},
- {...invoice('2624002304','591.160'),date:'2026-11-01'},
-],[transfer('2615824','DAR00001','001','011'),transfer('2615907','DAR00002','002','011')]);
-const gardenzReport=evaluateSerial([
- row(5,'2624002303','186.400'),row(6,'2624002304','591.160'),
-],[gardenz]);
-assert.deepEqual(gardenzReport.rows.map(serialInvoiceColumns),
- [['2615824','2615907'],['2615824','2615907']],
- 'Never leave historical Gardenz invoices blank when saved group transfers are known');
-assert.deepEqual(gardenzReport.count,{received:2,pending:0,missing:0,review:0});
-// Historical Al-Eis pattern: three confirmed 01-Nov invoices share two
-// transfers, but one invoice page has zero directly assigned item rows.
-// Group transfers must be visible without fabricating page-specific ownership.
-const aisOld=record('ais-old',[
- {...invoice('2660506906','241.800'),date:'2026-11-01'},
- {...invoice('2660506907','1238.780'),date:'2026-11-01'},
- {...invoice('2660506908','801.850'),date:'2026-11-01'},
-],[
- transfer('2615820','DAR00001','001','011'),
- transfer('2615821','DAR00002','002','011'),
-],{pages:{'s:DAR00001':'1','s:DAR00002':'2'}});
-const aisResult=evaluateSerial([
- row(14,'2660506906','241.800'),row(15,'2660506907','1238.780'),row(16,'2660506908','801.850'),
-],[aisOld]);
-assert.equal(aisResult.blockers.length,0,
- 'An approved old invoice with no assigned item rows must not be reported as transferless');
-assert.deepEqual(aisResult.count,{received:3,pending:0,missing:0,review:0});
-assert.deepEqual(aisResult.rows[2].transfers,[],
- 'Page 3 must not receive invented page-specific transfer ownership');
-assert.deepEqual(serialInvoiceColumns(aisResult.rows[2]),['2615820','2615821'],
- 'Page 3 may list the approved group transfers as group-level associations');
-const aisNew=record('ais-new',[
- {...invoice('2660506906','241.800'),date:'2026-11-12'},
- {...invoice('2660506907','1238.780'),date:'2026-11-12'},
- {...invoice('2660506908','801.850'),date:'2026-11-12'},
-],[
- transfer('2615820','DAR00001','001','011'),
- transfer('2615821','DAR00002','002','011'),
-],{pages:{'s:DAR00001':'1','s:DAR00002':'2'}});
-assert.equal(evaluateSerial([
- row(14,'2660506906','241.800'),row(15,'2660506907','1238.780'),row(16,'2660506908','801.850')
-],[aisNew]).rows[2].state,'review',
- 'The old-group exception must never silently approve a new invoice without page evidence');
-
-const unapprovedOld=record('g-old-review',[
- {...invoice('2624002303','186.400'),date:'2026-11-09'},
- {...invoice('2624002304','591.160'),date:'2026-11-09'}
-],[transfer('2612001','DAR00001','001','011')],{summary:{status:'review'}});
-assert.ok(evaluateSerial([row(5,'2624002303','186.400')],[unapprovedOld]).blockers
- .some(e=>e.includes('لا يمكن ربط')),
- 'Only already MATCH records receive historical exception');
-assert.equal(evaluateSerial([row(5,'2624002303','186.401')],[legacyRecord]).rows[0].state,'received_difference',
- 'One-fils mismatch in an approved legacy invoice is received with a yellow remark');
-assert.ok(evaluateSerial([row(5,'2624002303','186.400'),row(6,'2624002303','186.400')],[legacyRecord]).blockers
- .some(e=>e.includes('مكرر')),
- 'Invoice duplicates remain critical errors');
-assert.deepEqual(evaluateSerial([row(5,'2624002303','186.400')],[record('other',[
- {...invoice('2624002303','186.400'),date:'2026-11-09'}
-],[transfer('2611004','DAR00004','011','001')])]).blockers,[],
- 'Valid one-invoice historical records remain supported');
+}),['2615908','2615826'],'Keep grouped warehouse columns without duplication');
 // Omar's saved figures stay authoritative, while Saja's original cells are kept for comparison.
 result=evaluateSerial([row(5,'2624002303','186.401')],[correct]);
 assert.equal(result.rows[0].omarNumber,'2624002303');
@@ -248,5 +176,5 @@ assert.equal(duplicateResult.projectOnly.length,2,'Conflicting saved invoices mu
 assert.ok(duplicateResult.projectOnly.every(row=>serialReviewNote(row).includes('مكرر في سجلات المشروع')));
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: confirmed arrival is counted despite amount/number differences while uncertain links remain unresolved');
-console.log('PASS: serial soldier retains approved old group matching without page numbers, preserves discrepancy notes, and enforces uniqueness and pending states');
+console.log('PASS: serial soldier ignores ALL personal pages for both historical and new groups while retaining true validation errors');
 console.log('PASS: project-only invoices, declared date ranges, repeat exports, transfer-linked typos, duplicate records and read-only export.');
