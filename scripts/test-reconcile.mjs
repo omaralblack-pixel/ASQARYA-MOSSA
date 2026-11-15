@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue,approvedBranchException,unmatchedBranchSources}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -170,6 +170,18 @@ assert.deepEqual(independent.map(row=>row.date),['2026-11-07','2026-11-03'],'Det
 const cleared=editGroupInvoiceDate(groupChangedFromFirst,'');
 assert.ok(cleared.every(row=>row.date===''&&row.manualDate===false));
 console.log('PASS: instant-group date edits sync every invoice, remain manual after auto-dating, preserve amounts, and do not alter detailed independent dates.');
+
+const exception={transferNo:'2616511',sourceBranch:'47 — خالد بن الوليد',targetBranch:'23 — خالد',reason:'الفاتورة الورقية تؤكد أن الترحيل يخص خالد',approvedAt:'2026-11-15T09:00:00Z'};
+assert.deepEqual(unmatchedBranchSources([],exception.transferNo,exception.targetBranch,[exception.sourceBranch]),[exception.sourceBranch]);
+assert.ok(approvedBranchException([exception],exception.transferNo,exception.sourceBranch,exception.targetBranch));
+assert.deepEqual(unmatchedBranchSources([exception],exception.transferNo,exception.targetBranch,[exception.sourceBranch,exception.sourceBranch]),[]);
+assert.deepEqual(unmatchedBranchSources([exception],exception.transferNo,exception.targetBranch,[exception.sourceBranch,'42 — اربد الشمالي']),['42 — اربد الشمالي']);
+assert.deepEqual(unmatchedBranchSources([exception],'2616512',exception.targetBranch,[exception.sourceBranch]),[exception.sourceBranch],'Exception must not approve any other transfer');
+assert.deepEqual(unmatchedBranchSources([exception],exception.transferNo,'47 — خالد بن الوليد',['23 — خالد']),['23 — خالد'],'Exception must not approve the opposite branch direction');
+assert.deepEqual(unmatchedBranchSources([exception],exception.transferNo,exception.targetBranch,[exception.targetBranch]),[]);
+assert.equal(approvedBranchException([{...exception,reason:'   '}],exception.transferNo,exception.sourceBranch,exception.targetBranch),false,'Missing audit reason cannot approve an exception');
+console.log('PASS: branch exception is audited, per transfer and source/target branch, never a global override.');
+
 
 
 const withDifference = {...manual,pages:{},invoices:manual.invoices.map((invoice,index)=>index===0?{...invoice,amount:'7.001'}:invoice)};
