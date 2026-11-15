@@ -82,6 +82,22 @@ const seedJS=ts.transpileModule(seedSource,{compilerOptions:{target:ts.ScriptTar
 const priceSeed=await import('data:text/javascript;base64,'+Buffer.from(seedJS).toString('base64'));
 const seedRows=priceSeed.aqabaBlueSeed();
 assert.equal(seedRows.length,52);
+const aqabaRouteSource=fs.readFileSync(new URL('../app/api/aqaba/route.ts',import.meta.url),'utf8');
+assert.ok(aqabaRouteSource.includes('const rowsPerStatement=20;'),
+ 'Aqaba seed SQL must batch at most 20 five-column rows under D1 100-binding limit');
+assert.ok(aqabaRouteSource.includes('db().batch(seedStatements)'),
+ 'Aqaba prices must be written through an atomic multi-statement batch');
+assert.ok(aqabaRouteSource.includes('SELECT COUNT(*) AS count FROM aqaba_blue WHERE id IN'),
+ 'Verify persisted seed keys via a read-back query after initialization');
+assert.ok(aqabaRouteSource.includes('INSERT OR IGNORE INTO aqaba_blue'),
+ 'Auto-seeding must never overwrite manually corrected Aqaba prices');
+assert.ok(seedRows.length*5>100&&Math.ceil(seedRows.length/20)===3&&20*5<=100,
+ '52 blue-invoice prices need three inserts with no more than 100 bound parameters per SQL');
+const aqabaScreenSource=fs.readFileSync(new URL('../app/reconciliation/AqabaWorkspace.tsx',import.meta.url),'utf8');
+assert.ok(aqabaScreenSource.includes('المحفوظ فعلًا بقاعدة بيانات العقبة'));
+assert.ok(aqabaScreenSource.includes('2650710369')&&aqabaScreenSource.includes('0.350'),
+ 'Use actual recorded Aqaba seed example rather than misleading placeholder price');
+
 assert.equal(new Set(seedRows.map(row=>row.code)).size,52);
 const totals=priceSeed.aqabaSeedTotals();
 assert.equal(totals.get('2650710367'),651930);
