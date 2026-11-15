@@ -465,7 +465,7 @@ function reconcileManual(d:Draft,reference:Item[],parsed:ReturnType<typeof parse
  const expected=base.rows.length&&rows.every(r=>r.expected!==null)?rows.reduce((sum,r)=>sum+r.expected!,0):null;
  const priceDifference=base.total===null||expected===null?null:base.total-expected;
  const unchecked=0,review=rows.filter(r=>r.state==='review').length,differences=0;
- for(const r of rows){const page=d.pages?.[r.key];if(page&&(!/^\d+$/.test(digits(page))||pageNumber(page)>d.invoices.length))problems.push('رقم الفاتورة الزرقاء للصنف '+(r.code||r.sapCode)+' غير موجود في الفواتير المسجلة');}
+ // Personal page notes never affect invoice validation, price matching, or approval.
  const status=review||problems.length?'review':differences||priceDifference!==null&&priceDifference!==0?'difference':priceDifference===null?'priceMissing':'match';
  const acceptedDifference=status==='difference'&&base.total!==null&&expected!==null
   &&d.acceptedDifference?.paper===base.total&&d.acceptedDifference.calculated===expected;
