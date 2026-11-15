@@ -1,7 +1,7 @@
 'use client';
 
 import {useEffect, useMemo, useState} from 'react';
-import {AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
+import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
