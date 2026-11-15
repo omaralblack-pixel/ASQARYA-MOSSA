@@ -132,7 +132,7 @@ const reconcileModule=await import(reconcileURL);
 const ammanOnly=[
  {code:'11880000',sapCode:'CHS00561',name:'اسم عمّان',price:1650,active:true,sapUnit:'Piece',
   cartonPieces:12,kgPerPiece:null,invoicePack:null},
- {code:'11880001',sapCode:'UNLISTED99',name:'صنف عمّان فقط',price:1999,active:true,sapUnit:'Piece',
+ {code:'11880001',sapCode:'CFC00999',name:'صنف عمّان فقط',price:1999,active:true,sapUnit:'Piece',
   cartonPieces:1,kgPerPiece:null,invoicePack:null},
 ];
 assert.equal(aqabaPriceBook.isAqabaBranch('84 — العقبة'),true);
@@ -144,7 +144,7 @@ assert.equal(aqabaOriginal.length,52);
 assert.equal(aqabaOriginal.find(item=>item.sapCode==='CHS00561').price,350,
  'The Aqaba blue 0.350 JD piece price converts to 350 fils');
 assert.equal(aqabaOriginal.find(item=>item.sapCode==='CHS00561').code,'CHS00561');
-assert.equal(aqabaOriginal.some(item=>item.sapCode==='UNLISTED99'),false,
+assert.equal(aqabaOriginal.some(item=>item.sapCode==='CFC00999'),false,
  'An Amman-only code must never sneak into the Aqaba price book');
 assert.equal(ammanOnly[0].price,1650,'Loading Aqaba prices cannot change the Amman reference');
 const correctedAqabaPrice={
@@ -162,7 +162,7 @@ const aqabaDraft={mode:'manual',branch:'84 — العقبة',driver:'',date:'202
  invoices:[{id:'inv',number:'2650710555',date:'2026-11-15',amount:'0.480',
   complete:true,quantities:{}}],
  transfers:[{id:'transfer',number:'2615754',date:'2026-11-15',
-  paste:'Item No.\\tItem Description\\tQuantity\\tUoM Code\\tFrom Warehouse\\tTo Warehouse\\nCHS00561\\tCheese\\t1\\tPiece\\t001\\t011'}],
+  paste:'Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse\nCHS00561\tCheese\t1\tPiece\t001\t011'}],
  checks:{},
 };
 const aqabaResult=reconcileModule.prepareReconciliation(aqabaDraft,correctedBook).result;
@@ -171,7 +171,7 @@ assert.equal(aqabaResult.status,'match','Instant match must use the manually cor
 assert.equal(reconcileModule.prepareReconciliation(aqabaDraft,ammanOnly).result.expected,1650,
  'The same transfer at Amman pricing must differ, proving the branch switch is essential');
 const unmatchedAqabaDraft={...aqabaDraft,transfers:[{...aqabaDraft.transfers[0],
- paste:aqabaDraft.transfers[0].paste.replaceAll('CHS00561','UNLISTED99')}]};
+ paste:aqabaDraft.transfers[0].paste.replaceAll('CHS00561','CFC00999')}]};
 assert.notEqual(reconcileModule.prepareReconciliation(unmatchedAqabaDraft,correctedBook).result.status,'match',
  'A missing Aqaba price or code must block matching even though Amman knows the item');
 const routeSource=fs.readFileSync(new URL('../app/api/reconcile/route.ts',import.meta.url),'utf8');
