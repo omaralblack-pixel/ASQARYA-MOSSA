@@ -10,6 +10,8 @@ export type LieutenantMovement = {
   note:string;
   /** Exact signed SAP correction offsets the original quantity; not proof of SAP CANCELED=Y/C. */
   verifiedOffset?:boolean;
+  /** An explicit SAP cancellation remark plus complete negative rows, without the omitted original document. Not proof of exact line balance or Y/C. */
+  documentedCancellation?:boolean;
 };
 const cashVan=/(?:كاش[\s._\-ـ]*[فڤ][اأإآ]ن|cash[\s._\-]*van)/iu;
 const officialCancellation=/inventory\s+transfer\s+no\.?\s*(\d{4,20})\s+has\s+been\s+cancel(?:ed|led)/i;
@@ -82,6 +84,23 @@ const active=(source:LieutenantTransfer)=>
   source.cancellationState!=='canceled'&&source.cancellationState!=='cancellation'&&
   !source.signedAdjustment&&!officialCancellation.test(source.remarks);
 
+/** The saved SAP export can contain only the negative cancellation entry:
+ * its referenced original is often excluded from OINM. This can close an
+ * operator's *administrative* review, never assert full stock offset or Y/C.
+ */
+function isCompleteNegativeCorrection(source:LieutenantTransfer):boolean{
+  if(!source.signedAdjustment||source.issues.length||source.cancellationState==='active')return false;
+  const lines=source.transfer.paste.replace(/\r/g,'').split('\n').slice(1).filter(line=>line.trim());
+  return lines.length>0&&lines.every(line=>{
+    const [code,,rawQty,unit,from,to]=line.split('\t');
+    const quantity=Number((rawQty||'').replace(/,/g,''));
+    return /^[A-Z]{2,6}\d{3,10}$/.test(code||'')&&
+      ['Piece','Carton','KG'].includes(unit||'')&&
+      !!from&&!!to&&from!==to&&(from==='011'||to==='011')&&
+      Number.isFinite(quantity)&&quantity<0;
+  });
+}
+
 export function analyzeLieutenantMovements(
   transfers:LieutenantTransfer[],periodEnd:string,
 ):Map<string,LieutenantMovement>{
@@ -136,8 +155,7 @@ export function analyzeLieutenantMovements(
     if(originalNo&&correction.transfer.date<=periodEnd)
       signedReferences.set(originalNo,[...(signedReferences.get(originalNo)||[]),correction.transfer.number]);
     const original=originalNo?byNumber.get(originalNo):undefined;
-    const allNegative=correction.transfer.paste.split('\n').slice(1)
-      .every(line=>Number((line.split('\t')[2]||'').replace(/,/g,''))<0);
+    const allNegative=isCompleteNegativeCorrection(correction);
     const matches=original&&allNegative&&!original.signedAdjustment&&
       (!original.branch||!correction.branch||original.branch===correction.branch)&&
       original.transfer.date<=correction.transfer.date&&!!signature(original)&&
@@ -146,6 +164,25 @@ export function analyzeLieutenantMovements(
       note:'حركة تصحيح سالبة؛ يُحتسب أثرها الموقّع في المخزون، وتحتاج حالة الإلغاء للتحقق على SAP. لا تحتاج فاتورة زرقاء مستقلة.'});
     if(matches&&original&&correction.transfer.date<=periodEnd)
       matchingSigned.set(original.transfer.number,[...(matchingSigned.get(original.transfer.number)||[]),correction.transfer.number]);
+  }
+
+  // If the original transfer was omitted from this SAP extract (as in OINM
+  // cancellation-only exports), a unique system-style cancellation remark and
+  // a fully negative, well-formed correction suffice to close the operator's
+  // review. Never label this an exact offset: the original lines are absent.
+  for(const [originalNo,ids] of signedReferences){
+    if(ids.length!==1||byNumber.has(originalNo))continue;
+    const correction=byNumber.get(ids[0]);
+    if(!correction||correction.transfer.number===originalNo||
+      !isCompleteNegativeCorrection(correction))continue;
+    resolved.set(correction.transfer.number,{
+      kind:'cancellation-review',counterpart:originalNo,
+      documentedCancellation:true,
+      note:'إلغاء مذكور صراحةً في Remarks لـ SAP للترحيل '+originalNo+
+        '، والمستند '+correction.transfer.number+' يحتوي بنود تصحيح سالبة صالحة. '+
+        'أُغلقت المراجعة الإدارية تلقائيًا. الأصل غير موجود في هذا الكشف؛ '+
+        'لا يمكن إثبات تطابق كمياته أو حالة CANCELED=Y/C منه.',
+    });
   }
 
   // Auto-close review ONLY for a unique, explicitly referenced correction whose
