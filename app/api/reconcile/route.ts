@@ -3,6 +3,8 @@ import {validateCancellationDecision} from '../../lib/lieutenant-cancellation-de
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
+import {isAqabaBranch,aqabaMatchReference} from '../../lib/aqaba-instant-reference';
+import type {BlueLine} from '../../lib/aqaba';
 import schemaStatements from '../../lib/reconciliation-schema.json';
 import branches from '../../branches.json';
 import drivers from '../../drivers.json';
@@ -12,10 +14,25 @@ declare const __ASQARYA_COMMIT__:string;
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة');return env.DB};
 async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();return r?JSON.parse(String(r.value)):defaults as Item[]}
+async function aqabaRefs(base:Item[]):Promise<Item[]>{
+ // The reconciliation API reads the very same persisted blue-price table as
+ // the Aqaba workspace. Baseline 03-Nov prices are bundled in the shared helper.
+ const rows=await db().prepare(
+  'SELECT payload FROM aqaba_blue ORDER BY doc_date ASC,doc_no ASC LIMIT 3001'
+ ).all<{payload:string}>();
+ if(rows.results.length>3000)
+  throw Error('مرجع أسعار العقبة كبير؛ يلزم تصفية سجلات الأسعار قبل المطابقة.');
+ const saved=rows.results.map(row=>JSON.parse(row.payload) as BlueLine);
+ return aqabaMatchReference(base,saved);
+}
 // Initialize only missing tables on standalone Cloudflare deployments.
 let schemaReady:Promise<unknown>|undefined;
 function ensureSchema(){return schemaReady??=db().batch(schemaStatements.map(sql=>db().prepare(sql))).catch(error=>{schemaReady=undefined;throw error})}
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);
+if(u.searchParams.has('aqabaPricing')){
+ const reference=await aqabaRefs(await refs());
+ return json({reference,priceCount:reference.length,branch:'84 — العقبة',currencyUnit:'fils'});
+}
 if(u.searchParams.has('version'))return json({commit:typeof __ASQARYA_COMMIT__==='string'?__ASQARYA_COMMIT__:'unknown',workerVersion:env.CF_VERSION_METADATA?.id||null});
 if(u.searchParams.has('branchExceptions')){
  const transferNo=digits(u.searchParams.get('branchExceptions')||'').trim();
@@ -271,12 +288,16 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   const now = new Date().toISOString();
   // Personal page marks are kept in the record for checking only. Do not
   // compute soldier allocations or condition any approval on page numbers.
+  const aqaba=isAqabaBranch(d.branch);
   const normalized=withInvoiceDates({
-    ...d,id,version,referenceSnapshot:previous?.referenceSnapshot,
+    ...d,id,version,referenceSnapshot:aqaba?undefined:previous?.referenceSnapshot,
+    useCurrentReference:aqaba?true:d.useCurrentReference,
     transfers:d.transfers.map((transfer,index)=>({...transfer,number:ts[index]})),
     invoices:d.invoices.map((invoice,index)=>({...invoice,number:ns[index]})),
   });
-  const prepared=prepareReconciliation(normalized,await refs());
+  const standardReference=await refs();
+  const selectedReference=aqaba?await aqabaRefs(standardReference):standardReference;
+  const prepared=prepareReconciliation(normalized,selectedReference);
   const reference=prepared.reference;
   const clean={...prepared.draft,branchExceptions:transferBranchExceptions,referenceSnapshot:reference,
     useCurrentReference:false,linkedSapCodes:undefined};
