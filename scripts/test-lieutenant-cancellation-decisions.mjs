@@ -57,7 +57,7 @@ function signedCorrection(number,quantity='-12',unit='Piece',warehouse='002',dat
   const row=transfer(number,date,warehouse,'011','unknown',
     'Inventory transfer no. 2619301 has been canceled',true);
   row.signedAdjustment=true;
-  row.transfer.paste=header+'\\n'+['DAR00005','Sample',quantity,unit,warehouse,'011'].join('\\t');
+  row.transfer.paste=header+'\n'+['DAR00005','Sample',quantity,unit,warehouse,'011'].join('\t');
   return row;
 }
 const covered=signedCorrection('2619302');
