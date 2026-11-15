@@ -2,7 +2,6 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import SapImport from './SapImport';
 import InstantMatch from './InstantMatch';
-import InstitutionAudit from './InstitutionAudit';
 import CatalogReplacement from './CatalogReplacement';
 import {parseSapImport,canUseSelectedBranchForSapMember,type SapImportGroup} from '../lib/sap-import';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -96,7 +95,7 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
   if(!stored)return [];
   return stored.transfers.flatMap(transfer=>transferNumbers(transfer.number).map(number=>[number,record.id] as const));
 })),[sapPreview.records]);
-useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','audit','replace','stock','serial-soldier','lieutenant','aqaba'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
+useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier','lieutenant','aqaba'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
 
 const prepared=useMemo(()=>draft?prepareReconciliation(draft,reference):null,[draft,reference]);
 const baseResult=prepared?.result??null;
@@ -116,8 +115,7 @@ const numbersOnly=serial.trim()!==''&&serial.trim().split(/\r?\n/).filter(line=>
 const selectedPage=pageFilter==='all'?null:Number(pageFilter);
 const aliasTarget=linkSap&&edit?reference.find(item=>item.code===digits(edit.code).trim()&&item.sapCode!==linkSap):undefined;
 const sapDefinition=edit?.sapAliases?.find(alias=>alias.sapCode===editAlias)??edit;
-const selectedInvoice=selectedPage&&draft?draft.invoices[selectedPage-1]:undefined;
-const getPage=(key:string)=>draft?.invoices.length===1?1:pageNumber(draft?.pages?.[key]);
+const getPage=(key:string)=>pageNumber(draft?.pages?.[key]); // A personal check-sheet mark, never invoice ownership.
 const entryPositions=new Map(draft?.pageEntryOrder?.map((key,index)=>[key,index]));
 const sortedRows=[...(result?.rows||[])].sort((a,b)=>{
   if(sort==='entry'&&entryPositions.size){
@@ -137,15 +135,13 @@ const searchByItemSuffix=/^\d{4}$/.test(itemQuery);
 const visibleRows=pageRows.filter(row=>searchByItemSuffix
   ?digits(row.code).endsWith(itemQuery)
   :digits(row.name+' '+row.code+' '+row.sapCode).toLowerCase().includes(itemQuery));
-const pageExpected=pageRows.length>0&&pageRows.every(row=>row.expected!==null)?pageRows.reduce((sum,row)=>sum+row.expected!,0):null;
-const pageAmount=selectedInvoice?fils(selectedInvoice.amount):null;
-const expected=selectedPage===null?result?.expected??null:pageExpected;
-const paperAmount=selectedPage===null?result?.total??null:pageAmount;
+const expected=result?.expected??null;
+const paperAmount=result?.total??null;
 const difference=paperAmount===null||expected===null?null:paperAmount-expected;
 const acceptedDifference=!!result&&'acceptedDifference' in result&&result.acceptedDifference===true;
-const comparisonStatus=difference===null?'review':difference!==0&&!(selectedPage===null&&acceptedDifference)?'difference':'match';
-const comparisonLabel=selectedPage===null?'مقارنة قيمة إجمالي الكشف':'مقارنة قيمة الفاتورة '+selectedPage;
-const pageOptions=[...new Set([0,...(draft?.invoices.map((_,i)=>i+1)||[]),...sortedRows.map(row=>getPage(row.key))])].sort((a,b)=>a-b);const monthResult=useMemo(()=>monthly(serial,month,columns,filtered,dateFormat,records,branches),[serial,month,columns,filtered,dateFormat,records,branches]);
+const comparisonStatus=difference===null?'review':difference!==0&&!acceptedDifference?'difference':'match';
+const comparisonLabel='مقارنة قيمة إجمالي المجموعة (رقم الصفحة للتشييك فقط)';
+const pageOptions=[...new Set([0,...sortedRows.map(row=>getPage(row.key))])].sort((a,b)=>a-b);const monthResult=useMemo(()=>monthly(serial,month,columns,filtered,dateFormat,records,branches),[serial,month,columns,filtered,dateFormat,records,branches]);
 async function run(fn:()=>Promise<void>){B(true);E('');N('');try{await fn()}catch(e:any){E(e.message)}finally{B(false)}}
 function change(p:Partial<OrderedDraft>){
   D(d=>{
@@ -453,12 +449,6 @@ async function openRecord(id:string,invoiceId?:string){
   D(next);PAGE(page);Q('');T('work');
 }
 async function loadRecord(r:{id:string}){await run(()=>openRecord(r.id))}
-async function openCollectedInvoice(recordId:string,invoiceId:string){
-  if(draft&&(draft.id||draft.branch||draft.driver||draft.transfers.some(t=>t.number||t.paste.trim())||
-    draft.invoices.some(inv=>inv.number||inv.amount||inv.auditLines||inv.complete))&&
-    !confirm('فتح ترحيلات الفاتورة سيستبدل الكشف المفتوح. احفظ تعديلاتك أولًا. هل تريد المتابعة؟'))return;
-  await openRecord(recordId,invoiceId);
-}
 function showDefinition(item:Item,sapCode?:string){
   LINK('');
   setEditOriginal(item);
@@ -547,76 +537,43 @@ function toggleQuantityCheck(key:string,signature:string){
     return {...d,checks};
   });
 }
-function checkInvoicePage(){
-  if(!selectedInvoice||difference!==0)return;
-  D(current=>{
-    if(!current)return current;
-    const checks={...current.checks};
-    for(const row of pageRows)checks[row.key]={state:'match',signature:checkSignature(row)};
-    return {...current,checks};
-  });
-}
 function removeInvoice(index:number){
   if(!draft||!confirm('إزالة ربط الفاتورة من الكشف؟ يتم تثبيت التعديل عند الحفظ.'))return;
-  if(draft.invoices.length===1){change({invoices:[newInvoice()],pages:{},checks:{},acceptedDifference:undefined});PAGE('all');return;}
-  const removedPage=index+1;
-  const pages=Object.fromEntries(Object.entries(draft.pages||{}).map(([key,value])=>{
-    const page=pageNumber(value);
-    return [key,page===removedPage?'':page>removedPage?String(page-1):value];
-  }));
-  change({invoices:draft.invoices.filter((_,i)=>i!==index),pages,pageEntryOrder:draft.pageEntryOrder?.filter(key=>pageNumber(pages[key])>0)});
-  if(selectedPage===removedPage)PAGE('0');
-  else if(selectedPage!==null&&selectedPage>removedPage)PAGE(String(selectedPage-1));
+  if(draft.invoices.length===1){
+    change({invoices:[newInvoice()],checks:{},acceptedDifference:undefined});return;
+  }
+  // Personal page marks stay unchanged when invoice cards are added or removed.
+  change({invoices:draft.invoices.filter((_,i)=>i!==index)});
 }
 function assignPage(key:string,raw:string){
   const value=digits(raw).trim();
   const page=pageNumber(value);
-  if((value&&!/^\d{1,2}$/.test(value))||page>30)return;
+  if((value&&!/^\\d{1,2}$/.test(value))||page>99)return;
   D(d=>{
     if(!d)return d;
     const order=d.pageEntryOrder||[];
     if(page===pageNumber(d.pages?.[key])&&(!page||order.includes(key)))return d;
     const pageEntryOrder=order.filter(entry=>entry!==key);
     if(page)pageEntryOrder.push(key);
-    const invoices=[...d.invoices];
-    while(invoices.length<page)invoices.push(newInvoice());
-    return {...d,pages:{...d.pages,[key]:page?String(page):''},invoices,pageEntryOrder};
+    // Intentionally never create invoices, allocate rows, or update approvals.
+    return {...d,pages:{...d.pages,[key]:page?String(page):''},pageEntryOrder};
   });
 }
-const finishedPage=selectedPage&&selectedPage>0?selectedPage:1;
-const nextPage=finishedPage+1;
-function remainingPageRows(current:OrderedDraft){
-  const manuallyAssigned=new Set(current.pageEntryOrder);
-  return (result?.rows||[]).filter(row=>{
-    const page=pageNumber(current.pages?.[row.key]);
-    if(page===0)return true;
-    if(finishedPage===1||page!==finishedPage||manuallyAssigned.has(row.key))return false;
-    const check=current.checks?.[row.key];
-    return check?.state!=='match'||check.signature!==checkSignature(row);
-  });
+function exportText(){
+ if(!result)return;
+ const header=['رقم المادة','رقم الصفحة (تشييك شخصي)','أرقام فواتير المجموعة','اسم المادة','الكمية بالحبة','السعر','القيمة','كود SAP'];
+ const invoices=draft?.invoices.map(i=>i.number).filter(Boolean).join(' + ')||'';
+ const rows=[header,...visibleRows.map(r=>[r.code,String(getPage(r.key)||''),invoices,r.name,num(r.transfer),money(r.unitPrice),money(r.expected),r.sapCode])];
+ const txt='\\ufeff'+rows.map(r=>r.join('\\t')).join('\\r\\n');
+ const blob=new Blob([txt],{type:'text/tab-separated-values;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=url;a.download='institution-personal-check-sheet'+(selectedPage===null?'':'-page-'+selectedPage)+'.tsv';a.click();URL.revokeObjectURL(url);
 }
-const remainingCount=draft&&nextPage<=30?remainingPageRows(draft).length:0;
-function finishCurrentPage(){
-  if(!remainingCount)return;
-  D(current=>{
-    if(!current)return current;
-    const pages={...current.pages};
-    for(const row of remainingPageRows(current))pages[row.key]=String(nextPage);
-    const invoices=[...current.invoices];
-    while(invoices.length<nextPage)invoices.push(newInvoice());
-    return withInvoiceDates({...current,pages,invoices});
-  });
-  PAGE(String(nextPage));
-  Q('');
-}
-function exportText(){if(!result)return;const header=['رقم المادة','الفاتورة الزرقاء','رقم الفاتورة الحقيقي','اسم المادة','الكمية بالحبة','السعر','القيمة','كود SAP'];const rows=[header,...visibleRows.map(r=>[r.code,String(getPage(r.key)),draft?.invoices[getPage(r.key)-1]?.number||'',r.name,num(r.transfer),money(r.unitPrice),money(r.expected),r.sapCode])];const txt='\ufeff'+rows.map(r=>r.join('\t')).join('\r\n');const blob=new Blob([txt],{type:'text/tab-separated-values;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='institution-check-sheet'+(selectedPage===null?'':'-page-'+selectedPage)+'.tsv';a.click();URL.revokeObjectURL(url)}
 async function save(overrideSoldier=false) {
   if (!draft || busy) return;
   await run(async () => {
     const ready=prepared?.draft??draft;
-    const savedDraft = ready.invoices.length === 1 && result
-      ? {...ready, pages: {...ready.pages, ...Object.fromEntries(result.rows.map(row => [row.key, '1']))}}
-      : ready;
+    // Never write page 1 automatically: numbers are personal notes only.
+    const savedDraft=ready;
     const sources = draft.transfers.flatMap(row => {
       const source = transferSources[row.id];
       return source && transferNumbers(row.number).includes(source.number) ? [source] : [];
@@ -626,8 +583,6 @@ async function save(overrideSoldier=false) {
     D(current => current && current.transfers[0]?.id === draft.transfers[0]?.id
       ? {...current, id: saved.id, version: saved.version, referenceSnapshot: saved.referenceSnapshot,
           useCurrentReference: false, linkedSapCodes: undefined,
-          pages:saved.pages,soldierLineAllocations:saved.soldierLineAllocations,
-          soldierLineTotals:saved.soldierLineTotals,soldierManualLineKeys:saved.soldierManualLineKeys,
           soldierOverride:saved.soldierOverride}
       : current);
     N(draft.invoices.some(invoice => invoiceDocumentNo(invoice.number))
@@ -647,7 +602,6 @@ function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);const h=s
 if(!draft)return <div className="initial">جاري تجهيز مساحة المطابقة…</div>;
 return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="private-dot"/>مساحة عمل خاصة<form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');T(key);if(key==='history'||key==='invoices'||key==='monthly')void run(getRecords)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
 {tab==='aqaba'&&<AqabaWorkspace/>}
-{tab==='audit'&&<InstitutionAudit onOpenInvoice={openCollectedInvoice}/>}
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
