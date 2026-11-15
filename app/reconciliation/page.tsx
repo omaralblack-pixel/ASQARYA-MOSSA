@@ -144,7 +144,8 @@ const numbersOnly=serial.trim()!==''&&serial.trim().split(/\r?\n/).filter(line=>
 const selectedPage=pageFilter==='all'?null:Number(pageFilter);
 const aliasTarget=linkSap&&edit?reference.find(item=>item.code===digits(edit.code).trim()&&item.sapCode!==linkSap):undefined;
 const sapDefinition=edit?.sapAliases?.find(alias=>alias.sapCode===editAlias)??edit;
-const getPage=(key:string)=>pageNumber(draft?.pages?.[key]); // A personal check-sheet mark, never invoice ownership.
+const singleBlueInvoice=!!draft&&draft.invoices.length===1&&!!invoiceDocumentNo(draft.invoices[0].number);
+const getPage=(key:string)=>pageNumber(prepared?.draft.pages?.[key]); // A personal check-sheet mark, never invoice ownership.
 const entryPositions=new Map(draft?.pageEntryOrder?.map((key,index)=>[key,index]));
 const sortedRows=[...(result?.rows||[])].sort((a,b)=>{
   if(sort==='entry'&&entryPositions.size){
@@ -579,7 +580,7 @@ function assignPage(key:string,raw:string){
   const page=pageNumber(value);
   if((value&&!/^\\d{1,2}$/.test(value))||page>99)return;
   D(d=>{
-    if(!d)return d;
+    if(!d||d.invoices.length===1&&!!invoiceDocumentNo(d.invoices[0].number))return d;
     const order=d.pageEntryOrder||[];
     if(page===pageNumber(d.pages?.[key])&&(!page||order.includes(key)))return d;
     const pageEntryOrder=order.filter(entry=>entry!==key);
@@ -605,7 +606,7 @@ async function save() {
   }
   await run(async () => {
     const ready=prepared?.draft??draft;
-    // Never write page 1 automatically: numbers are personal notes only.
+    // prepareReconciliation assigns check page 1 for every item with a single real blue invoice.
     const savedDraft=ready;
     const sources = draft.transfers.flatMap(row => {
       const source = transferSources[row.id];
@@ -673,7 +674,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
 <div className="table-scroll"><table className="blue-table"><thead><tr><th>ت</th><th>رقم المادة</th><th>رقم الصفحة (شخصي)</th><th>اسم المادة</th><th>صافي الكمية بالحبة</th><th>السعر</th><th>القيمة</th></tr></thead><tbody>{visibleRows.map((r,index)=>{
   const signature=r.transfer===null?'':checkSignature(r);
   const checked=draft.checks?.[r.key]?.state==='match'&&draft.checks[r.key].signature===signature;
-  return <tr key={r.key} className={r.state}><td>{index+1}</td><td><code>{r.code||'غير مربوط'}</code><small className="sap-ref">{r.sapCode}</small></td><td><input key={getPage(r.key)} className="source-page-input no-print" type="text" inputMode="numeric" maxLength={2} aria-label={'رقم صفحة التشييك الشخصي للصنف '+(r.code||r.sapCode)} placeholder="0" defaultValue={getPage(r.key)||''} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur()}} onChange={e=>{e.currentTarget.dataset.edited='true'}} onBlur={e=>{
+  return <tr key={r.key} className={r.state}><td>{index+1}</td><td><code>{r.code||'غير مربوط'}</code><small className="sap-ref">{r.sapCode}</small></td><td><input key={getPage(r.key)} className="source-page-input no-print" type="text" readOnly={singleBlueInvoice} title={singleBlueInvoice?'رقم الصفحة 1 تلقائيًا عند وجود فاتورة زرقاء واحدة':undefined} inputMode="numeric" maxLength={2} aria-label={'رقم صفحة التشييك الشخصي للصنف '+(r.code||r.sapCode)} placeholder="0" defaultValue={getPage(r.key)||''} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur()}} onChange={e=>{e.currentTarget.dataset.edited='true'}} onBlur={e=>{
     const input=e.currentTarget;
     if(!input.dataset.edited)return;
     delete input.dataset.edited;
