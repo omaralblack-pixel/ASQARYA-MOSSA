@@ -347,7 +347,8 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
     queries.push(db().prepare(`INSERT INTO reconciliation_transfer_archive(id,created,destination_id,source_record)
       SELECT ?,?,?,? WHERE ${guard}`).bind(crypto.randomUUID(), now, id, JSON.stringify(record), id, nonce));
     if (remaining.length) {
-      const updated = withInvoiceDates({...draft, transfers: remaining, version: record.version + 1});
+      const remainingNumbers=new Set(remaining.flatMap(row=>transferNumbers(row.number)));
+      const updated = withInvoiceDates({...draft, transfers: remaining,branchExceptions:(draft.branchExceptions||[]).filter(row=>remainingNumbers.has(row.transferNo)), version: record.version + 1});
       const remainingSummary = summarize(reconcile(updated, updated.referenceSnapshot ?? reference));
       const remainingPayload = JSON.stringify({
         ...updated, summary: remainingSummary, acceptedDifference: remainingSummary.acceptedDifference ? updated.acceptedDifference : undefined,
