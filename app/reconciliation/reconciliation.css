@@ -143,3 +143,45 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 }
 
 }
+
+.reassurance-screen h1{display:flex;align-items:center;gap:10px}
+.reassurance-dates .form-grid{grid-template-columns:repeat(2,minmax(0,260px));gap:18px}
+.reassurance-summary{display:flex;gap:20px;align-items:flex-start;padding:28px;border:1px solid;border-radius:16px;margin:22px 0;background:#fff}
+.reassurance-summary.is-matched{border-color:#a1d9bd;background:#f1fbf5;color:#195b3d}
+.reassurance-summary.needs-action{border-color:#e6c38a;background:#fffaf0;color:#815420}
+.reassurance-summary h2{font-size:23px;margin:0 0 10px}
+.reassurance-summary p{margin:0 0 12px;line-height:1.8}
+.reassurance-stats{grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:24px}
+.reassurance-stats .stat{text-align:right;font:inherit;cursor:pointer;position:relative}
+.reassurance-stats .stat>svg{color:#49778a;position:absolute;left:18px;top:18px}
+.reassurance-stats .stat.selected{border-color:#287c91;box-shadow:0 0 0 2px #287c9124}
+.reassurance-table{min-width:1040px}
+.reassurance-table td:first-child{min-width:190px;max-width:270px}
+.reassurance-table td:last-child{min-width:240px;max-width:400px}
+.reassurance-table td:first-child div{margin-top:7px;line-height:1.6}
+.reassurance-table p{font-size:12px;line-height:1.8;margin:9px 0}
+.reassurance-table small{display:block;color:#607e8b;margin-top:5px}
+.reassurance-details{margin-top:14px;font-size:12px;line-height:1.8}
+.reassurance-details>summary{cursor:pointer;color:#285974;font-weight:700}
+.reassurance-details[open]{padding:12px;border:1px solid #dce7ed;border-radius:9px;background:#f9fcfd}
+.reassurance-documents>div{padding:10px 0;border-top:1px solid #dce7ed;display:grid;gap:5px;overflow-wrap:anywhere}
+.reassurance-documents .button{justify-self:start}
+.reassurance-loading,.reassurance-empty{text-align:center;padding:42px 20px}
+.reassurance-loading>b{display:block;margin-top:15px}
+.reassurance-loading>svg{margin:auto;color:#277c91}
+.reassurance-spin{animation:reassurance-spin 1.4s linear infinite}
+@keyframes reassurance-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.reassurance-spin{animation:none}}
+@media(max-width:760px){.reassurance-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.reassurance-summary{padding:20px;gap:12px}.reassurance-summary h2{font-size:20px}.reassurance-summary>svg{flex-shrink:0;width:28px}.reassurance-dates .form-grid{grid-template-columns:1fr}}
+@media print{
+  .reassurance-screen .no-print,.reassurance-screen button{display:none!important}
+  .reassurance-screen .page-title{display:flex!important}
+  .reassurance-screen .banner{display:block!important}
+  .reassurance-screen .reassurance-stats{display:none!important}
+  .reassurance-screen .table-scroll{overflow:visible}
+  .reassurance-screen .reassurance-table{min-width:0;width:100%;font-size:9px}
+  .reassurance-screen .reassurance-table th,.reassurance-screen .reassurance-table td{padding:6px;min-width:0;max-width:none;white-space:normal;border:1px solid #b9c9d1}
+  .reassurance-screen .reassurance-table tr{break-inside:avoid}
+  .reassurance-screen .reassurance-summary{padding:12px;margin:12px 0}
+  .reassurance-screen details:not([open]){display:none}
+}

@@ -45,6 +45,7 @@ jobs:
           node scripts/test-lieutenant-invoice-day.mjs
           node scripts/test-lieutenant-opening-stock.mjs
           node scripts/test-lieutenant-cancellation-decisions.mjs
+          node scripts/test-reassurance.mjs
       - name: SAP 011 closing stock query regression tests
         run: node scripts/test-sap-stock-query.mjs
       - name: Storage, invoice registry and uniqueness checks
