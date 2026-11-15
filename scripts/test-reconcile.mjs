@@ -87,8 +87,10 @@ manual.pages[mr.rows[0].key]='0';
 assert.equal(reconcile(manual,ref).status,'match');
 manual.pages[mr.rows[0].key]='١';
 assert.equal(reconcile(manual,ref).status,'match');
-manual.pages[mr.rows[0].key]='3';
-assert.equal(reconcile(manual,ref).status,'review');
+manual.pages[mr.rows[0].key]='99';
+assert.equal(reconcile(manual,ref).status,'match','Personal check-page numbers cannot block financial reconciliation');
+assert.equal(reconcile({...manual,pages:{}},ref).priceDifference,reconcile(manual,ref).priceDifference,
+ 'Personal page notes must never change group financial totals');
 
 const combined=structuredClone(d);
 combined.transfers=[{...combined.transfers[0],number:'100+101'}];
@@ -100,7 +102,7 @@ assert.deepEqual(m.missing.map(row=>row.number),['102']);
 assert.deepEqual(m.duplicates,['102']);
 assert.equal(monthly('100\n101','2026-11',noColumns,false,'dmy',combinedGroups).received.length,0);
 assert.equal(monthly(serial.replace('101\t','Document Number\tDocument Date\tBranch\n101\t'),'2026-11',{number:0,date:1,branch:2},false,'dmy',groups).problems.length,0);
-console.log('PASS: page zero, Arabic page digits, out-of-range pages, plain M2026 numbers, and previously combined transfer numbers.');
+console.log('PASS: personal page marks never affect financial match, even above invoice count; SAP movement IDs still work.');
 
 const link={...ref[0],code:'99999999',sapCode:'CFC00007',name:'معكرونة صدفه',price:800};
 const draftLink={...manual,pages:{'s:CFC00007':'1','i:other':'2'},transfers:[{...manual.transfers[0],paste:paste([['CFC00007',2,'Piece']])}]};
