@@ -81,15 +81,15 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
       {!!row.source.issues.length&&<p className="red">{row.source.issues.join(' · ')}</p>}
     </td>
     <td>
+      {row.proven&&<b>مغطاة تلقائيًا بمستند مقابل مطابق — لا تحتاج قرارًا يدويًا</b>}
       {saved?<div><b>{decisionLabels[saved.decision]}</b>
         {!!saved.related_number&&<small style={{display:'block'}}>
           المرجع الذي سجّلته: {saved.related_type?relatedLabels[saved.related_type]||'مستند':''} <b dir="ltr">{saved.related_number}</b>
         </small>}
         {!!saved.note&&<p style={{whiteSpace:'pre-wrap'}}>{saved.note}</p>}
         <small style={{display:'block'}} dir="ltr">حُفظ: {saved.updated_at}</small>
-      </div>:row.proven?<b>مستند مقابل مثبت في SAP — لا يحتاج اعتمادًا يدويًا</b>:
-        <b>بحاجة قرار — غير محفوظ</b>}
-      <div className="no-print" style={{marginTop:8}}>
+      </div>:!row.proven&&<b>بحاجة قرار — غير محفوظ</b>}
+      {!row.proven?<div className="no-print" style={{marginTop:8}}>
         <label>قرار المراجعة
           <select value={mode} disabled={disabled||busy} onChange={event=>{
             const next=event.target.value as ''|CancellationDecisionKind;
@@ -130,7 +130,10 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
           {saved&&<button className="button secondary" type="button" disabled={disabled||busy}
             onClick={()=>void clear()}>إعادة فتح للمراجعة</button>}
         </div>
-      </div>
+      </div>:saved&&<div className="no-print" style={{marginTop:8}}>
+        <button className="button secondary" type="button" disabled={disabled||busy}
+          onClick={()=>void clear()}>{busy?'جارٍ التحديث...':'إزالة القرار اليدوي السابق'}</button>
+      </div>}
     </td>
   </tr>;
 }
@@ -148,8 +151,8 @@ export default function CancelledTransferReview({transfers,from,to,onOpenTransfe
   const needsDecision=(row:CancellationReviewRow)=>
     !row.proven&&!decisions[row.source.transfer.number];
   const pending=rows.filter(needsDecision).length;
-  const manuallyReviewed=rows.filter(row=>!!decisions[row.source.transfer.number]).length;
-  const verified=rows.filter(row=>row.proven&&!decisions[row.source.transfer.number]).length;
+  const manuallyReviewed=rows.filter(row=>!row.proven&&!!decisions[row.source.transfer.number]).length;
+  const verified=rows.filter(row=>row.proven).length;
   const visible=rows.filter(row=>filter==='all'||
     (filter==='pending'?needsDecision(row):!needsDecision(row)));
   async function refresh(){
@@ -184,16 +187,16 @@ export default function CancelledTransferReview({transfers,from,to,onOpenTransfe
   return <section className="panel" aria-label="مراجعة الترحيلات الملغية وحفظ قراراتها">
     <div className="section-title"><div>
       <h2>مراجعة الترحيلات الملغية — قرارات محفوظة</h2>
-      <p>تظهر الإلغاءات المثبتة في SAP والحركات التي تشير ملاحظاتها إلى إلغاء دون سبب مثبت. سجّل قرارك مرة واحدة؛ يظهر في كل كشف وطباعة لاحقة.</p>
+      <p>تُغلق مراجعة الحركة تلقائيًا إذا ثبت تطابق الترحيل المقابل بالكامل في كود الصنف والكمية والوحدة واتجاه المستودعات، وتبقى حالات النقص أو التعارض بانتظار قرارك.</p>
     </div></div>
-    <p className="hint">قرار «تجاوزها» يغلق متابعة هذه الحركة إداريًا فقط. قرار «لا يجب إلغاؤها» يوثّق اعتراضك ورقم الفاتورة، ولا يعيد تفعيل ترحيل ملغى في SAP ولا يغيّر المخزون أو اعتمادات الفواتير. الربط اليدوي لا يعني إثبات المطابقة آليًا.</p>
-    <p role="status"><b>{rows.length}</b> حركة إلغاء أو إشارة إلغاء في الفترة · <b>{pending}</b> بحاجة قرار · <b>{manuallyReviewed}</b> قرار محفوظ · <b>{verified}</b> مثبتة بالمستند دون حاجة لقرار يدوي.</p>
+    <p className="hint">التغطية التلقائية تعتمد على بيانات SAP حتى تاريخ الفحص، ولا تثبت حالة الإلغاء Y/C بمجرد وجود تصحيح سالب. قرار «تجاوزها» إداري فقط، و«لا يجب إلغاؤها» يوثّق اعتراضك والفاتورة دون تغيير مخزون SAP أو اعتمادات الفواتير. الربط اليدوي لا يثبت المطابقة آليًا.</p>
+    <p role="status"><b>{rows.length}</b> حركة إلغاء أو إشارة إلغاء في الفترة · <b>{pending}</b> بحاجة قرار · <b>{manuallyReviewed}</b> قرار محفوظ · <b>{verified}</b> تغطية مثبتة تلقائيًا دون قرار يدوي.</p>
     <div className="table-controls no-print">
       <label>عرض القرارات
         <select value={filter} onChange={event=>setFilter(event.target.value as typeof filter)}>
           <option value="all">الكل (بما فيها القرارات المحفوظة)</option>
           <option value="pending">بحاجة قرار</option>
-          <option value="reviewed">قرارات محفوظة أو إلغاء مثبت</option>
+          <option value="reviewed">قرارات محفوظة أو تغطية مثبتة تلقائيًا</option>
         </select>
       </label>
       <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={loading}>
