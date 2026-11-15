@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -156,6 +156,21 @@ const dated = withInvoiceDates({...manual, transfers:[
 ]});
 assert.deepEqual(dated.invoices.map(invoice=>invoice.date),['2026-10-31','2026-11-04']);
 console.log('PASS: blue invoice dates subtract one calendar day, use linked outgoing transfers, and ignore reverse dates.');
+const originalGroupDates=[{id:'a',date:'2026-11-01',manualDate:false,number:'1',amount:'10.000'}, {id:'b',date:'2026-11-03',manualDate:true,number:'2',amount:'20.000'}];
+const groupChangedFromSecond=editGroupInvoiceDate(originalGroupDates,'2026-11-05');
+assert.deepEqual(groupChangedFromSecond.map(row=>row.date),['2026-11-05','2026-11-05']);
+assert.ok(groupChangedFromSecond.every(row=>row.manualDate===true));
+assert.deepEqual(groupChangedFromSecond.map(row=>row.amount),['10.000','20.000']);
+assert.deepEqual(originalGroupDates.map(row=>row.date),['2026-11-01','2026-11-03'],'Original invoices must not be mutated');
+const groupChangedFromFirst=editGroupInvoiceDate(groupChangedFromSecond,'2026-11-06');
+assert.deepEqual(groupChangedFromFirst.map(row=>row.date),['2026-11-06','2026-11-06']);
+assert.deepEqual(withInvoiceDates({...dated,invoices:groupChangedFromFirst}).invoices.map(row=>row.date),['2026-11-06','2026-11-06'],'Auto-dating must not overwrite manual group dates');
+const independent=editInvoiceDate(originalGroupDates,'a','2026-11-07');
+assert.deepEqual(independent.map(row=>row.date),['2026-11-07','2026-11-03'],'Detailed reconciliation keeps independent dates');
+const cleared=editGroupInvoiceDate(groupChangedFromFirst,'');
+assert.ok(cleared.every(row=>row.date===''&&row.manualDate===false));
+console.log('PASS: instant-group date edits sync every invoice, remain manual after auto-dating, preserve amounts, and do not alter detailed independent dates.');
+
 
 const withDifference = {...manual,pages:{},invoices:manual.invoices.map((invoice,index)=>index===0?{...invoice,amount:'7.001'}:invoice)};
 const outstanding = reconcile(withDifference,ref);
