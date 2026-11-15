@@ -13,7 +13,7 @@ export type CancellationDecisionInput={
 };
 export type CancellationReviewRow={
   source:LieutenantTransfer;kind:string;automaticReason:string;
-  counterparts:string[];directions:string[];proven:boolean;
+  counterparts:string[];directions:string[];proven:boolean;noteBased:boolean;
 };
 const unsafeControl=(value:string,allowMultiline=false)=>[...value].some(char=>{
   const code=char.charCodeAt(0);
@@ -78,11 +78,13 @@ export function cancellationReviewRows(
     ])];
     const counterpartsPresent=!!counterparts.length&&counterparts.every(no=>byNumber.has(no));
     const signedOffset=counterpartsPresent&&movement?.verifiedOffset===true;
+    const noteBased=movement?.documentedCancellation===true&&
+      counterparts.length===1&&!counterpartsPresent;
     const fullReverse=counterpartsPresent&&
       (movement?.kind==='reversed'||movement?.kind==='reverse');
     const sapProof=counterpartsPresent&&
       (movement?.kind==='sap-cancel-doc'||movement?.kind==='sap-canceled');
-    const proven=signedOffset||fullReverse||sapProof;
+    const proven=signedOffset||fullReverse||sapProof||noteBased;
     const kind=source.cancellationState==='canceled'?'ملغى رسميًا في SAP (Y)':
       source.cancellationState==='cancellation'?'مستند إلغاء SAP (C)':
       source.signedAdjustment?'تصحيح كمية مع ملاحظة إلغاء':
@@ -91,13 +93,16 @@ export function cancellationReviewRows(
       'تغطية كمية مثبتة تلقائيًا بين الترحيل '+source.transfer.number+
       ' والمقابل '+counterparts.join('، ')+': التصحيح السالب مطابق'+
       ' في جميع الأصناف والكميات والوحدات والمستودعات. هذا ليس إثباتًا لتغيير حالة SAP.':
+      noteBased?'أُغلقت المراجعة تلقائيًا: المستند '+source.transfer.number+
+        ' تصحيح سالب بجميع بنوده، وRemarks في كشف SAP تشير صراحةً إلى إلغاء الترحيل '+
+        counterparts[0]+'. الأصل غير موجود في الكشف؛ لا ندّعي تطابق كمياته أو إثبات حالة Y/C.':
       fullReverse?'ترحيل عكسي مطابق بالكامل في الأصناف والكميات والوحدات والمستودعات: '+counterparts.join('، '):
       sapProof?'مستند إلغاء SAP مثبت ومطابق: '+counterparts.join('، '):
       counterparts.length?'رقم مستند مقابل مذكور: '+counterparts.join('، ')+
         '، لكن لم تثبت مطابقة كاملة لكل البنود؛ تحتاج مراجعة.':
         'سبب الإلغاء أو المستند المقابل غير مثبت في هذا الكشف.';
     return {source,kind,automaticReason,counterparts,
-      directions:lieutenantDirections(source),proven};
+      directions:lieutenantDirections(source),proven,noteBased};
   }).sort((a,b)=>a.source.transfer.date.localeCompare(b.source.transfer.date)||
     a.source.transfer.number.localeCompare(b.source.transfer.number,'en',{numeric:true}));
 }
