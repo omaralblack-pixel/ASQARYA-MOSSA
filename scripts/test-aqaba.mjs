@@ -4,6 +4,29 @@ import ts from 'typescript';
 const source=fs.readFileSync(new URL('../app/lib/aqaba.ts',import.meta.url),'utf8');
 const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
 const p=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+// The SAP B1 query preview parser must not receive OINM M / OWTR H / WTR1 L aliases.
+const querySource=fs.readFileSync(new URL('../app/lib/aqaba-query.ts',import.meta.url),'utf8')
+  .replace("from './aqaba'", "from 'data:text/javascript;base64,"+Buffer.from(js).toString('base64')+"'");
+const queryJS=ts.transpileModule(querySource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
+const aqabaQueries=await import('data:text/javascript;base64,'+Buffer.from(queryJS).toString('base64'));
+const periodFrom='2026-11-01',periodTo='2026-11-15';
+const inventorySQL=aqabaQueries.aqabaInventoryQuery(periodFrom,periodTo);
+const transferSQL=aqabaQueries.transferAqabaQuery(periodFrom,periodTo);
+const officialSQL=aqabaQueries.officialAqabaQuery(periodFrom,periodTo);
+assert.ok(inventorySQL.includes('FROM "OINM"\\n'), 'OINM must have no M alias');
+assert.ok(inventorySQL.includes('"OINM"."Warehouse" = \\'011\\''),'Warehouse 011 must be fully qualified');
+assert.ok(inventorySQL.includes('"OINM"."DocDate" BETWEEN TO_DATE(\\'2026-11-01\\''),'OINM keeps requested dates');
+assert.ok(!/\\bM\\./.test(inventorySQL)&&!/FROM "OINM" M/.test(inventorySQL),'OINM SQL contains no short table aliases');
+assert.ok(transferSQL.includes('FROM "OWTR"\\nINNER JOIN "WTR1" ON "OWTR"."DocEntry" = "WTR1"."DocEntry"'));
+assert.ok(transferSQL.includes('"WTR1"."FromWhsCod"=\\'011\\' OR "WTR1"."WhsCode"=\\'011\\''));
+assert.ok(transferSQL.includes('"OWTR"."DocDate" BETWEEN TO_DATE(\\'2026-11-01\\''));
+assert.ok(!/\\b(?:H|L)\\./.test(transferSQL)&&!/(?:FROM "OWTR" H|JOIN "WTR1" L)/.test(transferSQL));
+for(const table of ['OINV','ORIN','ODLN','ORDN'])assert.ok(officialSQL.includes('FROM "'+table+'"\\n'));
+for(const table of ['INV1','RIN1','DLN1','RDN1'])assert.ok(officialSQL.includes('INNER JOIN "'+table+'" ON '));
+assert.ok(!/\\b(?:H|L)\\./.test(officialSQL)&&!/(?:FROM "[A-Z0-9]+" H|JOIN "[A-Z0-9]+" L)/.test(officialSQL));
+assert.ok(officialSQL.includes('UNION ALL')&&!officialSQL.includes('"CANCELED" = \\'N\\''),'All official cancellations remain included');
+assert.throws(()=>aqabaQueries.aqabaInventoryQuery('2026-11-16','2026-11-15'),/فترة غير صحيحة/);
+console.log('PASS: Aqaba generated SAP SQL has no preview-breaking aliases, retains 011 directions, inclusive dates and all cancellations.');
 const heading=['نوع المستند','رقم الفاتورة','DocEntry','التاريخ','رقم الزبون','رقم السطر','المستودع','كود الصنف','اسم الصنف','الوحدة','الكمية','سعر الوحدة','القيمة قبل الضريبة','الضريبة','حالة الإلغاء','نوع المستند المرجعي','BaseEntry','BaseLine','رقم المستند المرجعي'].join('\t');
 const line=(kind,number,row,qty,canceled,customer='C0006751')=>
  [kind,number,number,'2026-11-03',customer,row,'011','CHS00561','جبنة فيتا','Piece',qty,0.313,qty*0.313,0,canceled,-1,'','',''].join('\t');
