@@ -81,7 +81,7 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
       {!!row.source.issues.length&&<p className="red">{row.source.issues.join(' · ')}</p>}
     </td>
     <td>
-      {row.proven&&<b>مغطاة تلقائيًا بمستند مقابل مطابق — لا تحتاج قرارًا يدويًا</b>}
+      {row.proven&&<b>{row.noteBased?'إلغاء موثّق بملاحظة SAP وتصحيح سالب — لا يحتاج قرارًا يدويًا':'مغطاة تلقائيًا بمستند مقابل مطابق — لا تحتاج قرارًا يدويًا'}</b>}
       {saved?<div><b>{decisionLabels[saved.decision]}</b>
         {!!saved.related_number&&<small style={{display:'block'}}>
           المرجع الذي سجّلته: {saved.related_type?relatedLabels[saved.related_type]||'مستند':''} <b dir="ltr">{saved.related_number}</b>
@@ -151,7 +151,7 @@ export default function CancelledTransferReview({transfers,from,to,onOpenTransfe
   const needsDecision=(row:CancellationReviewRow)=>
     !row.proven&&!decisions[row.source.transfer.number];
   const pending=rows.filter(needsDecision).length;
-  const manuallyReviewed=rows.filter(row=>!row.proven&&!!decisions[row.source.transfer.number]).length;
+  const manuallyReviewed=rows.filter(row=>!!decisions[row.source.transfer.number]).length;
   const verified=rows.filter(row=>row.proven).length;
   const visible=rows.filter(row=>filter==='all'||
     (filter==='pending'?needsDecision(row):!needsDecision(row)));
@@ -187,9 +187,9 @@ export default function CancelledTransferReview({transfers,from,to,onOpenTransfe
   return <section className="panel" aria-label="مراجعة الترحيلات الملغية وحفظ قراراتها">
     <div className="section-title"><div>
       <h2>مراجعة الترحيلات الملغية — قرارات محفوظة</h2>
-      <p>تُغلق مراجعة الحركة تلقائيًا إذا ثبت تطابق الترحيل المقابل بالكامل في كود الصنف والكمية والوحدة واتجاه المستودعات، وتبقى حالات النقص أو التعارض بانتظار قرارك.</p>
+      <p>تُغلق المراجعة دون موافقتك إذا ثبت العكسي المطابق، أو إذا ورد تصحيح سالب سليم مع ملاحظة إلغاء صريحة من SAP تشير إلى أصل غير موجود بالكشف. تبقى الحالات المتعارضة أو غير الموثّقة للمراجعة.</p>
     </div></div>
-    <p className="hint">التغطية التلقائية تعتمد على بيانات SAP حتى تاريخ الفحص، ولا تثبت حالة الإلغاء Y/C بمجرد وجود تصحيح سالب. قرار «تجاوزها» إداري فقط، و«لا يجب إلغاؤها» يوثّق اعتراضك والفاتورة دون تغيير مخزون SAP أو اعتمادات الفواتير. الربط اليدوي لا يثبت المطابقة آليًا.</p>
+    <p className="hint">تُميّز الشاشة بين «عكسي مطابق بكامل البنود» وبين «تصحيح سالب موثق بملاحظة إلغاء»: في الحالة الثانية لا تتوفر بنود الأصل لإثبات صافي صفر أو حالة Y/C؛ تُغلق المتابعة الإدارية فقط. لا تتغير أرصدة SAP أو اعتمادات الفواتير أو قراراتك المحفوظة.</p>
     <p role="status"><b>{rows.length}</b> حركة إلغاء أو إشارة إلغاء في الفترة · <b>{pending}</b> بحاجة قرار · <b>{manuallyReviewed}</b> قرار محفوظ · <b>{verified}</b> تغطية مثبتة تلقائيًا دون قرار يدوي.</p>
     <div className="table-controls no-print">
       <label>عرض القرارات
