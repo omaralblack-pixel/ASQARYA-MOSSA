@@ -114,4 +114,74 @@ assert.ok(persisted.every(row=>row.officialNumbers.length===0));
 const stable=p.readAqabaBlue([blueHeading,blueRow].join('\n'));
 assert.equal(stable.items[0].key,'2650710367|CHS00561|1');
 
+// Branch 84 uses the dedicated blue-invoice price book (integer fils) on
+// both the live instant screen and the server. Never borrow Amman prices.
+const reconcileSource=fs.readFileSync(new URL('../app/lib/reconcile.ts',import.meta.url),'utf8');
+const reconcileURL='data:text/javascript;base64,'+Buffer.from(
+ ts.transpileModule(reconcileSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText
+).toString('base64');
+const aqabaReferenceSource=fs.readFileSync(new URL('../app/lib/aqaba-instant-reference.ts',import.meta.url),'utf8')
+ .replace("'./aqaba-blue-seed'","'"+'data:text/javascript;base64,'+
+  Buffer.from(seedJS).toString('base64')+"'")
+ .replace("'./reconcile'","'"+reconcileURL+"'");
+const aqabaReferenceJS=ts.transpileModule(aqabaReferenceSource,{
+ compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}
+}).outputText;
+const aqabaPriceBook=await import('data:text/javascript;base64,'+Buffer.from(aqabaReferenceJS).toString('base64'));
+const reconcileModule=await import(reconcileURL);
+const ammanOnly=[
+ {code:'11880000',sapCode:'CHS00561',name:'اسم عمّان',price:1650,active:true,sapUnit:'Piece',
+  cartonPieces:12,kgPerPiece:null,invoicePack:null},
+ {code:'11880001',sapCode:'UNLISTED99',name:'صنف عمّان فقط',price:1999,active:true,sapUnit:'Piece',
+  cartonPieces:1,kgPerPiece:null,invoicePack:null},
+];
+assert.equal(aqabaPriceBook.isAqabaBranch('84 — العقبة'),true);
+assert.equal(aqabaPriceBook.isAqabaBranch('٨٤ — العقبة'),true);
+assert.equal(aqabaPriceBook.isAqabaBranch('23 — خالد'),false);
+assert.equal(aqabaPriceBook.isAqabaBranch('184 — العقبة'),false);
+const aqabaOriginal=aqabaPriceBook.aqabaMatchReference(ammanOnly,[]);
+assert.equal(aqabaOriginal.length,52);
+assert.equal(aqabaOriginal.find(item=>item.sapCode==='CHS00561').price,350,
+ 'The Aqaba blue 0.350 JD piece price converts to 350 fils');
+assert.equal(aqabaOriginal.find(item=>item.sapCode==='CHS00561').code,'CHS00561');
+assert.equal(aqabaOriginal.some(item=>item.sapCode==='UNLISTED99'),false,
+ 'An Amman-only code must never sneak into the Aqaba price book');
+assert.equal(ammanOnly[0].price,1650,'Loading Aqaba prices cannot change the Amman reference');
+const correctedAqabaPrice={
+ ...priceSeed.aqabaSeedInvoiceLines(ammanOnly).find(row=>row.item==='CHS00561'),
+ key:'manual-correction-CHS00561',date:'2026-11-15',invoice:'2650710555',price:0.480,
+};
+const correctedBook=aqabaPriceBook.aqabaMatchReference(ammanOnly,[correctedAqabaPrice]);
+assert.equal(correctedBook.find(item=>item.sapCode==='CHS00561').price,480,
+ 'Later manually saved Aqaba prices must supersede the bundled seed');
+assert.equal(correctedBook.find(item=>item.sapCode==='CHS00561').cartonPieces,12,
+ 'Only catalog-confirmed SAP carton conversion is retained, not workbook estimates');
+assert.equal(correctedBook.find(item=>item.sapCode==='FVL00043').cartonPieces,null,
+ 'Workbook-estimated packs must not become certified conversion data');
+const aqabaDraft={mode:'manual',branch:'84 — العقبة',driver:'',date:'2026-11-15',notes:'',
+ invoices:[{id:'inv',number:'2650710555',date:'2026-11-15',amount:'0.480',
+  complete:true,quantities:{}}],
+ transfers:[{id:'transfer',number:'2615754',date:'2026-11-15',
+  paste:'Item No.\\tItem Description\\tQuantity\\tUoM Code\\tFrom Warehouse\\tTo Warehouse\\nCHS00561\\tCheese\\t1\\tPiece\\t001\\t011'}],
+ checks:{},
+};
+const aqabaResult=reconcileModule.prepareReconciliation(aqabaDraft,correctedBook).result;
+assert.equal(aqabaResult.expected,480);
+assert.equal(aqabaResult.status,'match','Instant match must use the manually corrected Aqaba price');
+assert.equal(reconcileModule.prepareReconciliation(aqabaDraft,ammanOnly).result.expected,1650,
+ 'The same transfer at Amman pricing must differ, proving the branch switch is essential');
+const unmatchedAqabaDraft={...aqabaDraft,transfers:[{...aqabaDraft.transfers[0],
+ paste:aqabaDraft.transfers[0].paste.replaceAll('CHS00561','UNLISTED99')}]};
+assert.notEqual(reconcileModule.prepareReconciliation(unmatchedAqabaDraft,correctedBook).result.status,'match',
+ 'A missing Aqaba price or code must block matching even though Amman knows the item');
+const routeSource=fs.readFileSync(new URL('../app/api/reconcile/route.ts',import.meta.url),'utf8');
+assert.ok(routeSource.includes("u.searchParams.has('aqabaPricing')"));
+assert.ok(routeSource.includes('aqaba?await aqabaRefs(standardReference):standardReference'),
+ 'The server must use Aqaba prices and not trust the browser total');
+const instantSource=fs.readFileSync(new URL('../app/reconciliation/InstantMatch.tsx',import.meta.url),'utf8');
+assert.ok(instantSource.includes('isAqabaBranch(draft.branch)')&&instantSource.includes('aqabaPricing?.reference'));
+assert.ok(instantSource.includes('أسعار العقبة فقط'));
+const detailedSource=fs.readFileSync(new URL('../app/reconciliation/page.tsx',import.meta.url),'utf8');
+assert.ok(detailedSource.includes('aqabaWorkReference||[]'),'Detailed Aqaba mode must never fall back to Amman');
+console.log('PASS: Aqaba branch 84 uses verified 52-line prices, corrected prices, no Amman fallback, server save enforcement and detailed handoff.');
 console.log('Aqaba parser and cancellation handling passed');
