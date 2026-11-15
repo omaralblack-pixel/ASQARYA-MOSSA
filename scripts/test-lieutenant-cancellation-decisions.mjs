@@ -90,6 +90,7 @@ assert.deepEqual(reversedRows[0].counterparts,['2619402']);
 // Real SAP exports may omit every canceled original while retaining all
 // negative correction rows and an explicit system-style Remarks reference.
 const sapOnly=signedCorrection('2616635','-12','Piece','002');
+sapOnly.transfer.date='2026-11-12';
 sapOnly.remarks='Inventory transfer no. 2616468 has been canceled';
 const sapOnlyRows=cancellationReviewRows([sapOnly],'2026-11-01','2026-11-15');
 assert.equal(sapOnlyRows.length,1);
