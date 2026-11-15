@@ -24,7 +24,6 @@ function loadTs(file){
 }
 
 const {collectInvoicesByDate}=loadTs('app/lib/invoice-collector.ts');
-const {sortSoldierInvoicePages}=loadTs('app/lib/soldier-page-sort.ts');
 const {SOLDIER_START_DATE,isHistoricalSoldierRecord}=loadTs('app/lib/soldier-start.ts');
 assert.equal(SOLDIER_START_DATE,'2026-11-11');
 assert.equal(isHistoricalSoldierRecord('2026-11-10T20:59:59.999Z'),true,
@@ -47,74 +46,37 @@ const transfer=(number,rows)=>({
 const inv=(id,number,date,amount,lines)=>({
   id,number,date,amount,complete:false,auditLines:lines,quantities:{},
 });
-const catalog={
-  sap:[
-    {code:'DAR00005',name:'cream',unit:'Carton',pack:20,kg:null,institutionCode:'11371486'},
-    {code:'CHS00033',name:'cheese',unit:'Piece',pack:12,kg:null,institutionCode:'11064245'},
-  ],
-  institution:[
-    {code:'11371486',name:'cream',price:1550},
-    {code:'11064245',name:'cheese',price:800},
-  ],
-};
 const first=transfer('2615774',[['DAR00005','cream','2','Carton','001','011']]);
 const second=transfer('2615773',[['CHS00033','cheese','12','Piece','002','011']]);
 const draft={
-  id:'g1',branch:'23 — خالد',driver:'',date:'2026-11-02',
-  transfers:[first,second],notes:'',
-  invoices:[
-    inv('i1','2610013337','2026-11-01','600.640','11371486\t40'),
-    inv('i2','2610013338','2026-11-02','9.600','11064245\t12'),
-  ],
+ id:'g1',branch:'23 — خالد',driver:'',date:'2026-11-02',
+ transfers:[first,second],notes:'',
+ invoices:[
+  inv('i1','2610013337','2026-11-01','600.640','11371486\\t40'),
+  inv('i2','2610013338','2026-11-02','9.600','11064245\\t12'),
+ ],
 };
-// A saved manually entered page (the visible 1 / 2 in the invoice sheet)
-// must be honored even when optional invoice item paste is empty.
-const manualOnly={...draft,
-  invoices:draft.invoices.map(invoice=>({...invoice,auditLines:'',quantities:{}})),
-  pages:{'i:11371486':'1','i:11064245':'2'},
-  soldierLineAllocations:{}, // Older saves may have an empty soldier-specific distribution.
-};
-const manualSorted=sortSoldierInvoicePages(manualOnly,catalog);
-assert.equal(manualSorted.assigned,2,'Manual page numbers must assign both SAP lines');
-assert.equal(manualSorted.unresolved.length,0,'Manual pages must avoid redundant soldier review requests');
-assert.deepEqual(manualSorted.pageCounts,[1,1]);
-assert.deepEqual(manualSorted.lines.map(line=>[line.page,line.sapCode]),
-  [[1,'DAR00005'],[2,'CHS00033']]);
-assert.deepEqual(manualOnly.soldierLineAllocations,{},'Sorting must not mutate the supplied draft');
-assert.deepEqual(manualSorted.draft.pages,manualOnly.pages,'Manual page numbers must be preserved');
-const sortedAgain=sortSoldierInvoicePages(manualSorted.draft,catalog);
-assert.equal(sortedAgain.unresolved.length,0,'Manual pages remain valid after a subsequent save');
-assert.equal(sortedAgain.assigned,2);
-
-const noPaperNoPages=sortSoldierInvoicePages({...manualOnly,pages:{}},catalog);
-assert.equal(noPaperNoPages.assigned,0);
-assert.equal(noPaperNoPages.unresolved.length,2,'Truly unassigned rows must still be disclosed');
-
-const manualKey='l:'+first.id+':2:DAR00005';
-const approvedSplit=sortSoldierInvoicePages({...manualOnly,
-  soldierLineAllocations:{[manualKey]:{'1':20,'2':20}},
-  soldierLineTotals:{[manualKey]:40},
-  soldierManualLineKeys:[manualKey],
-},catalog);
-assert.deepEqual(approvedSplit.draft.soldierLineAllocations[manualKey],{'1':20,'2':20},
-  'Explicit manual per-line split must not be replaced by the code-level page number');
-assert.equal(approvedSplit.unresolved.length,0);
-
-const sorted=sortSoldierInvoicePages(draft,catalog);
-assert.equal(sorted.unresolved.length,0);
-assert.equal(sorted.assigned,2);
-const rows=collectInvoicesByDate([{id:'r1',branch:draft.branch,payload:JSON.stringify(sorted.draft)}],
-  '1.11.2026','2.11.2026');
+const personalPageOnly={...draft,pages:{'i:11371486':'99','i:11064245':'0'},
+ soldierLineAllocations:{},soldierLineTotals:{},soldierManualLineKeys:[]};
+const rows=collectInvoicesByDate([{id:'r1',branch:draft.branch,payload:JSON.stringify(personalPageOnly)}],
+ '1.11.2026','2.11.2026');
 assert.equal(rows.rows.length,2);
 assert.equal(rows.days,2);
-assert.deepEqual(rows.rows.map(row=>row.transferNumbers),[['2615774'],['2615773']]);
+assert.deepEqual(rows.rows.map(row=>row.transferNumbers),[[],[]],
+ 'A personal page number must never assign a transfer to an individual invoice');
+assert.deepEqual(rows.rows.map(row=>row.groupConfirmedTransfers),
+ [['2615774','2615773'],['2615774','2615773']],
+ 'Verified SAP transfers belong to the group without relying on pages');
+assert.deepEqual(rows.rows.map(row=>row.unresolvedTransferNumbers),[[],[]]);
 assert.equal(rows.rows[0].number,'2610013337');
 assert.equal(rows.rows[0].branch,'23 — خالد');
 assert.equal(rows.rows[0].date,'2026-11-01');
-assert.equal(rows.rows[0].amount,'600.640','Keep exact three-decimal amount from record');
-assert.equal(rows.rows[0].unresolvedTransferNumbers.length,0);
-
-const onlyNov1=collectInvoicesByDate([{id:'r1',branch:draft.branch,payload:JSON.stringify(sorted.draft)}],
+assert.equal(rows.rows[0].amount,'600.640');
+const sameWithoutPages=collectInvoicesByDate([{id:'r1',branch:draft.branch,payload:JSON.stringify(draft)}],
+ '2026-11-01','2026-11-02');
+assert.deepEqual(sameWithoutPages.rows.map(r=>r.groupConfirmedTransfers),
+ rows.rows.map(r=>r.groupConfirmedTransfers),'Pages and soldier allocations do not affect invoice reports');
+const onlyNov1=collectInvoicesByDate([{id:'r1',branch:draft.branch,payload:JSON.stringify(draft)}],
   '2026-11-01','2026-11-01');
 assert.equal(onlyNov1.rows.length,1);
 
@@ -122,8 +84,9 @@ const unsafe=collectInvoicesByDate([{id:'r1',branch:draft.branch,payload:JSON.st
   '2026-11-01','2026-11-02');
 assert.equal(unsafe.rows.length,2);
 assert.deepEqual(unsafe.rows.map(row=>row.transferNumbers),[[],[]]);
-assert.deepEqual(unsafe.rows.map(row=>row.unresolvedTransferNumbers),
-  [['2615774','2615773'],['2615774','2615773']]);
+assert.deepEqual(unsafe.rows.map(row=>row.unresolvedTransferNumbers),[[],[]]);
+assert.deepEqual(unsafe.rows.map(row=>row.groupConfirmedTransfers),
+ [['2615774','2615773'],['2615774','2615773']]);
 
 // A user-approved old group is confirmed even when per-invoice page keys were never stored.
 const oldApproved={...draft,summary:{status:'match'}};
@@ -138,9 +101,10 @@ assert.deepEqual(approvedByStatus.rows.map(row=>row.groupConfirmedTransfers),
   [['2615774','2615773'],['2615774','2615773']]);
 const oldRejected=collectInvoicesByDate([{id:'review',branch:draft.branch,status:'review',payload:JSON.stringify(draft)}],
   '2026-11-01','2026-11-02');
-assert.deepEqual(oldRejected.rows.map(row=>row.groupConfirmedTransfers),[[],[]]);
-assert.deepEqual(oldRejected.rows.map(row=>row.unresolvedTransferNumbers),
-  [['2615774','2615773'],['2615774','2615773']]);
+assert.deepEqual(oldRejected.rows.map(row=>row.groupConfirmedTransfers),
+ [['2615774','2615773'],['2615774','2615773']],
+ 'Group evidence is not erased by financial review status');
+assert.deepEqual(oldRejected.rows.map(row=>row.unresolvedTransferNumbers),[[],[]]);
 
 const oneInvoice={...draft,invoices:[draft.invoices[0]]};
 const single=collectInvoicesByDate([{id:'one',branch:'23 — خالد',payload:JSON.stringify(oneInvoice)}],
@@ -260,4 +224,4 @@ const approvedRecovered=collectInvoicesByDate([{id:'approved',branch:draft.branc
 assert.deepEqual(approvedRecovered.rows.map(row=>row.groupConfirmedTransfers),
   [['2615774','2615773'],['2615774','2615773']]);
 
-console.log('PASS: date-range invoice collector, exact amounts, verified transfer links, unknown group transfer safety, page sorter, and safe derived-date diagnostics.');
+console.log('PASS: date-range invoice collector, exact amounts, verified transfer links, group-only transfer links independent of personal pages, and safe derived-date diagnostics.');
