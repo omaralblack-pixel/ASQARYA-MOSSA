@@ -1,7 +1,7 @@
 'use client';
 
 import {useEffect, useMemo, useState} from 'react';
-import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
+import {AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
@@ -30,10 +30,10 @@ async function getJson<T extends object>(url:string):Promise<T> {
   if (!response.ok) throw Error(data.error || 'تعذّر استرجاع البيانات');
   return data;
 }
-async function saveJson(draft:Draft, sources:TransferSource[], overrideSoldier=false) {
+async function saveJson(draft:Draft, sources:TransferSource[]) {
   const response = await fetch('/api/reconcile', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'save', draft, transferSources:sources, overrideSoldier})
+    body:JSON.stringify({action:'save', draft, transferSources:sources})
   });
   const data = await response.json() as {error?:string};
   if (!response.ok) throw Error(data.error || 'تعذّر الحفظ');
@@ -332,11 +332,11 @@ export default function InstantMatch({
     &&transferWarnings.length===0&&!!draft.branch
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
     &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null&&dateValue(item.date));
-  async function saveAndNext(overrideSoldier=false) {
+  async function saveAndNext() {
     if (!prepared||!canSave) return;
     setBusy(true);setError('');
     try {
-      const saved=await saveJson(prepared.draft,Object.values(sources),overrideSoldier);
+      const saved=await saveJson(prepared.draft,Object.values(sources));
       await refreshRecords();
       if(saved.summary?.status!=='match'){
         setDraft(current=>current?{...current,id:saved.id,version:saved.version}:current);
@@ -344,7 +344,7 @@ export default function InstantMatch({
         return;
       }
       setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setSuggestionsOpen(false);
-      setNotice(overrideSoldier?'تم اعتماد المطابقة بقرارك وتجاوز ملاحظات الجندي. أدخل الفاتورة التالية.':'تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
+      setNotice('تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر حفظ المطابقة.')}
     finally {setBusy(false);}
   }
@@ -482,8 +482,7 @@ export default function InstantMatch({
         <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
           <button type="button" className="button primary" disabled={busy||!canSave} onClick={()=>void saveAndNext()}>
             <Save size={16}/>{busy?'جارٍ الحفظ…':'حفظ المطابقة والانتقال للتالية'} <ArrowLeft size={16}/></button>
-          <button type="button" className="button secondary" disabled={busy||!canSave} onClick={()=>void saveAndNext(true)}>
-            <CheckCircle2 size={16}/>اعتماد بقراري — تجاوز الجندي</button>
+
           <button type="button" className="button secondary" onClick={()=>setShowItems(!showItems)}>
             {showItems?'إخفاء الأصناف':'عرض تفاصيل الأصناف ('+result.rows.length+')'}</button>
           <button type="button" className="button secondary" onClick={()=>onDetailed(prepared?.draft??draft,sources)}>
