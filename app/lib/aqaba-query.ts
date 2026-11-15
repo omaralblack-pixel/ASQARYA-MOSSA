@@ -45,23 +45,23 @@ export function officialAqabaQuery(from:string,to:string){
 export function transferAqabaQuery(from:string,to:string){
  if(!/^\d{4}-\d\d-\d\d$/.test(from)||!/^\d{4}-\d\d-\d\d$/.test(to)||from>to||from<AQABA_START)throw Error('فترة غير صحيحة');
  return [
- 'SELECT TO_NVARCHAR(H."DocNum") AS "رقم الترحيل",',
- 'TO_NVARCHAR(H."DocEntry") AS "DocEntry",',
- 'TO_VARCHAR(H."DocDate", \'YYYY-MM-DD\') AS "التاريخ",',
- 'H."Comments" AS "Remarks",',
- 'H."CANCELED" AS "حالة الإلغاء",',
- 'L."LineNum" + 1 AS "رقم السطر",',
- 'L."ItemCode" AS "كود الصنف",',
- 'L."Dscription" AS "اسم الصنف",',
- 'L."unitMsr" AS "الوحدة",',
- 'L."Quantity" AS "الكمية",',
- 'L."FromWhsCod" AS "من المستودع",',
- 'L."WhsCode" AS "إلى المستودع"',
- 'FROM "OWTR" H',
- 'INNER JOIN "WTR1" L ON H."DocEntry"=L."DocEntry"',
+ 'SELECT TO_NVARCHAR("OWTR"."DocNum") AS "رقم الترحيل",',
+ 'TO_NVARCHAR("OWTR"."DocEntry") AS "DocEntry",',
+ 'TO_VARCHAR("OWTR"."DocDate", \'YYYY-MM-DD\') AS "التاريخ",',
+ '"OWTR"."Comments" AS "Remarks",',
+ '"OWTR"."CANCELED" AS "حالة الإلغاء",',
+ '"WTR1"."LineNum" + 1 AS "رقم السطر",',
+ '"WTR1"."ItemCode" AS "كود الصنف",',
+ '"WTR1"."Dscription" AS "اسم الصنف",',
+ '"WTR1"."unitMsr" AS "الوحدة",',
+ '"WTR1"."Quantity" AS "الكمية",',
+ '"WTR1"."FromWhsCod" AS "من المستودع",',
+ '"WTR1"."WhsCode" AS "إلى المستودع"',
+ 'FROM "OWTR"',
+ 'INNER JOIN "WTR1" ON "OWTR"."DocEntry" = "WTR1"."DocEntry"',
  "WHERE (L.\"FromWhsCod\"='011' OR L.\"WhsCode\"='011')",
  "AND H.\"DocDate\" BETWEEN TO_DATE('"+from+"', 'YYYY-MM-DD') AND TO_DATE('"+to+"', 'YYYY-MM-DD')",
- 'ORDER BY H."DocDate", H."DocNum", L."LineNum";'
+ 'ORDER BY "OWTR"."DocDate", "OWTR"."DocNum", "WTR1"."LineNum";'
  ].join('\n');
 }
 
