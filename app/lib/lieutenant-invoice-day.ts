@@ -1,4 +1,4 @@
-import {convert,invoiceDocumentNo,numeric,parseTransfer,sapReferences,soldierLineKey,transferNumbers,
+import {convert,invoiceDocumentNo,numeric,parseTransfer,sapReferences,transferNumbers,
   type Draft,type Item,type TransferLine} from './reconcile';
 import type {CollectedInvoice} from './invoice-collector';
 import type {LieutenantTransfer} from './lieutenant';
@@ -23,8 +23,6 @@ export type DayInvoiceReport={rows:DayInvoiceResult[];sourceLastDate:string;};
 const epsilon=0.000001;
 const near=(a:number,b:number)=>Math.abs(a-b)<epsilon;
 const round=(n:number)=>Number(n.toFixed(6));
-const signature=(lines:TransferLine[])=>lines.map(line=>[
-  line.sapCode,line.quantity.toFixed(6),line.unit,line.from,line.to].join('|')).join('||');
 const sourceLines=(row:LieutenantTransfer)=>parseTransfer(row.transfer.paste,{allowReverse:true});
 // SAP correction rows can have negative Quantity. The normal reconciliation
 // parser deliberately rejects negatives, so read those rows separately.
@@ -73,26 +71,11 @@ const refFor=(reference:Item[],sapCode:string,invoice:Draft['invoices'][number])
   const unique=[...new Set(selected.map(item=>item.code))];
   return unique.length===1?selected[0]:null;
 };
-const pageParts=(draft:Draft,transferId:string,line:TransferLine,qtyPieces:number,code:string)=>{
-  const key=soldierLineKey(transferId,line),explicit=draft.soldierLineAllocations?.[key];
-  if(explicit!==undefined){
-    const entries=Object.entries(explicit);
-    if(!entries.length||entries.some(([page,quantity])=>!/^\d+$/.test(page)||
-      Number(page)<1||Number(page)>draft.invoices.length||!Number.isFinite(quantity)||quantity<=0)||
-      !near(entries.reduce((total,[,quantity])=>total+quantity,0),Math.abs(qtyPieces)))return null;
-    return explicit;
-  }
-  if(draft.soldierLineAllocations!==undefined)return null;
-  const page=Number(draft.pages?.['i:'+code]||draft.pages?.['s:'+line.sapCode]||0);
-  return Number.isSafeInteger(page)&&page>=1&&page<=draft.invoices.length?
-    {[String(page)]:Math.abs(qtyPieces)}:null;
-};
-
 /** Prove the SAP movement independently of the operator's financial approval.
  * Look through the whole supplied SAP export up to asOf, including referenced
  * later reversals/corrections and explicitly numbered invoice documents.
  * A group approval does not prove a posting, and a posting does not prove the
- * item-by-item allocation of a multi-page invoice.
+ * item-by-item attribution to an individual invoice in a multi-invoice group.
  */
 function verifyInvoiceSap(
   invoiceNumber:string,branch:string,linkedNumbers:string[],asOf:string,
@@ -198,7 +181,7 @@ function verifyInvoiceSap(
 /** Read-only: a blue-invoice date selects invoices; an SAP posting date controls
  * inventory receipt. Never spread one multi-page SAP row across every invoice.
  * A saved operator approval is authoritative for the invoice status. Missing
- * quantity/page details remain unknown, without reopening that approval.
+ * individual invoice quantities remain unknown without changing approved financial status.
  * Unapproved invoices still require independently verifiable quantities.
  */
 export function auditInvoicesForDay(
@@ -290,7 +273,7 @@ export function auditInvoicesForDay(
     if(duplicateNumbers.get(row.branch+'|'+row.number)!>1)
       notes.push('رقم الفاتورة مكرر في السجل؛ لا تجمع كمياتها مرتين.');
     if(!financiallyMatchedGroup&&(row.unresolvedTransferNumbers.length||row.groupConfirmedTransfers.length))
-      notes.push('المجموعة متعددة الصفحات وفيها ترحيلات لم يثبت توزيع بنودها على هذه الفاتورة.');
+      notes.push('ترحيلات المجموعة مشتركة؛ لا يوجد دليل مستقل على كمية هذه الفاتورة وحدها. رقم الصفحة الشخصي ليس دليل ربط.');
     const paper=invoice?paperQuantities(invoice):{totals:new Map<string,number>(),issues:['بيانات الفاتورة غير متاحة.']};
     if(!financiallyMatchedGroup)notes.push(...paper.issues);
     // Missing/partially readable paper quantities are unknown, NEVER zero.
@@ -299,10 +282,9 @@ export function auditInvoicesForDay(
     if(!references.length)notes.push('مرجع ربط أصناف المؤسسة بأكواد SAP غير متاح.');
     const posted=new Map<string,number>();
     let anyTransfer=false;
-    const nums=[...new Set(row.transferNumbers)];
+    const nums=draft&&draft.invoices.length>1?[]:[...new Set(row.transferNumbers)];
     let postedKnown=!!invoice&&!row.unresolvedTransferNumbers.length&&
       !row.groupConfirmedTransfers.length;
-    const page=draft?.invoices.findIndex(item=>item.id===row.invoiceId)??-1;
     for(const number of nums){
       const current=bySource.get(number);
       if(!current){
@@ -333,24 +315,8 @@ export function auditInvoicesForDay(
       if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length){
         postedKnown=false;notes.push('تعذّر تدقيق بنود الترحيل '+number+'.');continue;
       }
-      // Multiple numbered documents in one legacy card cannot supply trustworthy
-      // row-level page allocations. Single-invoice groups still audit all docs.
-      let savedLines:TransferLine[]|undefined;
-      let transferId='';
-      if(draft&&draft.invoices.length>1){
-        const cards=draft.transfers.filter(item=>transferNumbers(item.number||'').includes(number));
-        if(cards.length!==1||transferNumbers(cards[0].number||'').length!==1){
-          postedKnown=false;notes.push('توزيع الترحيل '+number+' بين صفحات الفواتير غير مثبت.');continue;
-        }
-        transferId=cards[0].id;
-        const saved=parseTransfer(cards[0].paste,{allowReverse:true});
-        if(saved.issues.length||saved.excluded.length||
-          signature(saved.lines)!==signature(parsed.lines)){
-          postedKnown=false;
-          notes.push('بنود الترحيل '+number+' تغيّرت عن النسخة التي وُزّعت على صفحات الفواتير.');continue;
-        }
-        savedLines=saved.lines;
-      }
+      // Only a single-invoice group reaches item-level quantity matching.
+      // Shared group movements are verified by SAP, never by personal pages.
       let counted=false;
       for(const [index,line] of parsed.lines.entries()){
         if(line.to!=='011'||line.from==='011'||line.quantity<0)continue;
@@ -364,13 +330,6 @@ export function auditInvoicesForDay(
         try{pieces=convert(line,item)}
         catch{postedKnown=false;notes.push('شدّة أو وزن تحويل '+line.sapCode+' إلى الحبة غير معرّف.');continue}
         if(!Number.isFinite(pieces)){postedKnown=false;notes.push('كمية محوّلة غير صالحة للصنف '+line.sapCode);continue}
-        if(draft&&draft.invoices.length>1){
-          const savedLine=savedLines?.[index];
-          if(!savedLine){postedKnown=false;notes.push('توزيع سطر SAP غير مكتمل للترحيل '+number);continue}
-          const parts=pageParts(draft,transferId,savedLine,pieces,item.code);
-          if(!parts){postedKnown=false;notes.push('توزيع سطر '+line.sapCode+' بين الفواتير غير مثبت.');continue}
-          pieces=parts[String(page+1)]||0;
-        }
         if(pieces>epsilon){
           posted.set(item.code,(posted.get(item.code)||0)+pieces);
           counted=true;
@@ -419,7 +378,7 @@ export function auditInvoicesForDay(
         }
       }else if((corrective.get(number)||[]).some(correction=>correction.transfer.date<=asOf)){
         postedKnown=false;
-        notes.push('يوجد عكسي أو تصحيح جزئي لترحيل متعدد الصفحات؛ يلزم تحديد الصفحة المتأثرة قبل اعتماد كميتها.');
+        notes.push('يوجد عكسي أو تصحيح جزئي لترحيل مشترك؛ يلزم دليل مستقل لتحديد الفاتورة المتأثرة قبل اعتماد كميتها.');
       }
     }
     const codes=new Set([...paper.totals.keys(),...posted.keys()]);
@@ -432,7 +391,7 @@ export function auditInvoicesForDay(
         difference:expected!==null&&actual!==null?round(expected-actual):null};
     });
     if(financiallyMatchedGroup){
-      notes.unshift('مطابقة حسب اعتمادك المالي المحفوظ؛ لا يُطلب إعادة إدخال الكميات أو توزيع الصفحات.');
+      notes.unshift('مطابقة حسب اعتمادك المالي المحفوظ؛ رقم صفحة التشييك لا يدخل في إثبات الترحيل.');
       // Receipt dates can be read without inventing a quantity allocation.
       // Legacy shared transfers stay group links and never add duplicate items.
       const linkedNumbers=[...new Set([...nums,...row.unresolvedTransferNumbers,...row.groupConfirmedTransfers])];
