@@ -87,6 +87,40 @@ const reversedRows=cancellationReviewRows([reverseSource,reverseDoc],'2026-11-01
 assert.equal(reversedRows[0].proven,true,'An exact full reverse is also an automatic settlement');
 assert.deepEqual(reversedRows[0].counterparts,['2619402']);
 
+// Real SAP exports may omit every canceled original while retaining all
+// negative correction rows and an explicit system-style Remarks reference.
+const sapOnly=signedCorrection('2616635','-12','Piece','002');
+sapOnly.remarks='Inventory transfer no. 2616468 has been canceled';
+const sapOnlyRows=cancellationReviewRows([sapOnly],'2026-11-01','2026-11-15');
+assert.equal(sapOnlyRows.length,1);
+assert.equal(sapOnlyRows[0].proven,true,'Unique, explicit SAP cancellation entry needs no manual approval');
+assert.equal(sapOnlyRows[0].noteBased,true,'Missing-original evidence must be distinguished from exact balance');
+assert.deepEqual(sapOnlyRows[0].counterparts,['2616468']);
+assert.match(sapOnlyRows[0].automaticReason,/الأصل غير موجود/);
+const invalidSAPNote={...sapOnly,remarks:'Possibly canceled 2616468'};
+assert.equal(cancellationReviewRows([invalidSAPNote],'2026-11-01','2026-11-15')[0].proven,false,
+  'Unconfirmed Remarks hints cannot auto-close');
+const positiveNote={...sapOnly,signedAdjustment:false,
+  transfer:{...sapOnly.transfer,paste:sapOnly.transfer.paste.replace('-12','12')}};
+assert.equal(cancellationReviewRows([positiveNote],'2026-11-01','2026-11-15')[0].proven,false,
+  'Positive documents cannot be treated as canceled stock');
+const damagedNote={...sapOnly,issues:['Invalid quantity']};
+assert.equal(cancellationReviewRows([damagedNote],'2026-11-01','2026-11-15')[0].proven,false,
+  'Malformed source data must require review');
+const contradictoryNote={...sapOnly,cancellationState:'active'};
+assert.equal(cancellationReviewRows([contradictoryNote],'2026-11-01','2026-11-15')[0].proven,false,
+  'Explicit SAP active state overrides a cancellation note');
+const secondNote={...sapOnly,transfer:{...sapOnly.transfer,number:'2616636'}};
+assert.ok(cancellationReviewRows([sapOnly,secondNote],'2026-11-01','2026-11-15')
+  .every(row=>!row.proven),'Two cancellation claims for one missing original require review');
+const availableDifferent=transfer('2616468','2026-11-11','002','011');
+availableDifferent.transfer.paste=availableDifferent.transfer.paste.replace('12\tPiece','11\tPiece');
+assert.equal(cancellationReviewRows([availableDifferent,sapOnly],'2026-11-01','2026-11-15')
+  .find(row=>row.source.transfer.number==='2616635').proven,false,
+  'When an original exists but quantities differ, do not bypass full line verification');
+assert.equal(cancellationReviewRows([sapOnly],'2026-11-01','2026-11-11').length,0,
+  'Documents after the date filter cannot appear as settled');
+
 const input=(decision,relatedType='',relatedNumber='',note='')=>({
   transferNo:'2619101',decision,relatedType,relatedNumber,note,
 });
