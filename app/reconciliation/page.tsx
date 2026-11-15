@@ -215,6 +215,8 @@ async function lookupTransfer(id:string,number:string){
       if (!candidate.transfer.paste.trim()) N('الصق جدول أصناف الترحيل ' + normalized + ' قبل الحفظ.');
     } catch (error) {
       if(error instanceof BranchExceptionRequired){
+        // Clear only the unsaved placeholder number so the picker can fill that exact card.
+        D(current=>current?{...current,transfers:current.transfers.map(row=>row.id===id&&!row.paste.trim()?{...row,number:''}:row)}:current);
         setSearchTransferNumber(normalized);setSearchTransferError(error.message);
         setBranchMismatch(error);setSearchTransferOpen(true);
       }else E(error instanceof Error ? error.message : 'تعذّر استرجاع الترحيل.');
@@ -229,11 +231,24 @@ async function lookupTransfer(id:string,number:string){
   const imported=sapTransfers.get(normalized);
   if(imported){
     if(draft.branch&&imported.branch&&draft.branch!==imported.branch){
-      const conflict=new BranchExceptionRequired(normalized,[imported.branch],draft.branch);
-      setSearchTransferNumber(normalized);setSearchTransferError(conflict.message);
-      setBranchMismatch(conflict);setSearchTransferOpen(true);
-    }
-    else {
+      try{
+        const response=await api(undefined,'?branchExceptions='+encodeURIComponent(normalized)) as {exceptions:BranchException[]};
+        const missing=unmatchedBranchSources(response.exceptions,normalized,draft.branch,[imported.branch]);
+        if(!missing.length){
+          D(current=>current?withSapInvoiceNumbers({
+            ...current,transfers:current.transfers.map(row=>row.id===id?{...row,number:normalized,date:imported.transfer.date,paste:imported.transfer.paste}:row),
+            branchExceptions:[...(current.branchExceptions||[]).filter(row=>row.transferNo!==normalized),
+              ...response.exceptions.filter(row=>row.transferNo===normalized&&row.sourceBranch===imported.branch&&row.targetBranch===current.branch)],
+          },imported.invoices,normalized):current);
+          N('تم تحميل الترحيل '+normalized+' باستثناء الفرع المحفوظ؛ راجع الكشف قبل الحفظ.');
+        }else{
+          const conflict=new BranchExceptionRequired(normalized,missing,draft.branch);
+          D(current=>current?{...current,transfers:current.transfers.map(row=>row.id===id&&!row.paste.trim()?{...row,number:''}:row)}:current);
+          setSearchTransferNumber(normalized);setSearchTransferError(conflict.message);
+          setBranchMismatch(conflict);setSearchTransferOpen(true);
+        }
+      }catch(error){E(error instanceof Error?error.message:'تعذّر التحقق من استثناء الفرع.')}
+    }else{
       const index=draft.transfers.findIndex(row=>row.id===id);
       if(index>=0)editTransfer(index,draft.transfers[index],true);
     }
