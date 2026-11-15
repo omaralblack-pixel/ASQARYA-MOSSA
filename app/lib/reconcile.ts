@@ -146,6 +146,21 @@ function moveApprovedPages<T extends Draft>(draft:T,reference:Item[],excludedSap
  return pages===draft.pages?draft:{...draft,pages,pageEntryOrder};
 }
 
+/** With one real blue invoice, all item check-sheet pages are automatically 1.
+ * These page marks do not allocate items to invoices or change approvals.
+ */
+export function withSingleInvoiceCheckPages<T extends Draft>(draft:T,rows:readonly {key:string}[]):T{
+ if(draft.invoices.length!==1||!invoiceDocumentNo(draft.invoices[0].number)||!rows.length)return draft;
+ const pages={...draft.pages};
+ let changed=false;
+ for(const row of rows){
+  if(pageNumber(pages[row.key])===1)continue;
+  pages[row.key]='1';
+  changed=true;
+ }
+ return changed?{...draft,pages}:draft;
+}
+
 export function prepareReconciliation<T extends Draft>(draft:T,current:Item[]){
  const parsed=parseTransfers(draft.transfers);
  const excludedSapCodes=retainedUnlinkedExclusions(draft,parsed.lines);
@@ -166,7 +181,8 @@ export function prepareReconciliation<T extends Draft>(draft:T,current:Item[]){
  const result=prepared.mode==='manual'
   ?reconcileManual(prepared,reference,parsed,excludedSapCodes)
   :reconcileLegacy(prepared,reference,parsed);
- return {draft:prepared,reference,result};
+ const paged=withSingleInvoiceCheckPages(prepared,result.rows);
+ return {draft:paged,reference,result};
 }
 
 export function reconcile(d:Draft,reference:Item[]){
