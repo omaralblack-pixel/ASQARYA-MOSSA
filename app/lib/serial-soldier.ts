@@ -1,4 +1,4 @@
-import {digits, fils, invoiceDocumentNo, dateValue, pageNumber, parseTransfer, readReconciliationRecord, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
+import {digits, fils, invoiceDocumentNo, parseTransfer, readReconciliationRecord, transferNumbers, type Draft} from './reconcile';
 import {collectInvoicesByDate} from './invoice-collector';
 
 
@@ -11,8 +11,6 @@ export type SerialRow = SerialInput & {state:SerialState; reason:string; transfe
 export type SerialRecord = {id:string; branch:string; status?:string; payload:string};
 export type SerialReport = {rows:SerialRow[]; projectOnly:SerialRow[]; period:SerialPeriod|null; blockers:string[]; legacyWarnings:string[]; count:{received:number;pending:number;missing:number;review:number}};
 
-// Existing matched records dated before the new workflow do not need historic page numbers.
-export const LEGACY_PAGE_CUTOFF='2026-11-11';
 type Saved = {record:SerialRecord; draft:Draft; invoice:Draft['invoices'][number]; index:number};
 function normalNumber(value:unknown) {
   return invoiceDocumentNo(value).replace(/[,٬]/g,'');
@@ -20,14 +18,9 @@ function normalNumber(value:unknown) {
 function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, blockers:string[], warnings:string[]) {
   const assigned:SerialTransfer[]=[];
   const unassigned:SerialTransfer[]=[];
-  const references=new Map(sapReferences(draft.referenceSnapshot||[]).map(item=>[item.sapCode,item.code]));
   const multi=draft.invoices.length>1;
-  const savedDate=dateValue(saved.invoice.date||'');
-  const summary=(draft as Draft&{summary?:{status?:string}}).summary;
-  // The owner's approved MATCH is authoritative for the old group. Only PAGE ownership
-  // is exempted. This does NOT assert that a group transfer belongs to a specific invoice.
-  const acceptedOldGroup=multi&&!!savedDate&&savedDate<LEGACY_PAGE_CUTOFF&&
-    (summary?.status==='match'||(!summary?.status&&saved.record.status==='match'));
+  // A transfer belongs to its saved group. A personal page number is not evidence
+  // that it belongs to a specific paper invoice within a multi-invoice group.
   for(const transfer of draft.transfers||[]){
     const numbers=transferNumbers(transfer.number||'');
     if(numbers.length!==1||!/^\d{4,20}$/.test(numbers[0])){
@@ -49,53 +42,11 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
     const route=routes.size===1?[...routes][0]:null;
     const kind=route==='001>011'?'main':route==='002>011'?'dry':'adjustment';
     if(multi){
-      const linked=new Set<number>();
-      let ambiguous=false;
-      for(const line of p.lines){
-        if(draft.soldierLineAllocations!==undefined){
-          const key=soldierLineKey(transfer.id,line);
-          const pieces=draft.soldierLineAllocations[key];
-          const expected=draft.soldierLineTotals?.[key];
-          if(!pieces||!expected||!Number.isFinite(expected)||expected<=0||
-            !Object.keys(pieces).length||
-            Object.entries(pieces).some(([pg,qty])=>!/^\d+$/.test(pg)||+pg<1||+pg>draft.invoices.length||
-              !Number.isFinite(qty)||qty<=0)||
-            Math.abs(Object.values(pieces).reduce((s,v)=>s+v,0)-expected)>0.000001){
-            ambiguous=true;break;
-          }
-          Object.keys(pieces).forEach(pg=>linked.add(Number(pg)-1));
-          continue;
-        }
-        const code=references.get(line.sapCode);
-        const key=code&&draft.pages?.['i:'+code]?'i:'+code:'s:'+line.sapCode;
-        const pg=pageNumber(draft.pages?.[key]);
-        if(!pg||pg>draft.invoices.length){ambiguous=true;break;}
-        linked.add(pg-1);
-      }
-      if(ambiguous||!linked.size){
-        // The number definitely belongs to the saved GROUP. Show it in every
-        // member invoice's export, but never claim specific page ownership.
-        unassigned.push({number,kind});
-        if(acceptedOldGroup){
-          warnings.push('الترحيل '+number+' معتمد ضمن مجموعة الفواتير القديمة التي تشمل '+saved.invoice.number+
-            '؛ تم استثناء شرط أرقام الصفحات فقط.');
-        }else{
-          blockers.push('الترحيل '+number+': مرتبط بالمجموعة المحفوظة، لكن لا يمكن ربط جميع بنوده بصفحات فواتير محددة بعد.');
-        }
-        continue;
-      }
-      if(!linked.has(saved.index)){
-        // Historical approved multi-invoice groups can have legitimate page
-        // assignments for some invoices, with no rows assigned to another.
-        // Keep the known group association visible to the other invoice
-        // without fabricating item-page allocations or quantities.
-        if(acceptedOldGroup){
-          unassigned.push({number,kind});
-          warnings.push('الترحيل '+number+' ضمن مجموعة قديمة معتمدة تشمل '+saved.invoice.number+
-            '؛ لا توجد بنود موزعة مباشرة لهذه الصفحة، لذلك يظهر كترحيل مجموعة فقط.');
-        }
-        continue;
-      }
+      // Keep valid transfer numbers visible on EVERY invoice in the group, but
+      // never attribute an individual SAP line or amount to one invoice by page.
+      // Unassigned here means group-linked, NOT an error and NOT unreceived.
+      if(!unassigned.some(row=>row.number===number))unassigned.push({number,kind});
+      continue;
     }
     if(assigned.some(row=>row.number===number)){
       blockers.push('الترحيل '+number+' مكرر داخل الفاتورة '+saved.invoice.number+'.');
