@@ -1,7 +1,6 @@
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
 import {validateCancellationDecision} from '../../lib/lieutenant-cancellation-decisions';
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
-import {isHistoricalSoldierRecord} from '../../lib/soldier-start';
 import {env} from 'cloudflare:workers';
 import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
@@ -121,8 +120,7 @@ function summarize(result: ReturnType<typeof reconcile>) {
   };
 }
 
-async function saveReconciliation(d: Draft, requestedSources: unknown = [], overrideSoldier: unknown = false) {
-  if(typeof overrideSoldier!=='boolean')return json({error:'طلب اعتماد الجندي غير صالح.'},400);
+async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   const branchSetting = await db().prepare('SELECT value FROM settings WHERE key=?').bind('branches').first();
   const allowedBranches = branchSetting ? JSON.parse(String(branchSetting.value)) : branches;
   if (!d || !Array.isArray(d.transfers) || !d.transfers.length || d.transfers.length > 30 ||
@@ -281,28 +279,20 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
   const version = (old?.version ?? 0) + 1;
   const nonce = crypto.randomUUID();
   const now = new Date().toISOString();
-  // Page sorting is temporarily paused for normal and instant reconciliation.
-  // Preserve any previously approved allocations; do not generate new ones at save.
-  const soldierExempt=!!old&&isHistoricalSoldierRecord(old.created);
+  // Personal page marks are kept in the record for checking only. Do not
+  // compute soldier allocations or condition any approval on page numbers.
   const normalized=withInvoiceDates({
-    ...d, id, version, referenceSnapshot: previous?.referenceSnapshot,
-    transfers: d.transfers.map((transfer, index) => ({...transfer, number: ts[index]})),
-    invoices: d.invoices.map((invoice, index) => ({...invoice, number: ns[index]})),
+    ...d,id,version,referenceSnapshot:previous?.referenceSnapshot,
+    transfers:d.transfers.map((transfer,index)=>({...transfer,number:ts[index]})),
+    invoices:d.invoices.map((invoice,index)=>({...invoice,number:ns[index]})),
   });
-  const sorted={draft:normalized,
-    assigned:Object.keys(normalized.soldierLineAllocations||{}).length,
-    split:Object.values(normalized.soldierLineAllocations||{}).filter(p=>Object.keys(p).length>1).length,
-    unresolved:[] as {sapCode:string;transfer:string;reason:string}[]};
-  const prepared = prepareReconciliation(sorted.draft, await refs());
-  const reference = prepared.reference;
-  const clean = {...prepared.draft, branchExceptions:transferBranchExceptions, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
-  const summary = summarize(prepared.result);
-  // The operator can bypass only soldier page allocation, not price/item/transfer validation.
-  if(overrideSoldier && (prepared.result.status!=='match'||prepared.result.priceDifference!==0))
-    return json({error:'اعتماد تجاوز الجندي متاح فقط بعد تطابق الفواتير والترحيلات ماليًا واكتمال المطابقة الأساسية.'},400);
-  const soldierOverride=overrideSoldier
-    ?{at:now,version,scope:'page-sort-only' as const}
-    :previous?.soldierOverride;
+  const prepared=prepareReconciliation(normalized,await refs());
+  const reference=prepared.reference;
+  const clean={...prepared.draft,branchExceptions:transferBranchExceptions,referenceSnapshot:reference,
+    useCurrentReference:false,linkedSapCodes:undefined};
+  const summary=summarize(prepared.result);
+  // Existing archival metadata is retained as historical evidence only.
+  const soldierOverride=previous?.soldierOverride;
   const payload = JSON.stringify({...clean, soldierOverride, summary,
     acceptedDifference: summary.acceptedDifference ? d.acceptedDifference : undefined});
   const revisions = JSON.stringify(sourceRecords.map(({id, version}) => ({id, version})));
@@ -359,11 +349,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
   } catch {
     return json({error: 'تعارض في أرقام الفواتير أو الترحيلات. راجع المستندات وأعد المحاولة.'}, 409);
   }
-  return json({id, version, referenceSnapshot: reference, summary, soldierOverride,
-    pageSorting:{assigned:sorted.assigned,split:sorted.split,exemptedHistorical: soldierExempt,paused:true,
-      unresolved:sorted.unresolved.map(row=>({sapCode:row.sapCode,transfer:row.transfer,reason:row.reason}))},
-    pages:prepared.draft.pages,soldierLineAllocations:prepared.draft.soldierLineAllocations,
-    soldierLineTotals:prepared.draft.soldierLineTotals,soldierManualLineKeys:prepared.draft.soldierManualLineKeys});
+  return json({id,version,referenceSnapshot:reference,summary,pages:prepared.draft.pages});
 }
 
 export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);const b=await readJsonRequest(req);await ensureSchema();
@@ -534,5 +520,5 @@ if (b.action === 'lieutenantImport') {
  return json({added,existing:incoming.length-added,total:incoming.length,
    documents:incoming.map(row=>({number:row.number,state:addedNumbers.has(row.number)?'added':'existing'}))});
  }
- if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources, b.overrideSoldier);
+ if (b.action === 'save') return await saveReconciliation(b.draft, b.transferSources);
 return json({error:'طلب غير معروف'},400)}catch(error){if(error instanceof JsonRequestError)return json({error:error.message},error.status);return json({error:'تعذّر الحفظ. أعد المحاولة.'},500)}}
