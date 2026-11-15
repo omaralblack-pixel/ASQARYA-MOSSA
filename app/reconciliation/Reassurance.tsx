@@ -1,0 +1,159 @@
+'use client';
+
+import {useEffect,useMemo,useRef,useState} from 'react';
+import {AlertTriangle,ArrowDownToLine,CheckCircle2,HeartPulse,Printer,RefreshCw,RotateCcw,Search} from 'lucide-react';
+import {decodeLieutenantFile} from '../lib/lieutenant-file';
+import type {LieutenantTransfer} from '../lib/lieutenant';
+import {restoreLieutenantSource,restoreLieutenantStock,type LieutenantSourceFile} from '../lib/lieutenant-source';
+import {readSavedSapImport} from '../lib/saved-sap-import';
+import {reassure,reassuranceSource,type ReassuranceData,type ReassuranceReport,type ReassuranceStock,type ReassuranceState} from '../lib/reassurance';
+import {digits,type Transfer} from '../lib/reconcile';
+
+const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
+const format=new Intl.NumberFormat('en-US',{maximumFractionDigits:6});
+const quantity=(n:number|null)=>n===null?'—':format.format(n);
+const labels:Record<ReassuranceState,string>={match:'مطابق',transfer:'يحتاج ترحيل',return:'زيادة — مراجعة مرتجع',review:'يحتاج تحقق'};
+const badge=(state:ReassuranceState)=>state==='match'?'match':state==='review'?'review':'difference';
+type Loaded={data:ReassuranceData;transfers:LieutenantTransfer[];sourceIssues:string[];sourceName:string;
+  closing:ReassuranceStock|null;opening:ReassuranceStock|null};
+
+async function checkedJson<T>(url:string):Promise<T>{
+  const response=await fetch(url,{cache:'no-store',redirect:'manual'});
+  if(response.status===401||response.type==='opaqueredirect')throw Error('انتهت جلسة الدخول. سجّل دخولك وأعد الفحص.');
+  if(!(response.headers.get('content-type')||'').includes('json'))throw Error('تعذّر قراءة بيانات الفحص (HTTP '+response.status+'). أعد المحاولة.');
+  const data=await response.json() as T&{error?:string};
+  if(!response.ok)throw Error(data.error||'تعذّر تحميل بيانات «طمني».');
+  return data;
+}
+
+export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{branches:string[];
+  onOpenRecord:(id:string)=>void;onOpenTransfer:(transfer:Transfer,branch:string)=>void}){
+  const [from,setFrom]=useState(()=>today().slice(0,8)+'01');
+  const [to,setTo]=useState(today);
+  const [loaded,setLoaded]=useState<Loaded|null>(null);
+  const [busy,setBusy]=useState(true);
+  const [error,setError]=useState('');
+  const [search,setSearch]=useState('');
+  const [filter,setFilter]=useState('action');
+  const [checkedAt,setCheckedAt]=useState('');
+  const request=useRef(0);
+  const valid=!!from&&!!to&&from<=to&&to<=today();
+  const report=useMemo<ReassuranceReport|null>(()=>loaded&&valid?reassure({...loaded,from,to}):null,[loaded,from,to,valid]);
+  const query=digits(search).trim().toLowerCase();
+  const visible=report?.rows.filter(row=>(filter==='all'||filter==='action'&&row.state!=='match'||row.state===filter)&&
+    digits(row.code+' '+row.name+' '+row.evidence.map(doc=>doc.number).join(' ')).toLowerCase().includes(query))||[];
+  const counts={match:0,transfer:0,return:0,review:0};
+  for(const row of report?.rows||[])counts[row.state]++;
+
+  async function reload(){
+    const id=++request.current;
+    setLoaded(null);setError('');setBusy(true);
+    if(!valid){setBusy(false);return;}
+    try{
+      const archive=async()=>{
+        const files:LieutenantSourceFile[]=[];
+        let page:number|null=0;
+        const seen=new Set<number>();
+        while(page!==null){
+          if(seen.has(page))throw Error('تعذّر استكمال قائمة ملفات SAP. أعد الفحص.');
+          seen.add(page);
+          const next:{files:LieutenantSourceFile[];nextPage:number|null}=await checkedJson('/api/lieutenant-files?page='+page);
+          files.push(...next.files);page=next.nextPage;
+        }
+        return files;
+      };
+      const [dataResult,filesResult,sharedResult]=await Promise.allSettled([
+        checkedJson<ReassuranceData>('/api/reconcile?stockInvoiceFrom='+encodeURIComponent(from)+'&stockInvoiceTo='+encodeURIComponent(to)+'&reassurance=1'),
+        archive(),readSavedSapImport(),
+      ]);
+      if(dataResult.status==='rejected')throw dataResult.reason;
+      const data=dataResult.value;
+      const files=filesResult.status==='fulfilled'?filesResult.value:[];
+      const shared=sharedResult.status==='fulfilled'?sharedResult.value:undefined;
+      const sourceErrors:string[]=[];
+      if(filesResult.status==='rejected')sourceErrors.push('تعذّر تحميل أرشيف كشوف 011. أعد المحاولة أو حدّث الكشوف من الملازم أول.');
+      if(sharedResult.status==='rejected')sourceErrors.push('تعذّر قراءة كشف SAP المشترك في هذه النسخة. راجع إعداد مصدر الكشوف أو حدّثه من الملازم أول.');
+      if(!Array.isArray(data.records)||!Array.isArray(data.reference)||!Array.isArray(data.openingStock))
+        throw Error('خادم الفحص يحتاج آخر تحديث. أعد تحميل الصفحة بعد اكتمال النشر.');
+      const cache=new Map<string,Promise<string>>();
+      const readArchive=(file:LieutenantSourceFile)=>{
+        if(!cache.has(file.key))cache.set(file.key,(async()=>{
+          const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key),{cache:'no-store'});
+          if(!response.ok)throw Error('تعذّر قراءة الملف '+file.name+' (HTTP '+response.status+').');
+          return decodeLieutenantFile(await response.arrayBuffer(),file.name);
+        })());
+        return cache.get(file.key)!;
+      };
+      const [sourceResult,closingResult,openingResult]=await Promise.allSettled([
+        restoreLieutenantSource(files,branches,readArchive,async()=>shared),
+        restoreLieutenantStock(files,'balance',to,readArchive),
+        restoreLieutenantStock(files,'opening',from,readArchive),
+      ]);
+      const source=sourceResult.status==='fulfilled'?sourceResult.value:null;
+      const closing=closingResult.status==='fulfilled'?closingResult.value:null;
+      const opening=openingResult.status==='fulfilled'?openingResult.value:null;
+      if(sourceResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف الترحيلات من الأرشيف.');
+      if(closingResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف رصيد 011 الفعلي.');
+      if(openingResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف الرصيد الافتتاحي.');
+      const {scan,name:sourceName}=reassuranceSource(source,shared,branches);
+      if(id!==request.current)return;
+      setLoaded({data,transfers:scan?.transfers||[],sourceIssues:[...sourceErrors,...scan?.issues||[]],sourceName,
+        closing:closing?{date:closing.file.snapshotDate!,...closing.stock}:null,
+        opening:opening?{date:opening.file.snapshotDate!,...opening.stock}:null});
+      setCheckedAt(new Date().toLocaleTimeString('ar-JO',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit'}));
+    }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر إجراء الفحص.');}
+    finally{if(id===request.current)setBusy(false);}
+  }
+  useEffect(()=>{void reload();return()=>{request.current++};},[from,to,branches]); // Read-only; refreshes when the screen opens or dates change.
+
+  const settled=report?.state==='match';
+  return <div className="reassurance-screen">
+    <div className="page-title"><div><p className="eyebrow">الفواتير × المستودع 011</p><h1><HeartPulse size={30}/> طمني</h1><p>افحص كميات الفواتير ورصيد 011، واعرف ما يحتاج ترحيلًا أو مراجعة مرتجع.</p></div>
+      <div className="save-actions no-print"><button type="button" className="button secondary" disabled={busy||!report} onClick={()=>window.print()}><Printer size={16}/>طباعة النتيجة</button>
+      <button type="button" className="button primary" disabled={busy||!valid} onClick={()=>void reload()}><RefreshCw size={17} className={busy?'reassurance-spin':''}/>طمني الآن</button></div></div>
+    <section className="panel reassurance-dates"><div className="form-grid">
+      <label>الفواتير والافتتاحي من تاريخ<input type="date" value={from} max={to||today()} onChange={event=>setFrom(event.target.value)}/></label>
+      <label>الفحص ورصيد 011 حتى نهاية<input type="date" value={to} min={from} max={today()} onChange={event=>setTo(event.target.value)}/></label>
+    </div><p className="hint">المتوقع في 011 = الافتتاحي + كميات الفواتير في الفترة. الفرق = رصيد SAP الفعلي − المتوقع. كل الكميات بالحبة، بعد تحويل الوحدات المعتمدة.</p>
+    {!valid&&<p role="alert" className="banner error">اختر فترة صحيحة تنتهي اليوم أو قبله.</p>}</section>
+    {busy&&<section className="panel reassurance-loading" role="status"><RefreshCw size={28} className="reassurance-spin"/><b>بفحص الفواتير ورصيد 011…</b><p>قراءة أحدث البيانات المحفوظة والتحقق من العكسي والإلغاء.</p></section>}
+    {error&&<div className="banner error" role="alert">{error}<p>تعذّر إكمال الفحص؛ لا توجد نتيجة مطابقة مؤكدة.</p><button type="button" className="button secondary" disabled={busy||!valid} onClick={()=>void reload()}>إعادة المحاولة</button></div>}
+    {!busy&&report&&<>
+      <section className={'reassurance-summary '+(settled?'is-matched':'needs-action')} role="status">
+        {settled?<CheckCircle2 size={38}/>:<AlertTriangle size={38}/>}
+        <div><h2>{settled?'اطمّن، الكميات مطابقة':report.state==='review'?'في بيانات بدها تحقق': 'في فروقات بدها متابعة'}</h2>
+        <p>{settled?'كميات الفواتير والافتتاحي تساوي رصيد 011 حسب الكشوف المحفوظة للفترة.':
+          `${counts.transfer} صنف يحتاج ترحيل · ${counts.return} صنف فيه زيادة لمراجعة المرتجع · ${counts.review} صنف يحتاج تحقق`}</p>
+        <small>الفترة <b dir="ltr">{from} — {to}</b> · {report.invoiceCount} فاتورة · آخر فحص {checkedAt}</small></div>
+      </section>
+      <div className="stats reassurance-stats">{([
+        ['match','مطابقة',CheckCircle2],['transfer','تحتاج ترحيل',ArrowDownToLine],['return','زيادة / مراجعة مرتجع',RotateCcw],['review','تحتاج تحقق',Search],
+      ] as const).map(([key,label,Icon])=><button type="button" className={'stat '+(filter===key?'selected':'')} key={key} onClick={()=>setFilter(filter===key?'action':key)} aria-pressed={filter===key}><Icon size={20}/><span>{label}</span><strong>{counts[key]}</strong></button>)}</div>
+      <section className="panel">
+        <p className="hint">كشف الترحيلات: {loaded?.sourceName||'غير متاح'} · آخر حركة ظاهرة: <b dir="ltr">{report.sourceLastDate||'—'}</b> · رصيد 011 بتاريخ <b dir="ltr">{loaded?.closing?.date||'غير متاح'}</b>.</p>
+        {loaded?.closing&&loaded.closing.date!==to&&<button type="button" className="button secondary no-print" onClick={()=>{setFrom(loaded.closing!.date.slice(0,8)+'01');setTo(loaded.closing!.date)}}>افحص بتاريخ آخر رصيد محفوظ ({loaded.closing.date})</button>}
+        {!!report.issues.length&&<div className="banner error" role="alert"><b>الفحص غير مكتمل</b><ul>{report.issues.map((issue,i)=><li key={i}>{issue}</li>)}</ul><a href="/reconciliation?view=lieutenant">فتح الملازم أول لتحديث الكشوف</a></div>}
+        {report.approvedGroups>0&&<p className="hint">استُخدمت كميات {report.approvedGroups} مجموعة من نسخة الترحيلات المحفوظة وقت اعتمادها، مرة واحدة لكل مجموعة. يظهر مصدر الكمية في تفاصيل الصنف.</p>}
+        {!!report.pendingRecords.length&&<details className="reassurance-details"><summary>{report.pendingRecords.length} سجل يحتاج استكمالًا أو مراجعة</summary>{report.pendingRecords.map(record=><div key={record.id}><button type="button" className="button secondary" onClick={()=>onOpenRecord(record.id)}>فتح {record.numbers.join('، ')}</button><p>{record.branch} · {record.note}</p></div>)}</details>}
+        <div className="table-controls no-print"><div className="search"><Search size={17}/><input type="search" aria-label="بحث في نتيجة طمني" placeholder="كود الصنف، اسمه أو رقم ترحيل" value={search} onChange={event=>setSearch(event.target.value)}/></div>
+          <label>العرض<select value={filter} onChange={event=>setFilter(event.target.value)}><option value="action">ما يحتاج متابعة</option><option value="all">كل الأصناف</option>{Object.entries(labels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label></div>
+        {visible.length?<div className="table-scroll"><table className="reassurance-table"><thead><tr><th>الصنف</th><th>كميات الفواتير</th><th>الافتتاحي</th><th>المتوقع في 011</th><th>رصيد 011 الفعلي</th><th>الفرق</th><th>المطلوب</th></tr></thead>
+          <tbody>{visible.map(row=><tr key={row.code}><td><b dir="ltr">{row.code}</b><div>{row.name}</div><small>حبة</small></td>
+            <td dir="ltr">{quantity(row.invoices)}</td><td dir="ltr">{quantity(row.opening)}</td><td dir="ltr">{quantity(row.expected)}</td><td dir="ltr">{quantity(row.actual)}</td>
+            <td dir="ltr" className={row.state==='match'?'green':row.difference?'red':''}><b>{row.difference!==null&&row.difference>0?'+':''}{quantity(row.difference)}</b></td>
+            <td><span className={'badge '+badge(row.state)}>{labels[row.state]}</span>
+            {row.state==='transfer'&&<p>راجع ترحيل {quantity(Math.abs(row.difference!))} حبة إلى 011 لتغطية الفواتير.</p>}
+            {row.state==='return'&&<p>زيادة {quantity(row.difference)} حبة. راجع فاتورة غير مسجلة أو مرتجعًا من 011.</p>}
+            <details className="reassurance-details"><summary>التفاصيل والمستندات</summary>
+              <p>صافي الترحيلات: {quantity(row.netTransfers)} حبة · فرق الرصيد عن الافتتاحي والترحيلات: {quantity(row.stockDifference)} حبة.</p>
+              {row.notes.map((note,i)=><p key={i} className="amber">{note}</p>)}
+              {row.records.map(record=><p key={record.id}><button type="button" className="button secondary" onClick={()=>onOpenRecord(record.id)}>الفواتير {record.numbers.join('، ')}</button><small>{record.basis==='paper'?'كميات الفاتورة المسجلة':'كميات المجموعة المحفوظة وقت الاعتماد'}</small></p>)}
+              {row.evidence.length?<div className="reassurance-documents">{row.evidence.map((doc,i)=><div key={doc.number+'-'+i}><button type="button" className="button secondary" onClick={()=>{
+                const source=loaded?.transfers.find(item=>item.transfer.number===doc.number);
+                if(source)onOpenTransfer(source.transfer,source.branch);
+              }}>الترحيل {doc.number}</button><span dir="ltr">{doc.date} · {doc.direction} · {quantity(doc.quantity)} {doc.unit}</span><small>{doc.remarks}</small></div>)}</div>:<p>لا توجد حركة لهذا الصنف في فترة كشف الترحيلات.</p>}
+            </details></td></tr>)}</tbody></table></div>:<p className="reassurance-empty">{query?'لا توجد أصناف تطابق البحث.':filter==='action'&&settled?'كل الأصناف مطابقة ضمن الفترة.':'لا توجد أصناف ضمن هذا العرض.'}</p>}
+      </section>
+    </>}
+  </div>;
+}

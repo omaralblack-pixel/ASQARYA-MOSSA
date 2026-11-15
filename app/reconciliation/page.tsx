@@ -11,6 +11,7 @@ import InvoiceRegister,{InvoiceRegisterPrint} from './InvoiceRegister';
 import SerialSoldier from './SerialSoldier';
 import StockReport from './StockReport';
 import FirstLieutenant from './FirstLieutenant';
+import Reassurance from './Reassurance';
 import AqabaWorkspace from './AqabaWorkspace';
 import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
@@ -99,7 +100,7 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
   if(!stored)return [];
   return stored.transfers.flatMap(transfer=>transferNumbers(transfer.number).map(number=>[number,record.id] as const));
 })),[sapPreview.records]);
-useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier','lieutenant','aqaba'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
+useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier','lieutenant','aqaba','reassurance'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
 
 const aqabaWork=!!draft&&isAqabaBranch(draft.branch);
 useEffect(()=>{
@@ -639,6 +640,8 @@ return <div className="recon-app"><header className="topbar"><a className="brand
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
+ {tab==='reassurance'&&<Reassurance branches={branches} onOpenRecord={id=>{void run(()=>openRecord(id));}}
+   onOpenTransfer={(transfer,branch)=>{const next=blank();D({...next,branch,transfers:[{...transfer,id:uid()}]});setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+' من شاشة طمني.');T('work');}}/>}
  {tab==='lieutenant'&&<FirstLieutenant branches={branches} reference={reference}
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
     onOpenTransfer={(transfer,branch)=>{
