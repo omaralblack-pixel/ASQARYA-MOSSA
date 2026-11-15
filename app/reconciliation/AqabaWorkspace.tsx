@@ -9,7 +9,7 @@ const initial=defaultAqabaDates();
 type ResponseData={official:AqabaLine[];blue:BlueLine[];transfers:AqabaTransfer[];journal:AqabaMovement[];partial?:boolean};
 const template=[
  'رقم الفاتورة الزرقاء\tالتاريخ\tكود SAP\tاسم الصنف\tالكمية\tالوحدة\tالسعر\tأرقام الفواتير الرسمية\tأرقام الترحيلات',
- '2650710367\t2026-11-03\tCHS00561\tجبنة فيتا جولد\t600\tPiece\t0.313\t260063818\t2615754',
+ '2650710369\t2026-11-03\tCHS00561\tجبنة فيتا جولد\t600\tPiece\t0.350\t\t2615754',
 ].join('\n');
 async function request(body?:unknown,query=''):Promise<any>{
  const res=await fetch('/api/aqaba'+query,body?{
@@ -26,7 +26,7 @@ export default function AqabaWorkspace(){
  const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState(''),[journalPaste,JP]=useState('');
  const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[],journal:[]});
  const [packs,PACK]=useState<Record<string,number>>({});
- const [working,W]=useState(false),[error,E]=useState(''),[message,M]=useState(''),[partial,PART]=useState(false);
+ const [working,W]=useState(false),[error,E]=useState(''),[message,M]=useState(''),[partial,PART]=useState(false),[savedLoading,LOADING]=useState(true);
  const [search,Q]=useState(''),[priceSearch,PRICESEARCH]=useState('');
  const official=useMemo(()=>officialPaste.trim()?readAqabaOfficial(officialPaste):null,[officialPaste]);
  const blue=useMemo(()=>bluePaste.trim()?readAqabaBlue(bluePaste):null,[bluePaste]);
@@ -90,7 +90,14 @@ export default function AqabaWorkspace(){
    .sort((a,b)=>b.first.date.localeCompare(a.first.date)||b.first.document.localeCompare(a.first.document,'en',{numeric:true}));
  },[mergedOfficial,search]);
  const [expanded,EXP]=useState('');
- const load=async()=>{if(!from||!to||from>to)return;const data=await request(undefined,'?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)) as ResponseData;S(data);PART(data.partial===true)};
+ const load=async()=>{
+  if(!from||!to||from>to)return;
+  LOADING(true);
+  try{
+   const data=await request(undefined,'?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)) as ResponseData;
+   S(data);PART(data.partial===true);
+  }finally{LOADING(false)}
+ };
  useEffect(()=>{load().catch(e=>E(e.message))},[from,to]);
  useEffect(()=>{
   fetch('/api/reconcile',{cache:'no-store'}).then(async res=>{
@@ -174,9 +181,12 @@ export default function AqabaWorkspace(){
   <section className="panel">
    <div className="section-title"><FileText size={20}/><div><h2>لصق الفواتير الزرقاء وأسعار العقبة</h2>
     <p>ألصق بنود الزرقاء بالأعمدة المطلوبة؛ سعر العقبة يُحفظ مع الفاتورة والتاريخ ولا يغير أسعار مؤسسة عمّان.</p></div></div>
-   <details><summary>مثال تنسيق اللصق (بالعناوين)</summary><pre dir="ltr" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{template}</pre></details>
+   <details><summary>مثال تنسيق اللصق (بالعناوين) — للأصناف الجديدة أو التصحيح فقط</summary><pre dir="ltr" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{template}</pre></details>
    <textarea dir="ltr" style={{minHeight:155,width:'100%'}} aria-label="بنود الفواتير الزرقاء للعقبة" placeholder="رقم الفاتورة الزرقاء، التاريخ، كود SAP، الكمية، الوحدة، السعر، الفاتورة الرسمية، الترحيلات — مفصولة بـ Tab" value={bluePaste} onChange={e=>BP(e.target.value)}/>
-   <div className="row-actions"><span>{blue?.items.length||0} بند صالح · {blue?.issues.length||0} ملاحظات</span>
+   <p className="hint" role="status">{savedLoading?'جاري قراءة البنود المحفوظة من قاعدة بيانات العقبة…':
+    <>المحفوظ فعلًا بقاعدة بيانات العقبة ضمن الفترة المختارة: <b>{saved.blue.length} بند</b> ضمن <b>{new Set(saved.blue.map(row=>row.invoice)).size} فواتير زرقاء</b>. خانة اللصق للإضافة أو التصحيح فقط ولا يلزم إعادة إدخال الأصناف المحفوظة.</>}</p>
+   {!savedLoading&&saved.blue.length===0&&<p className="red" role="alert">لا توجد بنود زرقاء محفوظة ظاهرة لهذه الفترة. تحقق أن الفترة تشمل 03/11/2026 وأن تحديث المشروع منشور على الموقع، ثم اضغط «تحديث السجل».</p>}
+   <div className="row-actions"><span>في خانة اللصق الآن: {blue?.items.length||0} بند جديد أو معدل · {blue?.issues.length||0} ملاحظات</span>
     <button type="button" className="button primary" disabled={working||!blue?.items.length} onClick={()=>save('blue')}><Save size={16}/>حفظ الزرقاء وأسعارها</button></div>
    {!!blue?.issues.length&&<details><summary>ملاحظات قراءة الزرقاء</summary>{blue.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
   </section>
