@@ -1,4 +1,4 @@
-import {dateValue, invoiceDocumentNo, pageNumber, parseTransfer, readReconciliationRecord, sapReferences, soldierLineKey, transferNumbers, type Draft} from './reconcile';
+import {dateValue, invoiceDocumentNo, parseTransfer, readReconciliationRecord, transferNumbers, type Draft} from './reconcile';
 
 export type CollectedInvoice = {
   recordId: string; invoiceId: string; number: string; branch: string; date: string; dateSource: 'manual'|'invoice'|'transfer';
@@ -97,56 +97,24 @@ export function collectInvoicesByDate(
     const invoices=draft.invoices;
     const multi=invoices.length>1;
     const dates=invoices.map(invoice=>invoiceDate(invoice,draft.transfers));
-    const savedStatus=(draft as Draft&{summary?:{status?:string}}).summary?.status||record.status;
-    const approvedHistoricalGroup=multi&&savedStatus==='match'&&
-      dates.every(({date})=>!!date&&date<'2026-11-11');
-    const exactByPage=new Map<number,Set<string>>();
+    const sharedGroupTransfers=new Set<string>();
     const uncertain=new Set<string>();
-    const pageUnallocated=new Set<string>();
-    const reference=new Map(sapReferences(draft.referenceSnapshot||[]).map(item=>[item.sapCode.toUpperCase(),item.code]));
+    const soloTransfers=new Set<string>();
     for(const transfer of draft.transfers){
       if(!transfer||typeof transfer!=='object'){unreadableRecords++;continue}
       const numbers=transferNumbers(transfer.number||'');
       if(!numbers.length)continue;
       if(!multi){
-        if(!exactByPage.has(1))exactByPage.set(1,new Set());
-        numbers.forEach(number=>exactByPage.get(1)!.add(number));
+        numbers.forEach(number=>soloTransfers.add(number));
         continue;
       }
       const parsed=parseTransfer(transfer.paste||'',{allowReverse:true});
       if(!parsed.lines.length||parsed.issues.length||parsed.excluded.length){
-        numbers.forEach(number=>uncertain.add(number));continue;
-      }
-      const pages=new Set<number>();
-      let reliable=true;
-      for(const line of parsed.lines){
-        const key=soldierLineKey(transfer.id,line);
-        const parts=draft.soldierLineAllocations?.[key];
-        if(draft.soldierLineAllocations!==undefined){
-          const total=draft.soldierLineTotals?.[key];
-          if(!parts||typeof total!=='number'||!Number.isFinite(total)||total<=0||
-            !Object.keys(parts).length||
-            Object.entries(parts).some(([page,qty])=>
-              !/^\d+$/.test(page)||Number(page)<1||Number(page)>invoices.length||
-              typeof qty!=='number'||!Number.isFinite(qty)||qty<=0)||
-            !close(Object.values(parts).reduce((n,qty)=>n+qty,0),total)){
-            reliable=false;break;
-          }
-          Object.keys(parts).forEach(page=>pages.add(Number(page)));
-        }else{
-          const itemCode=reference.get(line.sapCode.toUpperCase());
-          const institutionPage=itemCode?pageNumber(draft.pages?.['i:'+itemCode]):0;
-          const sapPage=pageNumber(draft.pages?.['s:'+line.sapCode.toUpperCase()]);
-          if(institutionPage&&sapPage&&institutionPage!==sapPage){reliable=false;break}
-          const page=institutionPage||sapPage;
-          if(!page||page>invoices.length){reliable=false;break}
-          pages.add(page);
-        }
-      }
-      if(!reliable||!pages.size){numbers.forEach(number=>pageUnallocated.add(number));continue}
-      for(const page of pages){
-        if(!exactByPage.has(page))exactByPage.set(page,new Set());
-        numbers.forEach(number=>exactByPage.get(page)!.add(number));
+        numbers.forEach(number=>uncertain.add(number));
+      }else{
+        // A verified SAP document is linked to the group; a person's check-page
+        // cannot prove its assignment to an individual invoice inside that group.
+        numbers.forEach(number=>sharedGroupTransfers.add(number));
       }
     }
 
@@ -170,9 +138,9 @@ export function collectInvoicesByDate(
         recordId:record.id,invoiceId:invoice.id,
         number:invoiceDocumentNo(invoice.number)||String(invoice.number||''),
         branch:record.branch||draft.branch||'',
-        date,dateSource:source,transferNumbers:[...(exactByPage.get(index+1)||new Set<string>())],
-        unresolvedTransferNumbers:[...new Set([...uncertain,...(approvedHistoricalGroup?[]:[...pageUnallocated])])],
-        groupConfirmedTransfers:approvedHistoricalGroup?[...pageUnallocated]:[],
+        date,dateSource:source,transferNumbers:multi?[]:[...soloTransfers],
+        unresolvedTransferNumbers:[...uncertain],
+        groupConfirmedTransfers:multi?[...sharedGroupTransfers]:[],
         amount:String(invoice.amount||''),
       });
     }
