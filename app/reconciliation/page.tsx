@@ -2,6 +2,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import SapImport from './SapImport';
 import InstantMatch from './InstantMatch';
+import {isAqabaBranch} from '../lib/aqaba-instant-reference';
 import CatalogReplacement from './CatalogReplacement';
 import {parseSapImport,canUseSelectedBranchForSapMember,type SapImportGroup} from '../lib/sap-import';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -86,6 +87,9 @@ const [transferConflict,setTransferConflict]=useState<{id:string;number:string}|
 const [missingTransfer,setMissingTransfer]=useState<{id:string;number:string}|null>(null);
 const [duplicateTransfer,setDuplicateTransfer]=useState('');
 const [transferSources, setTransferSources] = useState<Record<string, TransferSource>>({});
+const [aqabaWorkReference,setAqabaWorkReference]=useState<Item[]|null>(null);
+const [aqabaWorkLoading,setAqabaWorkLoading]=useState(false);
+const [aqabaWorkError,setAqabaWorkError]=useState('');
 const [searchTransferOpen,setSearchTransferOpen]=useState(false),[searchTransferNumber,setSearchTransferNumber]=useState(''),[searchTransferError,setSearchTransferError]=useState(''),[searchTransferMissing,setSearchTransferMissing]=useState(false),[searchTransferBusy,setSearchTransferBusy]=useState(false);
 const sapTransfers=useMemo(()=>new Map(sapPreview.groups.filter(group=>!group.reversal)
   .flatMap(group=>group.members.filter(member=>!member.issues.length)
@@ -97,12 +101,37 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
 })),[sapPreview.records]);
 useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier','lieutenant','aqaba'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
 
-const prepared=useMemo(()=>draft?prepareReconciliation(draft,reference):null,[draft,reference]);
+const aqabaWork=!!draft&&isAqabaBranch(draft.branch);
+useEffect(()=>{
+ if(!aqabaWork||tab!=='work'){
+  setAqabaWorkReference(null);setAqabaWorkLoading(false);setAqabaWorkError('');
+  return;
+ }
+ let active=true;setAqabaWorkReference(null);setAqabaWorkLoading(true);setAqabaWorkError('');
+ api(undefined,'?aqabaPricing=1')
+  .then(data=>{if(active){
+   if(!Array.isArray(data.reference)||!data.reference.length)throw Error('مرجع أسعار العقبة غير متاح.');
+   setAqabaWorkReference(data.reference as Item[]);
+  }})
+  .catch(error=>{if(active)setAqabaWorkError(error instanceof Error?error.message:'تعذّر تحميل مرجع العقبة.')})
+  .finally(()=>{if(active)setAqabaWorkLoading(false)});
+ return ()=>{active=false};
+},[aqabaWork,tab]);
+const prepared=useMemo(()=>{
+ if(!draft)return null;
+ if(aqabaWork){
+  // Do not use a stored Amman snapshot or add Amman-only codes on this branch.
+  const current={...draft,referenceSnapshot:undefined,useCurrentReference:true};
+  return prepareReconciliation(current,aqabaWorkReference||[]);
+ }
+ return prepareReconciliation(draft,reference);
+},[draft,reference,aqabaWork,aqabaWorkReference]);
 const baseResult=prepared?.result??null;
 const result=baseResult;
 useEffect(()=>{
- if(prepared&&prepared.draft!==draft)D(current=>current===draft?prepared.draft:current);
-},[draft,prepared]);
+ if(!aqabaWork&&prepared&&prepared.draft!==draft)
+  D(current=>current===draft?prepared.draft:current);
+},[draft,prepared,aqabaWork]);
 useEffect(()=>{
  if(tab!=='work'||!focusOpenedTransfers.current)return;
  focusOpenedTransfers.current=false;
@@ -570,6 +599,10 @@ function exportText(){
 }
 async function save() {
   if (!draft || busy) return;
+  if(aqabaWork&&(!aqabaWorkReference||aqabaWorkLoading||aqabaWorkError)){
+    E('لا يمكن حفظ العقبة قبل تحميل أسعار العقبة المعتمدة. '+(aqabaWorkError||'حدّث أسعار الفرع وحاول مرة أخرى.'));
+    return;
+  }
   await run(async () => {
     const ready=prepared?.draft??draft;
     // Never write page 1 automatically: numbers are personal notes only.
@@ -615,9 +648,16 @@ return <div className="recon-app"><header className="topbar"><a className="brand
     }}/>}
 
  
- {tab==='work'&&result&&<>{draft?.branchExceptions?.some(row=>row.targetBranch===draft.branch&&draft.transfers.some(t=>transferNumbers(t.number).includes(row.transferNo)))&&
+ {tab==='work'&&result&&<>{aqabaWork&&<div className="banner info" role="status">
+ <b>84 — العقبة · المطابقة بأسعار العقبة فقط</b>
+ <p>{aqabaWorkLoading?'جاري تحميل الأسعار المعتمدة…':
+    aqabaWorkError?'تعذّر تحميل الأسعار: '+aqabaWorkError:
+    aqabaWorkReference?'مرجع العقبة: '+aqabaWorkReference.length+' سعر صنف. الأصناف دون سعر أو شدة مؤكدة لا تأخذ سعر عمّان.':
+    'الحفظ معطّل لحين تحميل أسعار العقبة.'}</p>
+ </div>}
+ {draft?.branchExceptions?.some(row=>row.targetBranch===draft.branch&&draft.transfers.some(t=>transferNumbers(t.number).includes(row.transferNo)))&&
 <div className="banner info"><b>استثناءات فرع معتمدة:</b> {draft.branchExceptions.filter(row=>row.targetBranch===draft.branch&&draft.transfers.some(t=>transferNumbers(t.number).includes(row.transferNo))).map(row=>row.transferNo+' ('+row.sourceBranch+' ← '+row.targetBranch+'؛ '+row.reason+')').join('، ')}. لم تتغير بيانات SAP الأصلية.</div>}
-<div className="page-title"><div><p className="eyebrow">{draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'مطابقة الفاتورة الزرقاء':draft.id?'ترحيل محفوظ':'ترحيل جديد'}</p><h1>ألصق الترحيلات. ووزّع الأصناف على الفواتير الزرقاء.</h1><p>كشف بأكواد المؤسسة وتسمياتها وأسعارها، جاهز للمطابقة اليدوية.</p></div><button className="button secondary" onClick={()=>{if(draft.transfers.some(t=>t.paste.trim())&&!confirm('فتح ترحيل جديد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;setTransferSources({});D(blank());PAGE('all');Q('');N('');E('')}}><Plus size={16}/>ترحيل جديد</button></div>{draft.id&&!draft.useCurrentReference&&<div className="banner info">تُستخدم الأسعار والشدّات المسجلة وقت الحفظ، وتُستكمل التعريفات الناقصة من المرجع المعتمد.<button className="text-button" onClick={()=>change({useCurrentReference:true})}>إعادة المطابقة بالمرجع الحالي</button></div>}<div className="stats"><div className={'stat status-stat '+result.status}><span>نتيجة المطابقة</span><strong><Badge state={result.status} label={acceptedDifference?'مطابق باعتمادك':undefined}/></strong><small>{result.differences} فروقات أصناف · {result.review} بحاجة مراجعة</small></div><div className="stat"><span>مجموع مبالغ الفواتير</span><strong>{money(result.total)} <small>د.أ</small></strong><small>{draft.invoices.length} فواتير مرتبطة</small></div><div className="stat"><span>قيمة الترحيلات حسب أسعار المؤسسة</span><strong>{money(result.expected)} <small>د.أ</small></strong><small>{draft.transfers.length} ترحيلات مرتبطة</small></div><div className={'stat '+(result.priceDifference?'warn':'')}><span>فرق القيمة</span><strong dir="ltr">{money(result.priceDifference)} <small>د.أ</small></strong><small>الفواتير − قيمة الترحيلات</small></div></div><SapImport records={sapPreview.records} onPreview={(groups,records)=>setSapPreview({groups,records})} branches={branches} readRecords={async()=>{const data=await api(undefined,'?records=1');return data.records}} saveDraft={async imported=>{const data=await api({action:'save',draft:imported});return data.id}} openSaved={id=>loadRecord({id})} openDraft={imported=>{
+<div className="page-title"><div><p className="eyebrow">{draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'مطابقة الفاتورة الزرقاء':draft.id?'ترحيل محفوظ':'ترحيل جديد'}</p><h1>ألصق الترحيلات. ووزّع الأصناف على الفواتير الزرقاء.</h1><p>كشف بأكواد المؤسسة وتسمياتها وأسعارها، جاهز للمطابقة اليدوية.</p></div><button className="button secondary" onClick={()=>{if(draft.transfers.some(t=>t.paste.trim())&&!confirm('فتح ترحيل جديد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;setTransferSources({});D(blank());PAGE('all');Q('');N('');E('')}}><Plus size={16}/>ترحيل جديد</button></div>{draft.id&&!draft.useCurrentReference&&<div className="banner info">تُستخدم الأسعار والشدّات المسجلة وقت الحفظ، وتُستكمل التعريفات الناقصة من المرجع المعتمد.<button className="text-button" onClick={()=>change({useCurrentReference:true})}>إعادة المطابقة بالمرجع الحالي</button></div>}<div className="stats"><div className={'stat status-stat '+result.status}><span>نتيجة المطابقة</span><strong><Badge state={result.status} label={acceptedDifference?'مطابق باعتمادك':undefined}/></strong><small>{result.differences} فروقات أصناف · {result.review} بحاجة مراجعة</small></div><div className="stat"><span>مجموع مبالغ الفواتير</span><strong>{money(result.total)} <small>د.أ</small></strong><small>{draft.invoices.length} فواتير مرتبطة</small></div><div className="stat"><span>{aqabaWork?'قيمة الترحيلات حسب أسعار العقبة':'قيمة الترحيلات حسب أسعار المؤسسة'}</span><strong>{money(result.expected)} <small>د.أ</small></strong><small>{draft.transfers.length} ترحيلات مرتبطة</small></div><div className={'stat '+(result.priceDifference?'warn':'')}><span>فرق القيمة</span><strong dir="ltr">{money(result.priceDifference)} <small>د.أ</small></strong><small>الفواتير − قيمة الترحيلات</small></div></div><SapImport records={sapPreview.records} onPreview={(groups,records)=>setSapPreview({groups,records})} branches={branches} readRecords={async()=>{const data=await api(undefined,'?records=1');return data.records}} saveDraft={async imported=>{const data=await api({action:'save',draft:imported});return data.id}} openSaved={id=>loadRecord({id})} openDraft={imported=>{
   if((draft.id||draft.transfers.some(transfer=>transfer.paste.trim()))&&!confirm('فتح كشف الاستيراد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;
   setTransferSources({});D(imported);PAGE('all');Q('');E('');
   document.getElementById('reconciliation-group')?.scrollIntoView({block:'start'});
@@ -644,7 +684,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
     }
     assignPage(r.key,value);
     input.value=String(pageNumber(value)||'');
-  }}/><span className="print-check">{getPage(r.key)}</span></td><td className="name-cell"><b>{r.name}</b>{r.details.length>0&&<details className="no-print"><summary>تفاصيل SAP</summary>{r.details.map((l,j)=><p key={j}>ترحيل {l.transferNo} · {l.quantity} {l.unit} · {l.from} ← {l.to}</p>)}</details>}{r.errors.map((e,j)=><small className="red" key={j}>{e}</small>)}<button type="button" className="text-button no-print" onClick={()=>excludeItem(r)}>استبعاد من الفاتورة</button>{r.item?<button className="text-button" disabled={busy} onClick={()=>openDefinition(r.code,r.sapCode)}>تعديل التعريف</button>:<button className="button secondary small no-print" disabled={busy} onClick={()=>openLink(r)}>ربط الصنف</button>}</td><td className="qty">{r.transfer===null?num(r.transfer):<><button type="button" className="qty-check no-print" aria-pressed={checked} aria-label={'تشييك كمية '+r.name+'، '+num(r.transfer)+' حبة'} onClick={()=>toggleQuantityCheck(r.key,signature)}>{num(r.transfer)}</button><span className="print-check">{num(r.transfer)}</span></>}</td><td>{money(r.unitPrice)}</td><td>{money(r.expected)}</td></tr>})}</tbody></table>{result.rows.length>0&&!visibleRows.length&&<div className="empty">لا توجد أصناف ضمن العرض الحالي.</div>}{!result.rows.length&&<div className="empty"><ClipboardPaste size={35}/><h3>ألصق أول ترحيل ليظهر كشف المؤسسة</h3><p>الكميات تُحسب بالحبة من وحدات وشدّات SAP.</p></div>}</div>
+  }}/><span className="print-check">{getPage(r.key)}</span></td><td className="name-cell"><b>{r.name}</b>{r.details.length>0&&<details className="no-print"><summary>تفاصيل SAP</summary>{r.details.map((l,j)=><p key={j}>ترحيل {l.transferNo} · {l.quantity} {l.unit} · {l.from} ← {l.to}</p>)}</details>}{r.errors.map((e,j)=><small className="red" key={j}>{e}</small>)}<button type="button" className="text-button no-print" onClick={()=>excludeItem(r)}>استبعاد من الفاتورة</button>{aqabaWork?<small className="hint no-print">سعر العقبة يُدار من شاشة العقبة</small>:r.item?<button className="text-button" disabled={busy} onClick={()=>openDefinition(r.code,r.sapCode)}>تعديل التعريف</button>:<button className="button secondary small no-print" disabled={busy} onClick={()=>openLink(r)}>ربط الصنف</button>}</td><td className="qty">{r.transfer===null?num(r.transfer):<><button type="button" className="qty-check no-print" aria-pressed={checked} aria-label={'تشييك كمية '+r.name+'، '+num(r.transfer)+' حبة'} onClick={()=>toggleQuantityCheck(r.key,signature)}>{num(r.transfer)}</button><span className="print-check">{num(r.transfer)}</span></>}</td><td>{money(r.unitPrice)}</td><td>{money(r.expected)}</td></tr>})}</tbody></table>{result.rows.length>0&&!visibleRows.length&&<div className="empty">لا توجد أصناف ضمن العرض الحالي.</div>}{!result.rows.length&&<div className="empty"><ClipboardPaste size={35}/><h3>ألصق أول ترحيل ليظهر كشف المؤسسة</h3><p>الكميات تُحسب بالحبة من وحدات وشدّات SAP.</p></div>}</div>
 <div className="blue-total">
   <b>قيمة الترحيلات في المجموعة: {money(expected)} دينار</b>
   <span>مجموع مبالغ الفواتير الزرقاء: {money(paperAmount)} دينار</span>
