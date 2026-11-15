@@ -62,9 +62,9 @@ function signedCorrection(number,quantity='-12',unit='Piece',warehouse='002',dat
 }
 const covered=signedCorrection('2619302');
 const offsetRows=cancellationReviewRows([coveredOriginal,covered],'2026-11-01','2026-11-10');
-assert.equal(offsetRows.length,1);
-assert.equal(offsetRows[0].proven,true,'An exact signed offset should not require manual approval');
-assert.deepEqual(offsetRows[0].counterparts,['2619301']);
+assert.equal(offsetRows.length,2,'Original and signed correction are both visible for transparent review');
+assert.ok(offsetRows.every(row=>row.proven),'Neither side of an exact offset needs manual approval');
+assert.deepEqual(offsetRows.find(row=>row.source.transfer.number==='2619302').counterparts,['2619301']);
 assert.match(offsetRows[0].automaticReason,/تغطية كمية مثبتة تلقائيًا/);
 assert.match(offsetRows[0].automaticReason,/ليس إثباتًا لتغيير حالة SAP/);
 assert.equal(cancellationReviewRows([coveredOriginal,signedCorrection('2619303','-11')],
