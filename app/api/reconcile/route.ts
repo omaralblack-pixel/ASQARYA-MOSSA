@@ -522,16 +522,20 @@ if (b.action === 'lieutenantImport') {
  for(const row of legacy.results)
    for(const number of transferNumbers(row.number||''))if(seen.has(number))existing.add(number);
  const pending=incoming.filter(item=>!existing.has(item.number));
- const queries=pending.map(item=>db().prepare(
-   'INSERT OR IGNORE INTO lieutenant_queue (transfer_no,doc_date,payload,source_file,created) VALUES (?,?,?,?,?)'
- ).bind(item.number,item.date,JSON.stringify({
+ const rows=pending.map(item=>({number:item.number,date:item.date,payload:JSON.stringify({
      transfer:{id:'lieutenant-'+item.number,number:item.number,date:item.date,paste:item.paste},
      branch:item.branch,remarks:item.remarks,reverse:item.reverse,cancellationState:item.cancellationState,
      cancellationMentioned:item.cancellationMentioned,invoiceNumbers:item.invoiceNumbers,
-   }),sourceFile,new Date().toISOString()));
- const results=queries.length?await db().batch(queries):[];
- const added=results.reduce((count,result)=>count+(result.meta.changes||0),0);
- const addedNumbers=new Set(pending.filter((_,index)=>(results[index]?.meta.changes||0)>0).map(row=>row.number));
+   })}));
+ // A single atomic INSERT handles the whole validated batch. RETURNING reports
+ // exactly what was inserted, including a concurrent tab's uniqueness conflict.
+ const inserted=rows.length?await db().prepare(`INSERT OR IGNORE INTO lieutenant_queue
+   (transfer_no,doc_date,payload,source_file,created)
+   SELECT json_extract(value,'$.number'),json_extract(value,'$.date'),json_extract(value,'$.payload'),?,?
+   FROM json_each(?) RETURNING transfer_no`)
+   .bind(sourceFile,new Date().toISOString(),JSON.stringify(rows)).all<{transfer_no:string}>():{results:[]};
+ const addedNumbers=new Set(inserted.results.map(row=>row.transfer_no));
+ const added=addedNumbers.size;
  return json({added,existing:incoming.length-added,total:incoming.length,
    documents:incoming.map(row=>({number:row.number,state:addedNumbers.has(row.number)?'added':'existing'}))});
  }

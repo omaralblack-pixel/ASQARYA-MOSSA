@@ -41,6 +41,8 @@ jobs:
       - name: First lieutenant 011 regression tests
         run: |
           node scripts/test-lieutenant-import.mjs
+          node scripts/test-sap-files.mjs
+          node scripts/test-sap-archive.mjs
           node scripts/test-lieutenant.mjs
           node scripts/test-lieutenant-invoice-day.mjs
           node scripts/test-lieutenant-opening-stock.mjs

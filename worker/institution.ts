@@ -116,7 +116,7 @@ async function savedImport(request: Request, env: Cloudflare.Env) {
     try {
       body = await readBody(request, maxRequestBytes);
       const file = JSON.parse(body) as SavedSapImport;
-      if (typeof file?.name !== "string" || file.name.length > 255 || !/\.txt$/i.test(file.name) ||
+      if (typeof file?.name !== "string" || file.name.length > 255 || !/\.(txt|csv|tsv|xlsx)$/i.test(file.name) ||
           typeof file.text !== "string" || !file.text.trim() || new Blob([file.text]).size > maxSapFileBytes) {
         return reply(400, "اختار كشف SAP نصي صالح بحجم لا يتجاوز 16 ميغابايت.");
       }
@@ -153,7 +153,7 @@ async function savedImport(request: Request, env: Cloudflare.Env) {
 /** Immutable SAP source-file archive. Each uploaded original stays in private Supabase Storage.
  * Auth and same-origin checks are enforced by handleInstitution before this function runs.
  */
-async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
+export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
   const { SUPABASE_URL, SUPABASE_STORAGE_SECRET } = env;
   if (!SUPABASE_URL || !SUPABASE_STORAGE_SECRET) return reply(503, "أرشيف الملازم أول غير متاح: ربط Supabase غير مفعّل.");
   const base = new URL(storagePath, SUPABASE_URL).href;
@@ -213,7 +213,7 @@ async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
           ...privateHeaders,
           "Content-Type": "application/octet-stream",
           "X-Content-Type-Options": "nosniff",
-          "Content-Disposition": "attachment",
+          "Content-Disposition": "attachment; filename*=UTF-8\'\'" + encodeURIComponent(key.split("__").pop() || "SAP.txt"),
         },
       });
     }

@@ -55,7 +55,7 @@ export function readSapImportRows(paste:string):{rows:string[][];issues:string[]
   return {rows:data,issues};
 }
 
-export function parseSapImport(paste:string,branches:string[]):{groups:SapImportGroup[]; issues:string[]}{
+function parseSapImportUncached(paste:string,branches:string[]):{groups:SapImportGroup[]; issues:string[]}{
   const {rows,issues}=readSapImportRows(paste);
   const branchesByCode=new Map(branches.map(branch=>[branchCodeKey(branch.split(' — ')[0]),branch]));
   const branchesByName=new Map(branches.map(branch=>[branchNameKey(branch.split(' — ').slice(1).join(' — ')),branch]));
@@ -140,4 +140,15 @@ export function parseSapImport(paste:string,branches:string[]):{groups:SapImport
   }
   if(!groups.length&&!issues.length)issues.push('لا توجد سطور ترحيلات في الجدول');
   return {groups,issues};
+}
+
+const importCache=new Map<string,{branches:string;value:ReturnType<typeof parseSapImportUncached>}>();
+export function parseSapImport(source:string,branches:string[]):ReturnType<typeof parseSapImportUncached>{
+ if(typeof window==='undefined')return parseSapImportUncached(source,branches);
+ const branchKey=JSON.stringify(branches),cached=importCache.get(source);
+ if(cached?.branches===branchKey)return structuredClone(cached.value);
+ const value=parseSapImportUncached(source,branches);
+ importCache.set(source,{branches:branchKey,value:structuredClone(value)});
+ if(importCache.size>2)importCache.delete(importCache.keys().next().value!);
+ return value;
 }

@@ -1,10 +1,10 @@
 'use client';
 
-import {useEffect,useMemo,useState,type ChangeEvent} from 'react';
+import {useEffect,useMemo,useState} from 'react';
 import {Search} from 'lucide-react';
 import {digits,invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
-import {deleteSavedSapImport,maxSapFileBytes,readSavedSapImport,saveSapImport,type SavedSapImport} from '../lib/saved-sap-import';
+import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 
 type SavedRecord={id:string;payload:string};
 type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;unsavedMembers:SapImportGroup['members'];originalRecordId?:string};
@@ -132,68 +132,6 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
     }
   }
 
-  async function persist(file:SavedSapImport){
-    if(!file.text.trim())throw Error('كشف SAP فارغ.');
-    const result=parseSapImport(file.text,branches);
-    if(result.issues.length||!result.groups.length)throw Error(result.issues[0]||'الملف لا يحتوي على ترحيلات قابلة للقراءة.');
-    await saveSapImport(file);
-    setSavedFile(file);
-    setPaste(file.text);
-    await preview(file.text);
-  }
-
-  async function uploadFile(event:ChangeEvent<HTMLInputElement>){
-    const input=event.currentTarget;
-    const file=input.files?.[0];
-    input.value='';
-    if(!file)return;
-    setFileError('');
-    setBusy(true);
-    try{
-      if(!/\.txt$/i.test(file.name))throw Error('اختار ملف TXT.');
-      if(file.size>maxSapFileBytes)throw Error('حجم الملف يتجاوز 16 ميغابايت.');
-      const bytes=new Uint8Array(await file.arrayBuffer());
-      const encoding=bytes[0]===255&&bytes[1]===254?'utf-16le':bytes[0]===254&&bytes[1]===255?'utf-16be':'utf-8';
-      await persist({name:file.name,text:new TextDecoder(encoding,{fatal:true}).decode(bytes)});
-    }catch(error){
-      setFileError(error instanceof Error?error.message:'تعذّر رفع الملف وحفظه.');
-    }finally{
-      setBusy(false);
-    }
-  }
-
-  async function saveEdits(){
-    setFileError('');
-    setBusy(true);
-    try{
-      await persist({name:savedFile?.name||'SAP.txt',text:paste});
-    }catch(error){
-      setFileError(error instanceof Error?error.message:'تعذّر حفظ التعديلات.');
-    }finally{
-      setBusy(false);
-    }
-  }
-
-  async function removeFile(){
-    if(!confirm('حذف ملف SAP المحفوظ من Supabase؟'))return;
-    setFileError('');
-    setBusy(true);
-    try{
-      await deleteSavedSapImport();
-      setSavedFile(undefined);
-      setPaste('');
-      setGroups([]);
-      setIssues([]);
-      setSelected([]);
-      setMessage('');
-      onPreview([],[]);
-    }catch{
-      setFileError('تعذّر حذف ملف SAP المحفوظ.');
-    }finally{
-      setBusy(false);
-    }
-  }
-
   async function saveSelected(){
     setBusy(true);
     setMessage('');
@@ -229,19 +167,12 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
 
   return <><details className="panel sap-import">
     <summary>استيراد ترحيلات SAP دفعة واحدة</summary>
-    <p className="hint">الصق نتيجة كويري المؤسسة مع عناوين الأعمدة. المعاينة تجمع البنود حسب الترحيل وتقرأ أرقام الفواتير من Remarks.</p>
-    <div className="table-controls">
-      <label className="button secondary sap-file-picker">
-        {savedFile?'استبدال ملف TXT':'إرفاق ملف TXT'}
-        <input type="file" accept=".txt,text/plain" disabled={busy||loadingFile} aria-label={savedFile?'استبدال ملف TXT':'إرفاق ملف TXT'} onChange={uploadFile}/>
-      </label>
-      <button className="button secondary" type="button" disabled={busy||loadingFile||!paste.trim()||paste===savedFile?.text} onClick={saveEdits}>حفظ نص الكشف</button>
-      {savedFile&&<button className="button secondary" type="button" disabled={busy||loadingFile} onClick={removeFile}>حذف الملف المحفوظ</button>}
-    </div>
+    <p className="hint">تُقرأ نتيجة كويري المؤسسة من الكشف المحفوظ في ملفات SAP. المعاينة تجمع البنود حسب الترحيل وتقرأ أرقام الفواتير من Remarks.</p>
+    <p><a className="button secondary" href="/reconciliation?view=sap-files">ملفات SAP — رفع وإدارة الكشوف المشتركة</a></p>
     {loadingFile&&<p className="hint">جاري استرجاع كشف SAP المحفوظ…</p>}
-    {savedFile&&<p className="hint">الملف المحفوظ على Supabase <b dir="auto">{savedFile.name}</b>{paste!==savedFile.text?' · عندك تعديلات غير محفوظة':''}</p>}
+    {savedFile&&<p className="hint">الملف المحفوظ على Supabase <b dir="auto">{savedFile.name}</b></p>}
     {fileError&&<div className="banner error" role="alert">{fileError}</div>}
-    <label>كشف SAP<textarea className="serial-input" dir="ltr" value={paste} disabled={busy||loadingFile} onChange={event=>{
+    <label>كشف SAP المحفوظ<textarea readOnly className="serial-input" dir="ltr" value={paste} disabled={busy||loadingFile} onChange={event=>{
       setPaste(event.target.value);
       onPreview([],[]);
       setGroups([]);

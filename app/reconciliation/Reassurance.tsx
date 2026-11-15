@@ -2,7 +2,7 @@
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDownToLine,CheckCircle2,HeartPulse,Printer,RefreshCw,RotateCcw,Search} from 'lucide-react';
-import {decodeLieutenantFile} from '../lib/lieutenant-file';
+import {readSapArchive} from '../lib/sap-files-client';
 import type {LieutenantTransfer} from '../lib/lieutenant';
 import {restoreLieutenantSource,restoreLieutenantStock,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -78,9 +78,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
       const cache=new Map<string,Promise<string>>();
       const readArchive=(file:LieutenantSourceFile)=>{
         if(!cache.has(file.key))cache.set(file.key,(async()=>{
-          const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key),{cache:'no-store'});
-          if(!response.ok)throw Error('تعذّر قراءة الملف '+file.name+' (HTTP '+response.status+').');
-          return decodeLieutenantFile(await response.arrayBuffer(),file.name);
+          return readSapArchive(file);
         })());
         return cache.get(file.key)!;
       };

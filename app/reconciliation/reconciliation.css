@@ -185,3 +185,10 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
   .reassurance-screen .reassurance-summary{padding:12px;margin:12px 0}
   .reassurance-screen details:not([open]){display:none}
 }
+
+.sap-files .table-controls>label:not(.button){display:flex;flex-direction:column;align-items:stretch;gap:6px;min-width:200px;flex:1}
+.sap-files .table-controls{align-items:flex-end}
+.sap-files progress{height:14px;accent-color:#237b88}
+.sap-files .row-actions{gap:6px;flex-wrap:wrap}
+.sap-files .sap-file-picker{position:relative}
+.sap-files .sap-file-picker:focus-within{outline:2px solid #237b88;outline-offset:3px}
