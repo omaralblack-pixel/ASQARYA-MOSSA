@@ -673,7 +673,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       setSharedSource(null);
       setSelectedTransfer(stored.key);
       setTransferSourceName(file.name);
-      setTransfers(current=>mergeLieutenantScans(result,current));setIssues(result.issues);
+      setTransfers(current=>mergeLieutenantScans(result,{transfers:current,issues:[]}).transfers);setIssues(result.issues);
       if(!result.transfers.length){
         setMessage(saved+'لم يُعثر على ترحيلات صالحة؛ راجع ملاحظات قراءة SAP. لم يُرسل شيء للجندي.'+warning);
         return;
