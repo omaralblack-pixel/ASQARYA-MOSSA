@@ -39,7 +39,11 @@ export function officialAqabaQuery(from:string,to:string){
  'AND L."WhsCode" = \'011\'',
  'AND L."ItemCode" IS NOT NULL',
  "AND H.\"DocDate\" BETWEEN TO_DATE('"+from+"', 'YYYY-MM-DD') AND TO_DATE('"+to+"', 'YYYY-MM-DD')"
- ].join('\n');
+ ].join('\n')
+   .replaceAll('H."', '"'+head+'"."')
+   .replaceAll('L."', '"'+lines+'"."')
+   .replace('FROM "'+head+'" H', 'FROM "'+head+'"')
+   .replace('INNER JOIN "'+lines+'" L', 'INNER JOIN "'+lines+'"');
  return source.map(s=>select(s[0],s[1],s[2])).join('\nUNION ALL\n')+'\nORDER BY "التاريخ", "رقم الفاتورة", "رقم السطر";';
 }
 export function transferAqabaQuery(from:string,to:string){
@@ -59,8 +63,8 @@ export function transferAqabaQuery(from:string,to:string){
  '"WTR1"."WhsCode" AS "إلى المستودع"',
  'FROM "OWTR"',
  'INNER JOIN "WTR1" ON "OWTR"."DocEntry" = "WTR1"."DocEntry"',
- "WHERE (L.\"FromWhsCod\"='011' OR L.\"WhsCode\"='011')",
- "AND H.\"DocDate\" BETWEEN TO_DATE('"+from+"', 'YYYY-MM-DD') AND TO_DATE('"+to+"', 'YYYY-MM-DD')",
+ "WHERE (\"WTR1\".\"FromWhsCod\"='011' OR \"WTR1\".\"WhsCode\"='011')",
+ "AND \"OWTR\".\"DocDate\" BETWEEN TO_DATE('"+from+"', 'YYYY-MM-DD') AND TO_DATE('"+to+"', 'YYYY-MM-DD')",
  'ORDER BY "OWTR"."DocDate", "OWTR"."DocNum", "WTR1"."LineNum";'
  ].join('\n');
 }
@@ -72,21 +76,21 @@ export function aqabaInventoryQuery(from:string,to:string){
  if(!/^\d{4}-\d\d-\d\d$/.test(from)||!/^\d{4}-\d\d-\d\d$/.test(to)||from>to||from<AQABA_START)
   throw Error('فترة غير صحيحة');
  return [
- 'SELECT TO_NVARCHAR(M."TransNum") AS "معرف حركة المخزون",',
- 'TO_VARCHAR(M."DocDate", \'YYYY-MM-DD\') AS "التاريخ",',
- 'TO_NVARCHAR(M."TransType") AS "نوع حركة SAP",',
- 'TO_NVARCHAR(M."CreatedBy") AS "DocEntry",',
- 'TO_NVARCHAR(M."BASE_REF") AS "رقم المستند",',
- 'M."DocLineNum" AS "رقم السطر",',
- 'M."ItemCode" AS "كود الصنف",',
- 'M."Dscription" AS "اسم الصنف",',
- 'M."Warehouse" AS "المستودع",',
- 'M."InQty" AS "الوارد",',
- 'M."OutQty" AS "الصادر",',
- 'M."CardCode" AS "رقم الزبون"',
- 'FROM "OINM" M',
- "WHERE M.\"Warehouse\" = '011'",
- "AND M.\"DocDate\" BETWEEN TO_DATE('"+from+"', 'YYYY-MM-DD') AND TO_DATE('"+to+"', 'YYYY-MM-DD')",
- 'ORDER BY M."DocDate", M."TransNum", M."DocLineNum";'
+ 'SELECT TO_NVARCHAR("OINM"."TransNum") AS "معرف حركة المخزون",',
+ 'TO_VARCHAR("OINM"."DocDate", \'YYYY-MM-DD\') AS "التاريخ",',
+ 'TO_NVARCHAR("OINM"."TransType") AS "نوع حركة SAP",',
+ 'TO_NVARCHAR("OINM"."CreatedBy") AS "DocEntry",',
+ 'TO_NVARCHAR("OINM"."BASE_REF") AS "رقم المستند",',
+ '"OINM"."DocLineNum" AS "رقم السطر",',
+ '"OINM"."ItemCode" AS "كود الصنف",',
+ '"OINM"."Dscription" AS "اسم الصنف",',
+ '"OINM"."Warehouse" AS "المستودع",',
+ '"OINM"."InQty" AS "الوارد",',
+ '"OINM"."OutQty" AS "الصادر",',
+ '"OINM"."CardCode" AS "رقم الزبون"',
+ 'FROM "OINM"',
+ "WHERE \"OINM\".\"Warehouse\" = '011'",
+ "AND \"OINM\".\"DocDate\" BETWEEN TO_DATE('"+from+"', 'YYYY-MM-DD') AND TO_DATE('"+to+"', 'YYYY-MM-DD')",
+ 'ORDER BY "OINM"."DocDate", "OINM"."TransNum", "OINM"."DocLineNum";'
  ].join('\n');
 }
