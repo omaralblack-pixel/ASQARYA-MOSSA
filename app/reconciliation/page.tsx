@@ -293,6 +293,7 @@ async function findTransferForAddition(number: string, saved: StoredTransfer | n
   }
   const parsed = file && parseSapImport(file.text, branches);
   const member = parsed ? parsed.groups.flatMap(group => group.members).find(row => row.transfer.number === number) : undefined;
+  if(member?.reversal&&!member.reverseMovement)throw Error('الترحيل '+number+' ملغى في SAP؛ لا يجوز تجاوز الإلغاء باستثناء الفرع.');
   const sourceBranches=[...new Set([saved?.branch,member?.branch].filter((branch):branch is string=>!!branch))];
   let approved:BranchException[]=[];
   if(addingTo.branch&&sourceBranches.some(branch=>branch!==addingTo.branch)){
