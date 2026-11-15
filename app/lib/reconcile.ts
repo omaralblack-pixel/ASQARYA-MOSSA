@@ -276,6 +276,17 @@ export function transferNumbers(value: string) {
   return value.split(/[+،]/).map(number => documentNo(number.replace(/٬/g, ','))).filter(Boolean);
 }
 export function serialHeaders(paste:string){return (paste.replace(/\r/g,'').split('\n').find(l=>l.trim())||'').split('\t').map(s=>s.trim())}
+/** Prefer explicit SAP document headers. A leading # is a row counter and
+ * must never be inferred as a transfer number in an item-level export. */
+export function monthlyColumns(paste:string){
+ const headers=serialHeaders(paste).map(value=>value.replace(/^\uFEFF/,'').toLowerCase().replace(/[\s._:-]/g,''));
+ const find=(aliases:string[])=>{for(const alias of aliases){const index=headers.indexOf(alias);if(index>=0)return index;}return -1;};
+ return {
+  number:find(['رقمالترحيل','transfernumber','transferno','docnum','docno','documentnumber','documentno','رقمالمستند','رقمالحركة']),
+  date:find(['تاريخالترحيل','docdate','documentdate','postingdate','date','التاريخ','تاريخالمستند']),
+  branch:find(['اسمالفرع','branchname','branch','الفرع','branchcode','كودالفرع']),
+ };
+}
 export function monthly(paste:string,month:string,columns:{number:number;date:number;branch:number},filtered:boolean,format:string,groups:any[],branches:string[]=[]){
  const result={missing:[] as any[],received:[] as any[],pending:[] as any[],outside:[] as any[],extra:[] as any[],canceled:[] as any[],toCancel:[] as any[],reverse:[] as any[],problems:[] as string[],warnings:[] as string[],duplicates:[] as string[]};
  const lines=paste.replace(/^\uFEFF/,'').replace(/\r/g,'').split('\n').filter(line=>line.trim());
@@ -285,6 +296,8 @@ export function monthly(paste:string,month:string,columns:{number:number;date:nu
   result.problems.push('حدد الشهر وألصق أرقام الترحيلات أو جدول SAP');
  }else if(!plainNumbers&&columns.number<0){
   result.problems.push('اختر عمود رقم الترحيل');
+ }else if(!plainNumbers&&serialHeaders(paste)[columns.number]?.trim()==='#'&&monthlyColumns(paste).number>=0){
+  result.problems.push('عمود # هو تسلسل الصفوف؛ اختر عمود رقم الترحيل الفعلي.');
  }else if(!hasDate&&!filtered){
   result.problems.push('اختر عمود التاريخ أو أكّد أن الكشف مفلتر للشهر المحدد');
  }

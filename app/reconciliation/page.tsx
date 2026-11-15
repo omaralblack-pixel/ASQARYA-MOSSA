@@ -19,7 +19,7 @@ import AqabaWorkspace from './AqabaWorkspace';
 import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
 import {ArrowLeftRight,Check,CheckCircle2,AlertTriangle,Plus,Trash2,ClipboardPaste,FileText,CalendarDays,History,Settings2,Search,Save,Printer,Upload,ChevronDown,ArrowUpRight,RefreshCw,Copy,PackageCheck} from 'lucide-react';
-import {prepareReconciliation,readReconciliationRecord,withInvoiceDates,editInvoiceDate,addTransferToDraft,withSapInvoiceNumbers,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource, type BranchException, unmatchedBranchSources} from '../lib/reconcile';
+import {prepareReconciliation,readReconciliationRecord,withInvoiceDates,editInvoiceDate,addTransferToDraft,withSapInvoiceNumbers,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,monthlyColumns,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource, type BranchException, unmatchedBranchSources} from '../lib/reconcile';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
 const uid=()=>typeof crypto.randomUUID==='function'?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const newInvoice=():Invoice=>({id:uid(),number:'',date:'',amount:'',complete:false,quantities:{},attachments:[]});
@@ -653,7 +653,7 @@ async function save() {
     }
   });
 }
-function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);const h=serialHeaders(text).map(h=>h.toLowerCase().replace(/[\s._:-]/g,''));COLS({number:h.findIndex(v=>['docnum','docno','documentnumber','documentno','transfernumber','transferno','#','رقمالترحيل','رقمالمستند','رقمالحركة'].includes(v)),date:h.findIndex(v=>['docdate','documentdate','postingdate','date','التاريخ','تاريخالمستند','تاريخالترحيل'].includes(v)),branch:h.findIndex(v=>['branch','branchname','الفرع','اسمالفرع'].includes(v))})}
+function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);COLS(monthlyColumns(text))}
 if(!draft)return <div className="initial">جاري تجهيز مساحة المطابقة…</div>;
 return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="private-dot"/>مساحة عمل خاصة<form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');T(key);if(key==='history'||key==='invoices'||key==='monthly')void run(getRecords)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
 {tab==='aqaba'&&<AqabaWorkspace/>}
