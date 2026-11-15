@@ -72,15 +72,21 @@ const group=record([paper,paper2],[mixed],{pages:{'i:11371486':'1','i:11064245':
 const grouped=audit([group],[live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],'2026-11-03');
 assert.equal(grouped.length,2);
 assert.deepEqual(grouped.map(x=>x.state),['review','review'],
-  'Confirmed per-page allocations must not double-count an SAP transfer');
+  'Unapproved groups require actual financial or invoice-level evidence, never personal pages');
 assert.deepEqual(grouped.map(x=>x.items.map(y=>y.code)),[['11371486'],['11064245']]);
-assert.equal(grouped.reduce((sum,x)=>sum+x.items.reduce((n,item)=>n+(item.posted??0),0),0),112,
-  'Shared SAP lines may be counted only once across both blue invoices');
+assert.ok(grouped.every(x=>x.items.every(item=>item.posted===null)),
+  'Shared SAP quantities must not be invented for an individual blue invoice based on page marks');
+const changedPages=record([paper,paper2],[mixed],{pages:{'i:11371486':'99','i:11064245':'0'}});
+const groupedChanged=audit([changedPages],
+ [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],'2026-11-03');
+assert.deepEqual(grouped.map(x=>({state:x.state,posted:x.items.map(item=>item.posted)})),
+ groupedChanged.map(x=>({state:x.state,posted:x.items.map(item=>item.posted)})),
+ 'Page values cannot alter the warehouse 011 invoice audit');
 
 const unallocated=audit([record([paper,paper2],[mixed])],
   [live('2617002','2026-11-03',[line('DAR00005',100),line('CHS00033',12)])],'2026-11-03');
 assert.deepEqual(unallocated.map(x=>x.state),['review','review'],
-  'Multiple invoices without verified page allocations may not be marked matched');
+  'Unapproved multi-invoice groups must not become matched based on personal page numbers');
 assert.ok(unallocated.every(x=>!x.financiallyMatchedGroup),
   'Unapproved groups must not inherit a saved approval');
 
@@ -299,7 +305,7 @@ assert.ok(screen.includes('كاش فان مسوّى'));
 assert.ok(screen.includes("match:'مطابقة',late:'مطابقة'"),
   'Financially approved invoices must display a clean match without a late label');
 assert.ok(screen.includes("'تفاصيل الفاتورة'"),
-  'An absent historical page allocation must not display zero invoice items');
+  'A group without invoice-specific quantity proof must not invent zero item quantities');
 const reverseExtraCard=card('2617991','2026-11-07',line('CHS00033',1,'Piece','011','001'));
 const approvedWithReverse={...record([paper],[saved,reverseExtraCard]),status:'match'};
 const unrelatedReverse=live('2617991','2026-11-07',[line('CHS00033',1,'Piece','011','001')],{reverse:true});
