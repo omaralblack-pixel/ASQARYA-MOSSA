@@ -26,10 +26,27 @@ async function initializeSchema(){await db().batch([
  if(seed.length!==52||new Set(seed.map(r=>r.item)).size!==52||
     [...expected].some(([no,amount])=>totals.get(no)!==amount))
    throw Error('مرجع أسعار العقبة غير مطابق لمجاميع Excel؛ لم يُحفظ.');
+ // Cloudflare D1 permits at most 100 bound parameters per SQL statement.
+ // Five columns per seed row -> 20 rows maximum. Atomic batch preserves
+ // existing user-corrected rows with INSERT OR IGNORE.
  const fields='(id,doc_no,doc_date,payload,updated)';
- const values=seed.map(()=>'('+Array(5).fill('?').join(',')+')').join(',');
- const params=seed.flatMap(item=>[item.key,item.invoice,item.date,JSON.stringify(item),new Date().toISOString()]);
- await db().prepare('INSERT OR IGNORE INTO aqaba_blue '+fields+' VALUES '+values).bind(...params).run();
+ const rowsPerStatement=20;
+ const now=new Date().toISOString();
+ const seedStatements=[];
+ for(let offset=0;offset<seed.length;offset+=rowsPerStatement){
+  const chunk=seed.slice(offset,offset+rowsPerStatement);
+  const values=chunk.map(()=>'('+Array(5).fill('?').join(',')+')').join(',');
+  const params=chunk.flatMap(item=>[item.key,item.invoice,item.date,JSON.stringify(item),now]);
+  seedStatements.push(db().prepare('INSERT OR IGNORE INTO aqaba_blue '+fields+' VALUES '+values).bind(...params));
+ }
+ await db().batch(seedStatements);
+ // Read-back: do not report successful initialization if any of the seed rows
+ // is missing. Existing manually edited payloads are deliberately preserved.
+ const keys=seed.map(row=>row.key);
+ const existing=await db().prepare(
+  'SELECT COUNT(*) AS count FROM aqaba_blue WHERE id IN ('+keys.map(()=>'?').join(',')+')'
+ ).bind(...keys).first<{count:number}>();
+ if(existing?.count!==seed.length)throw Error('تعذّر إثبات وجود كامل مرجع أسعار العقبة (52 بندًا).');
 }
 function schema(){return ready??=initializeSchema().catch(error=>{ready=undefined;throw error})}
 
