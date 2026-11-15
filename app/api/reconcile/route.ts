@@ -8,7 +8,7 @@ import defaults from '../../reference.json';
 import schemaStatements from '../../lib/reconciliation-schema.json';
 import branches from '../../branches.json';
 import drivers from '../../drivers.json';
-import {reconcile,readReconciliationRecord,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
+import {reconcile,readReconciliationRecord,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,digits,approvedBranchException,type BranchException,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
 export const dynamic='force-dynamic';
 declare const __ASQARYA_COMMIT__:string;
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
@@ -28,6 +28,13 @@ async function currentPageSortingCatalog():Promise<AuditCatalog>{
 }
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);
 if(u.searchParams.has('version'))return json({commit:typeof __ASQARYA_COMMIT__==='string'?__ASQARYA_COMMIT__:'unknown',workerVersion:env.CF_VERSION_METADATA?.id||null});
+if(u.searchParams.has('branchExceptions')){
+ const transferNo=digits(u.searchParams.get('branchExceptions')||'').trim();
+ if(!/^\d{4,20}$/.test(transferNo))return json({error:'رقم الترحيل غير صالح.'},400);
+ const rows=await db().prepare("SELECT transfer_no AS transferNo,source_branch AS sourceBranch,target_branch AS targetBranch,reason,approved_at AS approvedAt FROM reconciliation_branch_exceptions WHERE transfer_no=? ORDER BY approved_at")
+  .bind(transferNo).all<BranchException>();
+ return json({exceptions:rows.results});
+}
 if(u.searchParams.has('lieutenantCancellationDecisions')){
  const rows=await db().prepare(
    'SELECT transfer_no,decision,related_type,related_number,note,revision,updated_at FROM lieutenant_cancellation_decisions ORDER BY transfer_no'
@@ -237,6 +244,13 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
     return json({error: 'تغيّر سجل أحد الترحيلات المضافة. احذفه من الكشف وأعد إضافته للتحقق.'}, 409);
   }
 
+  const transferBranchExceptions=(await db().prepare("SELECT transfer_no AS transferNo,source_branch AS sourceBranch,target_branch AS targetBranch,reason,approved_at AS approvedAt FROM reconciliation_branch_exceptions WHERE transfer_no IN (SELECT value FROM json_each(?)) AND target_branch=?")
+    .bind(JSON.stringify(transferKeys),d.branch).all<BranchException>()).results;
+  if(old&&old.branch!==d.branch){
+    const oldTransferNumbers=(previous?.transfers||[]).flatMap(row=>transferNumbers(row.number));
+    if(oldTransferNumbers.some(number=>transferKeys.includes(number)&&!approvedBranchException(transferBranchExceptions,number,old.branch,d.branch)))
+      return json({error:'تغيير فرع كشف محفوظ يحتاج استثناء فرع معتمد لكل ترحيل يتم الاحتفاظ به.'},409);
+  }
   const sourceByNumber = new Map<string, string>();
   for (const source of sources) {
     const sourceInvoices = source.draft.invoices.map(row => invoiceDocumentNo(row.number)).filter(Boolean).sort();
@@ -246,12 +260,15 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
     if (sourceInvoices.length && !correcting)
       return json({error: 'الترحيل ' + source.numbers[0] + ' مرتبط بالفاتورة الزرقاء ' + sourceInvoices[0] + '. استخدم خيار تصحيح الربط الخاطئ.'}, 409);
     for (const number of source.numbers) {
+      if(source.draft.branch!==d.branch&&!approvedBranchException(transferBranchExceptions,number,source.draft.branch,d.branch))
+        return json({error:'لا يمكن نقل الترحيل '+number+' بين '+source.draft.branch+' و'+d.branch+' دون استثناء فرع معتمد.'},409);
       const saved = source.draft.transfers.find(row => transferNumbers(row.number).includes(number));
       const index = ts.findIndex(value => transferNumbers(value).includes(number));
       if (!saved || transferNumbers(saved.number).length !== 1 || transferNumbers(ts[index]).length !== 1) {
         return json({error: 'بنود الترحيل ' + number + ' محفوظة مع أرقام أخرى في جدول واحد. يلزم فصل الجدول أولًا.'}, 409);
       }
-      if (claims.find(claim=>claim.number===number)?.correctInvoice && (d.transfers[index].paste!==saved.paste || d.transfers[index].date!==saved.date || source.draft.branch!==d.branch)) return json({error:'تصحيح الربط ينقل بنود وتاريخ الترحيل الأصلي إلى فاتورة من الفرع نفسه فقط.'},409);
+      if ((claims.find(claim=>claim.number===number)?.correctInvoice||source.draft.branch!==d.branch) && (d.transfers[index].paste!==saved.paste || d.transfers[index].date!==saved.date))
+        return json({error:'تصحيح الربط أو الفرع يجب أن يحافظ على تاريخ وبنود الترحيل الأصليين.'},409);
       if (!parseTransfer(d.transfers[index].paste, {allowReverse: true}).lines.length) {
         return json({error: 'أدخل بنود SAP للترحيل ' + number + ' قبل الحفظ.'}, 400);
       }
@@ -297,7 +314,7 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
     unresolved:[] as {sapCode:string;transfer:string;reason:string}[]};
   const prepared = prepareReconciliation(sorted.draft, await refs());
   const reference = prepared.reference;
-  const clean = {...prepared.draft, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
+  const clean = {...prepared.draft, branchExceptions:transferBranchExceptions, referenceSnapshot: reference, useCurrentReference: false, linkedSapCodes: undefined};
   const summary = summarize(prepared.result);
   // The operator can bypass only soldier page allocation, not price/item/transfer validation.
   if(overrideSoldier && (prepared.result.status!=='match'||prepared.result.priceDifference!==0))
@@ -368,6 +385,26 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = [], over
 }
 
 export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);const b=await readJsonRequest(req);await ensureSchema();
+if(b.action==='approveBranchException'){
+ const transferNo=digits(String(b.transferNo||'')).trim();
+ const targetBranch=String(b.targetBranch||'').trim();
+ const reason=String(b.reason||'').trim();
+ const sourceBranches=Array.isArray(b.sourceBranches)?b.sourceBranches:[];
+ const branchSetting=await db().prepare('SELECT value FROM settings WHERE key=?').bind('branches').first<{value:string}>();
+ const allowedBranches=(branchSetting?JSON.parse(branchSetting.value):branches) as string[];
+ if(!/^\d{4,20}$/.test(transferNo)||!allowedBranches.includes(targetBranch)||
+    sourceBranches.length<1||sourceBranches.length>3||new Set(sourceBranches).size!==sourceBranches.length||
+    sourceBranches.some((source:unknown)=>typeof source!=='string'||!allowedBranches.includes(source)||source===targetBranch)||
+    reason.length<8||reason.length>500)
+   return json({error:'أدخل رقم الترحيل والفرع الصحيح وسبب استثناء واضحًا (8 إلى 500 حرف).'},400);
+ const approvedAt=new Date().toISOString();
+ await db().batch(sourceBranches.map((source:string)=>db().prepare(
+   'INSERT OR IGNORE INTO reconciliation_branch_exceptions (transfer_no,source_branch,target_branch,reason,approved_at) VALUES (?,?,?,?,?)'
+ ).bind(transferNo,source,targetBranch,reason,approvedAt)));
+ const rows=await db().prepare("SELECT transfer_no AS transferNo,source_branch AS sourceBranch,target_branch AS targetBranch,reason,approved_at AS approvedAt FROM reconciliation_branch_exceptions WHERE transfer_no=? AND target_branch=?")
+  .bind(transferNo,targetBranch).all<BranchException>();
+ return json({exceptions:rows.results});
+}
 if(b.action==='lieutenantCancellationDecision'){
  // Optimistic locking prevents another device from silently overwriting a review.
  const expected=Number(b.expectedRevision);
