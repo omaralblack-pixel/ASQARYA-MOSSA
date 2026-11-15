@@ -95,7 +95,7 @@ export default function SerialSoldier(){
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
        <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
      </div>
-     <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. لا توجد أعمدة مقارنة مكررة أو شيت مراجعة جديد؛ الملاحظات تظهر فقط في صفوف الاختلاف أو عدم التأكيد. المجموعات القديمة المعتمدة تظهر ترحيلاتها المشتركة في صفوف فواتير المجموعة، دون تغيير توزيع الصفحات المحفوظ.</p>
+     <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. المجموعات متعددة الفواتير تُعرض ترحيلاتها المشتركة على مستوى المجموعة بدون افتراض تبعية الترحيل لفاتورة بعينها.</p>
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
      {error&&<p role="alert" className="red"><AlertTriangle size={16} style={{verticalAlign:'middle'}}/> {error}</p>}
      {issues.length>0&&<div role="alert" className="review-list"><strong>سطور Excel غير سليمة:</strong>{issues.map((issue,i)=><p key={i}>{issue}</p>)}</div>}
@@ -114,7 +114,7 @@ export default function SerialSoldier(){
        {report.period&&<p className="hint">فترة مقارنة فواتير المشروع: <b dir="ltr">{report.period.from}</b> إلى <b dir="ltr">{report.period.to}</b>. الأزرق يعني أن الفاتورة موجودة عندك وغير موجودة بكشف سجى.</p>}
        {report.blockers.length>0&&<div role="alert" className="review-list" style={{marginTop:15}}>
          <h3><AlertTriangle size={18} style={{verticalAlign:'middle'}}/> {report.blockers.length} أخطاء تحتاج مراجعة — التنزيل متاح</h3>
-         <p>الملف الناتج نسخة للمراجعة مع جميع الفروقات. لا تتحول الأخطاء إلى مطابقة معتمدة، ولا يتم تعديل البيانات المحفوظة. «غير مسجلة» تعني غياب رقم الفاتورة عن سجلات المشروع ولا تثبت غياب ورقها. سجلات الفواتير القديمة المطابقة مستثناة من شرط الصفحات فقط.</p>
+         <p>الملف الناتج نسخة للمراجعة مع جميع الفروقات. لا تتحول الأخطاء إلى مطابقة معتمدة، ولا يتم تعديل البيانات المحفوظة. «غير مسجلة» تعني غياب رقم الفاتورة عن سجلات المشروع ولا تثبت غياب ورقها. أرقام الصفحات الشخصية لا تدخل في فحص السيريل إطلاقًا.</p>
          <div style={{maxHeight:260,overflowY:'auto'}}>{report.blockers.map((b,i)=><p key={i}>{b}</p>)}</div>
        </div>}
        {report.legacyWarnings.length>0&&<details className="review-list" style={{marginTop:14}}><summary>ملاحظات السجل وربط المجموعات القديمة ({report.legacyWarnings.length})</summary><div style={{maxHeight:240,overflowY:'auto'}}>{report.legacyWarnings.map((item,i)=><p key={i}>{item}</p>)}</div></details>}
