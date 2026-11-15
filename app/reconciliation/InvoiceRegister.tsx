@@ -8,7 +8,7 @@ import {sapInvoicesFromSavedFile,compareSapWithSavedInvoices,type SapRegisterSou
 
 type RecordSummary = {id: string; branch: string; doc_date: string; payload: string};
 const institution = 'المؤسسة الاستهلاكية العسكرية';
-const headers = ['رقم الفاتورة', 'رقم الصفحة', 'أرقام ترحيلات المجموعة', 'اسم المؤسسة', 'الفرع', 'تاريخ الفاتورة', 'تاريخ المجموعة', 'مبلغ الفاتورة (د.أ)'];
+const headers = ['رقم الفاتورة', 'أرقام ترحيلات المجموعة', 'اسم المؤسسة', 'الفرع', 'تاريخ الفاتورة', 'تاريخ المجموعة', 'مبلغ الفاتورة (د.أ)'];
 
 function registerRows(records: RecordSummary[], status: 'received' | 'pending' = 'received') {
   return records.flatMap(record => {
@@ -21,7 +21,7 @@ function registerRows(records: RecordSummary[], status: 'received' | 'pending' =
       const date = dateValue(invoice.date || '') || '';
       const groupDate = dateValue(record.doc_date || '') || '';
       const amount = fils(invoice.amount || '');
-      const values = [invoice.number, String(index + 1), [...transfers.keys()].join(' + '), institution, record.branch, date, groupDate, amount === null ? '' : money(amount)];
+      const values = [invoice.number, [...transfers.keys()].join(' + '), institution, record.branch, date, groupDate, amount === null ? '' : money(amount)];
       return [{key: record.id + ':' + index, record, date: date || groupDate, values, transfers}];
     });
   }).sort((a, b) => b.date.localeCompare(a.date));
@@ -36,9 +36,9 @@ export function InvoiceRegisterPrint({records}: {records: RecordSummary[]}) {
       <thead><tr><th>رقم الفاتورة الزرقاء</th><th>تاريخ الفاتورة</th><th>أرقام ترحيلات المجموعة وتواريخها</th><th>مبلغ الفاتورة (د.أ)</th></tr></thead>
       <tbody>{rows.map(row=><tr key={row.key}>
         <td dir="ltr">{row.values[0]}</td>
-        <td dir="ltr">{row.values[5]||'—'}</td>
+        <td dir="ltr">{row.values[4]||'—'}</td>
         <td>{[...row.transfers].map(([number,date])=><div key={number} dir="ltr">{number} — {date||'—'}</div>)}</td>
-        <td dir="ltr">{row.values[7]||'—'}</td>
+        <td dir="ltr">{row.values[6]||'—'}</td>
       </tr>)}</tbody>
     </table>
   </section>;
@@ -78,7 +78,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
       return digits(row.values.join(' ')).toLowerCase().includes(searched);
     }
     return (!month || row.date.startsWith(month)) &&
-      (!invoiceDate.trim() || (selectedDate !== null && row.values[5] === selectedDate));
+      (!invoiceDate.trim() || (selectedDate !== null && row.values[4] === selectedDate));
   });
   const branchCount = new Set(visible.map(row => row.record.branch.trim()).filter(Boolean)).size;
 
@@ -208,7 +208,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
       <div className="table-scroll">
         <table><thead><tr>{headers.map(header => <th key={header}>{header}</th>)}{searching&&<th>حالة الورق</th>}<th>المجموعة</th></tr></thead>
           <tbody>{visible.map(row => <tr key={row.key}>
-            {row.values.map((value, index) => <td key={index} dir={index < 3 || index >= 5 ? 'ltr' : undefined}>{value || '—'}</td>)}
+            {row.values.map((value, index) => <td key={index} dir={index < 2 || index >= 4 ? 'ltr' : undefined}>{value || '—'}</td>)}
             {searching&&<td>{receivedKeys.has(row.key)?'الورق مؤكد في السجل':'الورق غير مؤكد في السجل'}</td>}
             <td><button className="button secondary small" onClick={() => open(row.record)}>فتح المجموعة</button></td>
           </tr>)}</tbody>
