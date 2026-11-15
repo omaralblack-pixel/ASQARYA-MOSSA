@@ -5,7 +5,7 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
-import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editInvoiceDate, addTransferToDraft, withSapInvoiceNumbers, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
+import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editGroupInvoiceDate, addTransferToDraft, withSapInvoiceNumbers, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
 type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:string; version:number; branch:string};
@@ -417,7 +417,7 @@ export default function InstantMatch({
               <label>مبلغ الفاتورة (د.أ)<input dir="ltr" inputMode="decimal" value={item.amount}
                 onChange={e=>updateInvoice(item.id,{amount:e.target.value})} placeholder="0.000"/></label>
               <label>تاريخ الفاتورة<input type="date" value={item.date}
-                onChange={e=>update({...draft,invoices:editInvoiceDate(draft.invoices,item.id,e.target.value)})}/></label>
+                onChange={e=>update({...draft,invoices:editGroupInvoiceDate(draft.invoices,e.target.value)})}/></label>
             </div>
             <label className="check-label"><input type="checkbox" checked={item.complete}
               onChange={e=>updateInvoice(item.id,{complete:e.target.checked})}/>الفاتورة الورقية موجودة عندي</label>
@@ -428,7 +428,11 @@ export default function InstantMatch({
           </article>)}
         </div>
         <button className="button secondary" type="button" disabled={draft.invoices.length>=30}
-          onClick={()=>update({...draft,invoices:[...draft.invoices,invoice()]})}><Plus size={16}/>إضافة فاتورة زرقاء</button>
+          onClick={()=>{
+          const groupDate=draft.invoices.find(item=>item.manualDate&&item.date)?.date;
+          const next=invoice();
+          update({...draft,invoices:[...draft.invoices,groupDate?{...next,date:groupDate,manualDate:true}:next]});
+        }}><Plus size={16}/>إضافة فاتورة زرقاء</button>
       </section>
       <section className="panel">
         <div className="section-title"><h2>ترحيلات SAP</h2></div>
