@@ -76,15 +76,26 @@ export function cancellationReviewRows(
       ...(movement?.counterparts||[]),
       ...(movement?.counterpart?[movement.counterpart]:[]),
     ])];
-    const proven=!!counterparts.length&&(
-      movement?.kind==='sap-cancel-doc'||
-      movement?.kind==='sap-canceled'&&counterparts.some(no=>byNumber.has(no)));
+    const counterpartsPresent=!!counterparts.length&&counterparts.every(no=>byNumber.has(no));
+    const signedOffset=counterpartsPresent&&movement?.verifiedOffset===true;
+    const fullReverse=counterpartsPresent&&
+      (movement?.kind==='reversed'||movement?.kind==='reverse');
+    const sapProof=counterpartsPresent&&
+      (movement?.kind==='sap-cancel-doc'||movement?.kind==='sap-canceled');
+    const proven=signedOffset||fullReverse||sapProof;
     const kind=source.cancellationState==='canceled'?'ملغى رسميًا في SAP (Y)':
       source.cancellationState==='cancellation'?'مستند إلغاء SAP (C)':
       source.signedAdjustment?'تصحيح كمية مع ملاحظة إلغاء':
       'Remarks تشير إلى إلغاء يحتاج إثباتًا';
-    const automaticReason=proven?'مستند مقابل مثبت في الكشف: '+counterparts.join('، '):
-      'سبب الإلغاء أو المستند المقابل غير مثبت في هذا الكشف.';
+    const automaticReason=signedOffset?
+      'تغطية كمية مثبتة تلقائيًا بين الترحيل '+source.transfer.number+
+      ' والمقابل '+counterparts.join('، ')+': التصحيح السالب مطابق'+
+      ' في جميع الأصناف والكميات والوحدات والمستودعات. هذا ليس إثباتًا لتغيير حالة SAP.':
+      fullReverse?'ترحيل عكسي مطابق بالكامل في الأصناف والكميات والوحدات والمستودعات: '+counterparts.join('، '):
+      sapProof?'مستند إلغاء SAP مثبت ومطابق: '+counterparts.join('، '):
+      counterparts.length?'رقم مستند مقابل مذكور: '+counterparts.join('، ')+
+        '، لكن لم تثبت مطابقة كاملة لكل البنود؛ تحتاج مراجعة.':
+        'سبب الإلغاء أو المستند المقابل غير مثبت في هذا الكشف.';
     return {source,kind,automaticReason,counterparts,
       directions:lieutenantDirections(source),proven};
   }).sort((a,b)=>a.source.transfer.date.localeCompare(b.source.transfer.date)||

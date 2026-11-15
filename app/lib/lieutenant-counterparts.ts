@@ -8,6 +8,8 @@ export type LieutenantMovement = {
   counterparts?:string[];
   counterpartDate?:string;
   note:string;
+  /** Exact signed SAP correction offsets the original quantity; not proof of SAP CANCELED=Y/C. */
+  verifiedOffset?:boolean;
 };
 const cashVan=/(?:كاش[\s._\-ـ]*[فڤ][اأإآ]ن|cash[\s._\-]*van)/iu;
 const officialCancellation=/inventory\s+transfer\s+no\.?\s*(\d{4,20})\s+has\s+been\s+cancel(?:ed|led)/i;
@@ -123,12 +125,16 @@ export function analyzeLieutenantMovements(
         note:resolved.get(source.transfer.number)?.note||'حالة SAP: ملغى (Y)'});
   }
 
+  const signedReferences=new Map<string,string[]>();
+  const matchingSigned=new Map<string,string[]>();
   // The shared SAP query represents correction documents as signed quantities
   // in the original direction. Their stock effect is valid; a negative sign
   // and Remarks do not, on their own, prove CANCELED=Y/C in SAP.
   for(const correction of transfers){
     if(!correction.signedAdjustment||correction.cancellationState==='canceled'||correction.cancellationState==='cancellation')continue;
     const originalNo=correction.remarks.match(officialCancellation)?.[1];
+    if(originalNo&&correction.transfer.date<=periodEnd)
+      signedReferences.set(originalNo,[...(signedReferences.get(originalNo)||[]),correction.transfer.number]);
     const original=originalNo?byNumber.get(originalNo):undefined;
     const allNegative=correction.transfer.paste.split('\n').slice(1)
       .every(line=>Number((line.split('\t')[2]||'').replace(/,/g,''))<0);
@@ -138,10 +144,26 @@ export function analyzeLieutenantMovements(
       signature(original)===signature(correction,false,true);
     resolved.set(correction.transfer.number,{kind:'cancellation-review',counterpart:originalNo,
       note:'حركة تصحيح سالبة؛ يُحتسب أثرها الموقّع في المخزون، وتحتاج حالة الإلغاء للتحقق على SAP. لا تحتاج فاتورة زرقاء مستقلة.'});
-    if(matches&&original&&!resolved.has(original.transfer.number)&&correction.transfer.date<=periodEnd)
-      resolved.set(original.transfer.number,{kind:'cancellation-review',counterpart:correction.transfer.number,
-        note:'يقابله تصحيح سالب مطابق بالكامل رقم '+correction.transfer.number+
-          ' بتاريخ '+correction.transfer.date+'؛ تحقّق من حالة الإلغاء على SAP قبل طلب فاتورة له.'});
+    if(matches&&original&&correction.transfer.date<=periodEnd)
+      matchingSigned.set(original.transfer.number,[...(matchingSigned.get(original.transfer.number)||[]),correction.transfer.number]);
+  }
+
+  // Auto-close review ONLY for a unique, explicitly referenced correction whose
+  // absolute signed lines exactly offset every original item/UoM/warehouse.
+  // Do not change SAP cancellation state or inventory calculations.
+  for(const [originalNo,ids] of matchingSigned){
+    if(ids.length!==1||signedReferences.get(originalNo)?.length!==1)continue;
+    const correctionNo=ids[0];
+    const correction=byNumber.get(correctionNo)!;
+    const proof='تصحيح سالب مطابق بالكامل للترحيل '+originalNo+
+      ' في الأصناف والكميات والوحدات والمستودعات، برقم '+correctionNo+
+      ' بتاريخ '+correction.transfer.date+'؛ صافي الكمية صفر، دون إثبات CANCELED=Y/C.';
+    resolved.set(correctionNo,{...resolved.get(correctionNo)!,verifiedOffset:true,
+      note:proof});
+    const previous=resolved.get(originalNo);
+    if(!previous||previous.kind==='cancellation-review')
+      resolved.set(originalNo,{kind:'cancellation-review',counterpart:correctionNo,
+        verifiedOffset:true,note:proof});
   }
 
   // First honor an explicitly referenced reverse, but only when all original

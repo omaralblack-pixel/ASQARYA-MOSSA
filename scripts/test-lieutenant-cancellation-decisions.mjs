@@ -50,6 +50,43 @@ assert.equal(cancellationReviewRows(source,'2026-11-12','2026-11-12').length,1,
   'Date filtering is by SAP document date');
 assert.equal(cancellationReviewRows(source,'2026-11-01','2026-11-10').length,4,
   'Read-only candidate selection must be stable across repeated reports');
+// A signed SAP correction must automatically settle review only when every line
+// is exactly offset and the original transfer is explicitly referenced.
+const coveredOriginal=transfer('2619301','2026-11-02','002','011');
+function signedCorrection(number,quantity='-12',unit='Piece',warehouse='002',date='2026-11-03'){
+  const row=transfer(number,date,warehouse,'011','unknown',
+    'Inventory transfer no. 2619301 has been canceled',true);
+  row.signedAdjustment=true;
+  row.transfer.paste=header+'\n'+['DAR00005','Sample',quantity,unit,warehouse,'011'].join('\t');
+  return row;
+}
+const covered=signedCorrection('2619302');
+const offsetRows=cancellationReviewRows([coveredOriginal,covered],'2026-11-01','2026-11-10');
+assert.equal(offsetRows.length,2,'Original and signed correction are both visible for transparent review');
+assert.ok(offsetRows.every(row=>row.proven),'Neither side of an exact offset needs manual approval');
+assert.deepEqual(offsetRows.find(row=>row.source.transfer.number==='2619302').counterparts,['2619301']);
+assert.match(offsetRows[0].automaticReason,/تغطية كمية مثبتة تلقائيًا/);
+assert.match(offsetRows[0].automaticReason,/ليس إثباتًا لتغيير حالة SAP/);
+assert.equal(cancellationReviewRows([coveredOriginal,signedCorrection('2619303','-11')],
+  '2026-11-01','2026-11-10')[0].proven,false,'Partial quantity never auto-settles');
+assert.equal(cancellationReviewRows([coveredOriginal,signedCorrection('2619304','-12','KG')],
+  '2026-11-01','2026-11-10')[0].proven,false,'A different UoM never auto-settles');
+assert.equal(cancellationReviewRows([coveredOriginal,signedCorrection('2619305','-12','Piece','001')],
+  '2026-11-01','2026-11-10')[0].proven,false,'A different warehouse never auto-settles');
+assert.ok(cancellationReviewRows([coveredOriginal,covered,signedCorrection('2619306')],
+  '2026-11-01','2026-11-10').every(row=>!row.proven),
+  'Two corrections claiming the same original are ambiguous');
+const cutoffOriginal={...coveredOriginal,cancellationMentioned:true};
+assert.equal(cancellationReviewRows([cutoffOriginal,covered],'2026-11-01','2026-11-02')[0].proven,false,
+  'A correction dated after the report end must not settle an earlier date');
+const reverseSource=transfer('2619401','2026-11-01','001','011','active',
+  'Needs cancellation review',true);
+const reverseDoc=transfer('2619402','2026-11-03','011','001','active',
+  'Reverse 2619401',false);
+const reversedRows=cancellationReviewRows([reverseSource,reverseDoc],'2026-11-01','2026-11-10');
+assert.equal(reversedRows[0].proven,true,'An exact full reverse is also an automatic settlement');
+assert.deepEqual(reversedRows[0].counterparts,['2619402']);
+
 const input=(decision,relatedType='',relatedNumber='',note='')=>({
   transferNo:'2619101',decision,relatedType,relatedNumber,note,
 });
@@ -81,6 +118,8 @@ assert.ok(schema.some(query=>query.includes('CREATE TABLE IF NOT EXISTS lieutena
 const screen=fs.readFileSync('app/reconciliation/CancelledTransferReview.tsx','utf8');
 assert.ok(screen.includes('حفظ القرار دائمًا'));
 assert.ok(screen.includes('إعادة فتح للمراجعة'));
+assert.ok(screen.includes('مغطاة تلقائيًا بمستند مقابل مطابق'));
+assert.ok(screen.includes('!row.proven?<div'),'Proof-backed rows must not demand approval');
 assert.ok(screen.includes('onOpenTransfer'));
 assert.ok(screen.includes("className=\"no-print\""));
 assert.ok(screen.includes('saved.updated_at') && screen.includes('saved.note'),
