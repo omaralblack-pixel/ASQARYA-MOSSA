@@ -316,6 +316,7 @@ export function cashVanMovementReport(transfers:LieutenantTransfer[],from:string
     return {source,movement,route:source.branch||rawRoute||'غير محدد في الملاحظات',
       directions:lieutenantDirections(source),
       cancellationStatus:movement.kind==='sap-canceled'?'ملغى على SAP':
+        movement.verifiedOffset?'تصحيح إلغاء مطابق بالكامل (حالة Y/C غير مثبتة)':
         source.cancellationState==='active'?'غير ملغى على SAP':'غير مذكورة في الكشف',
       counterparts:ids.map(number=>{
         const counterpart=byNumber.get(number);

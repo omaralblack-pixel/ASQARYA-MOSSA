@@ -216,6 +216,50 @@ assert.ok(fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8').inclu
 const counterpartCode=compile('app/lib/lieutenant-counterparts.ts');
 const {analyzeLieutenantMovements,isCashVanTransfer,cashVanMovementReport}=
   await import('data:text/javascript;base64,'+Buffer.from(counterpartCode).toString('base64'));
+// Real Cash Van Erbid pattern: the newer SAP export has only a signed
+// cancellation and omits its original, so recover the original from prior archive.
+const erbidHeader=['رقم الترحيل','تاريخ الترحيل','كود الفرع','اسم الفرع','Remarks',
+  'Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'].join('\t');
+const erbidOriginal=[erbidHeader,
+  ['2616468','12/11/2026','','','كاش فأن إربد','CHS00009','Cheese','24','Piece','001','011'].join('\t'),
+  ['2616468','12/11/2026','','','كاش فأن إربد','FVL00302','Vegetables','25','Carton','001','011'].join('\t'),
+].join('\n');
+const erbidCorrection=[erbidHeader,
+  ['2616635','12/11/2026','','','Inventory transfer no. 2616468 has been canceled','CHS00009','Cheese','-24','Piece','001','011'].join('\t'),
+  ['2616635','12/11/2026','','','Inventory transfer no. 2616468 has been canceled','FVL00302','Vegetables','-25','Carton','001','011'].join('\t'),
+].join('\n');
+const erasedFromNew=await restoreLieutenantSource([
+  {key:'new',name:'SAP_15.txt',kind:'transfers',created:'2026-11-15T10:00:00Z'},
+  {key:'old',name:'SAP_14.txt',kind:'transfers',created:'2026-11-14T10:00:00Z'},
+],[],async file=>file.key==='new'?erbidCorrection:erbidOriginal,
+  async()=>{throw Error('A valid latest SAP archive must not use shared fallback')});
+assert.equal(erasedFromNew.key,'new','The latest file remains the primary source');
+assert.equal(erasedFromNew.scan.transfers.length,2,'The missing original is recovered without duplicating the correction');
+assert.match(erasedFromNew.name,/استكمال مستندات الإلغاء/);
+const erbidMovements=analyzeLieutenantMovements(erasedFromNew.scan.transfers,'2026-11-15');
+assert.equal(erbidMovements.get('2616468').verifiedOffset,true,
+  'An explicitly referenced signed correction must settle the entire original');
+assert.equal(erbidMovements.get('2616468').counterpart,'2616635');
+assert.equal(erbidMovements.get('2616468').kind,'cancellation-review',
+  'A signed cancellation without SAP Y/C must not forge an official canceled flag');
+const erbidReport=cashVanMovementReport(erasedFromNew.scan.transfers,'2026-11-01','2026-11-15');
+assert.equal(erbidReport[0].counterparts[0].number,'2616635',
+  'Show the SAP correction number alongside the original Cash Van');
+assert.match(erbidReport[0].cancellationStatus,/تصحيح إلغاء مطابق بالكامل/);
+const wrongErbid=erbidCorrection.replace('-25','-24');
+const wrongErbidScan=await restoreLieutenantSource([
+  {key:'new',name:'new.txt',kind:'transfers',created:'2026-11-15'},
+  {key:'old',name:'old.txt',kind:'transfers',created:'2026-11-14'},
+],[],async file=>file.key==='new'?wrongErbid:erbidOriginal,async()=>undefined);
+assert.notEqual(analyzeLieutenantMovements(wrongErbidScan.scan.transfers,'2026-11-15')
+  .get('2616468')?.verifiedOffset,true,'Partial offsets must not settle Cash Van');
+const noOriginal=await restoreLieutenantSource([
+  {key:'new',name:'new.txt',kind:'transfers',created:'2026-11-15'},
+],[],async()=>erbidCorrection,async()=>undefined);
+assert.ok(noOriginal.scan.issues.some(issue=>issue.includes('2616468')),
+  'Missing original is explained instead of silently declaring a complete cancellation');
+console.log('PASS: Erbid 2616468 / 2616635 signed cancellation, archived recovery, and partial-match guard.');
+
 const cashRows=[
  ['2615767','02/11/2026','','','كاش فان عجلون','DAR00005','كريمة','12','Piece','001','011'],
  ['2616500','11/11/2026','','','عكس ترحيل 2615767','DAR00005','كريمة','12','Piece','011','001'],

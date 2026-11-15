@@ -10,7 +10,7 @@ import {lieutenantImportPlan,type ImportDocumentResult} from '../lib/lieutenant-
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
-import {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey,type LieutenantSourceFile} from '../lib/lieutenant-source';
+import {mergeLieutenantScans,restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {lieutenantApprovals} from '../lib/lieutenant-coverage';
 import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState,type DaySapStatus} from '../lib/lieutenant-invoice-day';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
@@ -337,19 +337,30 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     setNextPage(next.nextPage);
     return next.files;
   }
-  async function restoreTransfers(candidates:StoredFile[],isActive=()=>true){
+  async function restoreTransfers(candidates:StoredFile[],isActive=()=>true,force=false){
     setAutoLoading(true);
     try{
       const source=await restoreLieutenantSource(candidates,branches,fetchArchivedSource,readSavedSapImport);
-      if(!isActive()||transferSelectedRef.current)return;
+      if(!isActive()||(transferSelectedRef.current&&!force))return;
       if(!source)return;
       transferSelectedRef.current=true;
       setSelectedTransfer(source.key);setTransferSourceName(source.name);
       setSharedSource(source.shared||null);
       setTransfers(source.scan.transfers);setIssues(source.scan.issues);
-      if(source.shared)setMessage('تمت استعادة كشف SAP المحفوظ: '+source.scan.transfers.length+
-        ' ترحيلًا. الملف متاح للمقارنة دون إعادة رفعه. لم تُنشأ فاتورة أو تُعتمد بيانات.');
+      if(source.shared||force)setMessage((force?'تم تحديث الرقابة من أحدث أرشيف SAP: ':'تمت استعادة كشف SAP المحفوظ: ')+
+        source.scan.transfers.length+' مستندًا، المصدر: '+source.name+'. لم تُنشأ فاتورة أو تُعتمد بيانات.');
     }finally{if(isActive())setAutoLoading(false);}
+  }
+  async function reloadAuditFromArchive(){
+    setBusy(true);setError('');setMessage('');
+    try{
+      const latest=await refreshFiles();
+      if(!latest.some(file=>file.kind==='transfers'))
+        throw Error('لا يوجد كشف ترحيلات SAP محفوظ في الأرشيف. ارفع الملف الجديد في قسم أرشيف الملازم أول.');
+      await restoreTransfers(latest,()=>true,true);
+    }catch(cause){
+      setError(cause instanceof Error?cause.message:'تعذّر إعادة تحميل كشف SAP من الأرشيف.');
+    }finally{setBusy(false);}
   }
   async function deleteArchive(file:StoredFile){
     if(!window.confirm('حذف الملف "'+file.name+'" نهائيًا من أرشيف الملازم أول؟ لن تُحذف الفواتير أو الترحيلات أو المطابقات المحفوظة، لكن نسخة الملف الأصلية لن تعود متاحة من الأرشيف.'))return;
@@ -662,7 +673,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       setSharedSource(null);
       setSelectedTransfer(stored.key);
       setTransferSourceName(file.name);
-      setTransfers(result.transfers);setIssues(result.issues);
+      setTransfers(current=>mergeLieutenantScans(result,{transfers:current,issues:[]}).transfers);setIssues(result.issues);
       if(!result.transfers.length){
         setMessage(saved+'لم يُعثر على ترحيلات صالحة؛ راجع ملاحظات قراءة SAP. لم يُرسل شيء للجندي.'+warning);
         return;
@@ -759,7 +770,13 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       </div>
       {!periodValid&&<p className="banner warn" role="alert">اختر تاريخ بداية ونهاية صحيحين؛ تاريخ البداية لا يتجاوز النهاية، والنهاية لا تتجاوز اليوم.</p>}
     </section>
-    <CashVanAudit transfers={transfers} sourceName={selectedTransfer===sharedLieutenantKey?sharedSource?.name||'':files.find(file=>file.key===selectedTransfer)?.name||''}/>
+    <div className="table-controls no-print">
+      <button type="button" className="button secondary" onClick={()=>void reloadAuditFromArchive()}
+        disabled={busy||autoLoading}>
+        {busy||autoLoading?'جارٍ قراءة أرشيف SAP...':'تحديث كشف SAP المستخدم في الرقابة من أحدث الأرشيف'}
+      </button>
+    </div>
+    <CashVanAudit transfers={transfers} sourceName={transferSourceName||files.find(file=>file.key===selectedTransfer)?.name||''}/>
     <CancelledTransferReview transfers={transfers} from={from} to={to}
       onOpenTransfer={source=>onOpenTransfer(source.transfer,source.branch)}/>
     <section className="panel" aria-label="مطابقة الفواتير الزرقاء حسب تاريخ الفاتورة">
