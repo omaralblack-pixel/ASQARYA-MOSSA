@@ -1,6 +1,5 @@
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
 import {validateCancellationDecision} from '../../lib/lieutenant-cancellation-decisions';
-import {initialAuditCatalog,validateAuditCatalog,type AuditCatalog} from '../../lib/audit-catalog';
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
 import {isHistoricalSoldierRecord} from '../../lib/soldier-start';
 import {env} from 'cloudflare:workers';
@@ -17,15 +16,6 @@ async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value F
 // Initialize only missing tables on standalone Cloudflare deployments.
 let schemaReady:Promise<unknown>|undefined;
 function ensureSchema(){return schemaReady??=db().batch(schemaStatements.map(sql=>db().prepare(sql))).catch(error=>{schemaReady=undefined;throw error})}
-// The previously stored catalog remains read-only input for invoice page sorting.
-async function currentPageSortingCatalog():Promise<AuditCatalog>{
- const row=await db().prepare('SELECT value FROM settings WHERE key=?')
-   .bind('institutionAuditCatalog').first<{value:string}>();
- if(!row)return initialAuditCatalog(await refs());
- const saved=JSON.parse(row.value) as {catalog:AuditCatalog};
- if(!validateAuditCatalog(saved.catalog))throw Error('مرجع فرز الصفحات المحفوظ غير صالح.');
- return saved.catalog;
-}
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);
 if(u.searchParams.has('version'))return json({commit:typeof __ASQARYA_COMMIT__==='string'?__ASQARYA_COMMIT__:'unknown',workerVersion:env.CF_VERSION_METADATA?.id||null});
 if(u.searchParams.has('branchExceptions')){
@@ -57,8 +47,6 @@ if(u.searchParams.has('lieutenant')){
   db().prepare('SELECT snapshot_date,warehouse,sap_code,item_name,unit,quantity,source,approved_at FROM lieutenant_opening_stock ORDER BY snapshot_date,sap_code,unit').all(),
  ]);
  return json({records:records.results,queue:queue.results,openingStock:openingStock.results});
-}if(u.searchParams.has('pageSortingCatalog')){
- return json({catalog:await currentPageSortingCatalog()});
 }if(u.searchParams.has('lieutenantInvoiceDay')){
   // Read-only daily blue-invoice audit. Resolve dates/page links using the
   // existing invoice collector; never duplicate historical invoices or write.
@@ -89,14 +77,7 @@ if(u.searchParams.has('lieutenant')){
       .map(record=>({id:record.id,branch:record.branch,status:record.status,payload:record.payload}));
     return json({...collected,records:selected,reference:await refs()});
   }catch(cause){return json({error:cause instanceof Error?cause.message:'تعذّر تجميع الفواتير.'},400)}
-}if(u.searchParams.has('invoiceListFrom')||u.searchParams.has('invoiceListTo')){
- const from=u.searchParams.get('invoiceListFrom')||'';
- const to=u.searchParams.get('invoiceListTo')||'';
- const records=await db().prepare('SELECT id,branch,status,doc_date,payload FROM reconciliations ORDER BY updated DESC')
-   .all<{id:string;branch:string;status:string;doc_date:string;payload:string}>();
- try{return json(collectInvoicesByDate(records.results,from,to))}
- catch(error){return json({error:error instanceof Error?error.message:'الفترة غير صالحة.'},400)}
-}if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,status,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array' AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object') AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object') THEN json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) ELSE payload END ELSE payload END AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
+if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,status,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array' AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object') AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object') THEN json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) ELSE payload END ELSE payload END AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
 type StoredReconciliation = {
   id: string;
   branch: string;
