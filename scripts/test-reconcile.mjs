@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,pageNumber,monthly,parseTransfer,convert,dateValue,approvedBranchException,unmatchedBranchSources}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,pageNumber,monthly,monthlyColumns,parseTransfer,convert,dateValue,approvedBranchException,unmatchedBranchSources}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -284,3 +284,23 @@ console.log('PASS: approved links, aliases and missing definitions apply to save
  const changed=reconcile({...fixture,excludedItems:exclusions,transfers:[{...fixture.transfers[0],paste:changedPaste}]},localRef);
  assert.equal(changed.review,1);assert.equal(changed.excludedRows.length,0);
 }
+
+// Shared item-level SAP exports include a leading sequence #. Automatic M2026
+// wiring must count document numbers, not thousands of individual item rows.
+{
+ const heading='#\tرقم الترحيل\tتاريخ الترحيل\tكود الفرع\tاسم الفرع\tRemarks\tItem No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
+ const rows=Array.from({length:867},(_,index)=>[index+1000,String(2617000+index),'14.11.2026','21','السرو','','DAR00005','Cream',1,'Piece','001','011'].join('\t'));
+ rows.push([99999,'2617000','14.11.2026','21','السرو','','DAR00027','Cream',2,'Piece','001','011'].join('\t'));
+ const source=[heading,...rows].join('\n'),columns=monthlyColumns(source);
+ assert.deepEqual(columns,{number:1,date:2,branch:4});
+ assert.match(monthly(source,'2026-11',{...columns,number:0},false,'dmy',[]).problems.join(' '),/تسلسل الصفوف/);
+ const result=monthly(source,'2026-11',columns,false,'dmy',[],['21 — السرو']);
+ assert.equal(result.problems.length,0);
+ assert.equal(result.missing.length,867);
+ assert.equal(result.duplicates.length,0,'Different item rows aggregate into one SAP document');
+ assert.ok(result.missing.every(row=>/^2617/.test(row.number)), 'Item row counters must never become transfer IDs');
+ assert.equal(monthlyColumns('#\tDocument Number\tDocument Date\n1\t2617000\t2026-11-14').number,1);
+ assert.equal(monthlyColumns('#\tDescription\n1\tUnknown').number,-1,'Unknown document columns require review instead of guessing #');
+ assert.equal(monthlyColumns('Document Number\tDocument Date\tBranch\n2617000\t2026-11-14\tالسرو').number,0);
+}
+console.log('PASS: M2026 auto-detection selects real SAP document numbers over # counters and deduplicates item rows across 867 documents.');
