@@ -225,6 +225,10 @@ export function withInvoiceDates<T extends Draft>(draft:T):T {
 export function editInvoiceDate(invoices:Invoice[],id:string,date:string):Invoice[]{
  return invoices.map(invoice=>invoice.id===id?{...invoice,date,manualDate:!!date}:invoice);
 }
+/** Explicit date edits in instant reconciliation apply to every blue invoice in the group. */
+export function editGroupInvoiceDate(invoices:Invoice[],date:string):Invoice[]{
+ return invoices.map(invoice=>({...invoice,date,manualDate:!!date}));
+}
 export function addTransferToDraft<T extends Draft>(draft: T, transfer: Transfer, branch: string, replaceId?: string): T {
  const originalDates = outgoingTransferDates(draft.transfers.filter(row => row.id !== replaceId));
  const invoices = draft.invoices.map(invoice => {
