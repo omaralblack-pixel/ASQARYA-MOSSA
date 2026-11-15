@@ -160,24 +160,8 @@ export default function AqabaWorkspace(){
    </div>
    <p className="hint">كويري الفواتير يشمل IN وCN وDN وRE بحالات N وY وC، وكويري الترحيلات يشمل كل دخول وخروج من 011. لا تحذف المستند الملغي؛ نحتاجه لتفسير المقابل. الترحيل لا يُصنّف للعقبة إلا إذا ثبت من Remarks أو من الربط اليدوي.</p>
   </section>
-  <section className="panel">
-   <div className="section-title"><FileText size={20}/><div><h2>لصق الفواتير الرسمية من SAP</h2>
-    <p>الصق كامل جدول الكويري مع العناوين، بما فيه الفواتير الملغاة والإشعارات الدائنة. لا تُحذف الحركات القديمة من السجل.</p></div></div>
-   <textarea dir="ltr" style={{minHeight:175,width:'100%'}} aria-label="كشف SAP الرسمي للعقبة" placeholder="نوع المستند&#9;رقم الفاتورة&#9;DocEntry&#9;التاريخ ..." value={officialPaste} onChange={e=>OP(e.target.value)}/>
-   <div className="row-actions"><span>{official?.items.length||0} بند قابل للحفظ · {official?.issues.length||0} ملاحظات</span>
-    <button type="button" className="button primary" disabled={working||!official?.items.length} onClick={()=>save('official')}><Save size={16}/>حفظ الفواتير الرسمية</button></div>
-   {!!official?.issues.length&&<details><summary>ملاحظات قراءة الفواتير الرسمية</summary>{official.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
-  </section>
-  <section className="panel">
-   <div className="section-title"><FileText size={20}/><div><h2>لصق ترحيلات SAP — مؤسسة العقبة</h2>
-    <p>ألصق نتائج كويري الترحيلات بالأعمدة والعناوين. نقرأ Remarks لتحديد العقبة؛ البنود الغامضة تبقى بحاجة مراجعة ولا تُنسب لعمّان تلقائيًا.</p></div></div>
-   <textarea dir="ltr" style={{minHeight:155,width:'100%'}} aria-label="كشف ترحيلات SAP لمؤسسة العقبة"
-     placeholder="رقم الترحيل ثم DocEntry ثم التاريخ ثم Remarks وحالة الإلغاء وباقي الأعمدة..."
-     value={transferPaste} onChange={e=>TP(e.target.value)}/>
-   <div className="row-actions"><span>{transfers?.items.length||0} بند ترحيل صالح · {transfers?.issues.length||0} ملاحظات</span>
-    <button type="button" className="button primary" disabled={working||!transfers?.items.length} onClick={()=>save('transfer')}><Save size={16}/>حفظ ترحيلات العقبة</button></div>
-   {!!transfers?.issues.length&&<details><summary>ملاحظات قراءة الترحيلات</summary>{transfers.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
-  </section>
+
+
   <section className="panel">
    <div className="section-title"><FileText size={20}/><div><h2>لصق الفواتير الزرقاء وأسعار العقبة</h2>
     <p>ألصق بنود الزرقاء بالأعمدة المطلوبة؛ سعر العقبة يُحفظ مع الفاتورة والتاريخ ولا يغير أسعار مؤسسة عمّان.</p></div></div>
@@ -231,13 +215,9 @@ export default function AqabaWorkspace(){
   </section>
   <section className="panel">
    <div className="section-title"><AlertTriangle size={20}/><div><h2>حركات المخزون الفعلية من OINM</h2>
-    <p>ألصق كشف OINM للمستودع 011 كاملًا، بما فيه حركات عمّان والأصناف غير المصنفة. لا نخصم AR Invoice فوق OINM مرة أخرى.</p></div></div>
-   <textarea dir="ltr" style={{minHeight:160,width:'100%'}} value={journalPaste}
-     aria-label="سجل حركة المخزون OINM" onChange={e=>JP(e.target.value)}
-     placeholder="معرف حركة المخزون ثم التاريخ ونوع الحركة وDocEntry وباقي الأعمدة..."/>
-   <div className="row-actions"><span>{journal?.items.length||0} حركة صالحة · {journal?.issues.length||0} ملاحظات</span>
-    <button className="button primary" disabled={working||!journal?.items.length} onClick={()=>save('inventory')}><Save size={16}/>حفظ حركة OINM</button></div>
-   {!!journal?.issues.length&&<details><summary>ملاحظات قراءة حركة المستودع</summary>{journal.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
+    <p>ارفع كشف OINM للمستودع 011 في «ملفات SAP»، بما فيه حركات عمّان والأصناف غير المصنفة. لا نخصم AR Invoice فوق OINM مرة أخرى.</p></div></div>
+   <p><a className="button secondary" href="/reconciliation?view=sap-files">ملفات SAP — رفع الفواتير والترحيلات وكشف OINM</a></p>
+
    <p className="hint">التقرير للفترة {from} إلى {to}، وهو صافي الحركة خلال الفترة وليس الرصيد النهائي دون افتتاحي SAP.</p>
    <p>عدد حركات OINM في الفترة: <b>{journalAudit.rows.length}</b> · حركات غير مصنفة: <b>{journalAudit.unassigned.length}</b></p>
    <p className="hint">الأرصدة والكميات تُعرض حسب كود الصنف في وحدة المخزون الخاصة به، ولا نجمع الأصناف المختلفة في رصيد واحد.</p>

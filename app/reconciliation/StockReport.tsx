@@ -93,7 +93,7 @@ export default function StockReport(){
     <section className="panel">
       {loading&&<p role="status">جاري تحميل كشف SAP…</p>}
       {error&&<p className="banner error" role="alert">{error}</p>}
-      {!loading&&!error&&!file&&<p>احفظ كشف TXT من «استيراد ترحيلات SAP دفعة واحدة» في شاشة مطابقة فواتير المؤسسة.</p>}
+      {!loading&&!error&&!file&&<p>احفظ كشف TXT من «ملفات SAP».</p>}
       {!loading&&fileReport&&<>
         {period&&<p>الفترة في الملف <b dir="ltr">{period}</b> · {fileReport.codes} كود SAP · {fileReport.documents} مستند ترحيل</p>}
         <div className="form-grid">

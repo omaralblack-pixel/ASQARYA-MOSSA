@@ -11,7 +11,7 @@ const sqlite=new DatabaseSync(':memory:');
 let failNextBatch=false;
 const wrap=(sql,args=[])=>({
   bind(...values){return wrap(sql,values)},
-  async all(){return {results:sqlite.prepare(sql).all(...args)}},
+  async all(){if(failNextBatch&&sql.startsWith('INSERT OR IGNORE INTO lieutenant_queue')){failNextBatch=false;throw Error('simulated D1 outage')}return {results:sqlite.prepare(sql).all(...args)}},
   async first(){return sqlite.prepare(sql).get(...args)||null},
   async run(){const result=sqlite.prepare(sql).run(...args);return {meta:{changes:Number(result.changes)}}},
 });

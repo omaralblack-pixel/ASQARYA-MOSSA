@@ -377,8 +377,10 @@ assert.equal(deletedObjects.length,1);
 assert.equal(deletedObjects[0].method,'DELETE');
 assert.ok(deletedObjects[0].url.endsWith('/storage/v1/object/institution-sap'));
 assert.deepEqual(deletedObjects[0].payload,{prefixes:[archivedKey]});
-assert.ok(screen.includes('async function deleteArchive(file:StoredFile)'));
-assert.ok(screen.includes('window.confirm('),'Deletion must require explicit confirmation');
+const sapScreen=fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8');
+assert.ok(sapScreen.includes('async function remove(file:SapArchiveFile)'));
+assert.ok(!screen.includes('async function deleteArchive('));
+assert.ok(sapScreen.includes('if(!confirm('),'Deletion must require explicit confirmation');
 assert.ok(screen.includes('Promise.allSettled('),'Failed reconcile API must not hide archive listing');
 assert.ok(fs.readFileSync('worker/index.ts','utf8').includes('downstream.status === 503'),
   'HTML 503 from framework must be translated to actionable JSON');

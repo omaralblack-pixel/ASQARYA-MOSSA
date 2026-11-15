@@ -65,7 +65,7 @@ const invoices=sapInvoiceNumbers;
 type Group={meta:{date:string;branchCode:string;branchName:string;remarks:string;state:CancellationState};lines:string[];issues:string[];reverse:boolean;signedAdjustment:boolean};
 const lineHeader=['Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'].join('\t');
 
-export function parseLieutenantTransfers(source:string,branches:string[]):LieutenantScan{
+function parseLieutenantTransfersUncached(source:string,branches:string[]):LieutenantScan{
   const raw=source.replace(/^\uFEFF/,'').replace(/\r/g,'').split('\n');
   const first=raw.findIndex(line=>line.trim());
   const columns=(raw[first]||'').split('\t').map(header);
@@ -149,4 +149,15 @@ export function parseLieutenantTransfers(source:string,branches:string[]):Lieute
   }
   if(!transfers.length&&!issues.length)issues.push('لا توجد ترحيلات للمستودع 011.');
   return {transfers,issues};
+}
+
+const scanCache=new Map<string,{branches:string;value:LieutenantScan}>();
+export function parseLieutenantTransfers(source:string,branches:string[]):LieutenantScan{
+ if(typeof window==='undefined')return parseLieutenantTransfersUncached(source,branches);
+ const branchKey=JSON.stringify(branches),cached=scanCache.get(source);
+ if(cached?.branches===branchKey)return structuredClone(cached.value);
+ const value=parseLieutenantTransfersUncached(source,branches);
+ scanCache.set(source,{branches:branchKey,value:structuredClone(value)});
+ if(scanCache.size>3)scanCache.delete(scanCache.keys().next().value!);
+ return value;
 }

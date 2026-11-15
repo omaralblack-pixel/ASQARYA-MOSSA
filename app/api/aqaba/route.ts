@@ -158,18 +158,22 @@ export async function POST(req:Request){
   let unchanged=0,updated=0,added=0;
   // Keep a complete before-image in append-only audit when SAP changes a document.
   // Never delete a canceled/returned document or mutate Amman reconciliations.
+  const previous=await db().prepare('SELECT id,payload FROM '+table+' WHERE id IN (SELECT value FROM json_each(?))')
+   .bind(JSON.stringify(incoming.map(item=>item.key))).all<{id:string;payload:string}>();
+  const previousByKey=new Map(previous.results.map(row=>[row.id,row]));
+  const changes:{id:string;number:string;date:string;payload:string}[]=[],audit:{id:string;item:string;previous:string}[]=[];
   for(const item of incoming){
-   const old=await db().prepare('SELECT payload FROM '+table+' WHERE id=?').bind(item.key).first<{payload:string}>();
-   const payload=JSON.stringify(item);
+   const old=previousByKey.get(item.key),payload=JSON.stringify(item);
    if(old?.payload===payload){unchanged++;continue}
-   if(old){
-    statements.push(db().prepare('INSERT INTO aqaba_audit (id,source,item_id,previous,updated) VALUES (?,?,?,?,?)')
-      .bind(crypto.randomUUID(),source,item.key,old.payload,now));
-    updated++;
-   }else added++;
-   statements.push(db().prepare('INSERT INTO '+table+' (id,doc_no,doc_date,payload,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated')
-    .bind(item.key,blue?item.invoice:movement?item.transNum:item.document,item.date,payload,now));
+   if(old){audit.push({id:crypto.randomUUID(),item:item.key,previous:old.payload});updated++;}else added++;
+   changes.push({id:item.key,number:blue?item.invoice:movement?item.transNum:item.document,date:item.date,payload});
   }
+  if(audit.length)statements.push(db().prepare(`INSERT INTO aqaba_audit(id,source,item_id,previous,updated)
+   SELECT json_extract(value,'$.id'),?,json_extract(value,'$.item'),json_extract(value,'$.previous'),? FROM json_each(?)`)
+   .bind(source,now,JSON.stringify(audit)));
+  if(changes.length)statements.push(db().prepare('INSERT INTO '+table+` (id,doc_no,doc_date,payload,updated)
+   SELECT json_extract(value,'$.id'),json_extract(value,'$.number'),json_extract(value,'$.date'),json_extract(value,'$.payload'),? FROM json_each(?) WHERE 1
+   ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated`).bind(now,JSON.stringify(changes)));
   // A D1 batch is atomic. On a conflict a subsequent import is idempotent.
   if(statements.length)await db().batch(statements);
   return json({ok:true,added,updated,unchanged});
