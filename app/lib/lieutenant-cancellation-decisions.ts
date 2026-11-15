@@ -88,8 +88,8 @@ export function cancellationReviewRows(
       source.signedAdjustment?'تصحيح كمية مع ملاحظة إلغاء':
       'Remarks تشير إلى إلغاء يحتاج إثباتًا';
     const automaticReason=signedOffset?
-      'تغطية كمية مثبتة تلقائيًا: التصحيح السالب '+source.transfer.number+
-      ' مطابق للمستند '+counterparts.join('، ')+
+      'تغطية كمية مثبتة تلقائيًا بين الترحيل '+source.transfer.number+
+      ' والمقابل '+counterparts.join('، ')+': التصحيح السالب مطابق'
       ' في جميع الأصناف والكميات والوحدات والمستودعات. هذا ليس إثباتًا لتغيير حالة SAP.':
       fullReverse?'ترحيل عكسي مطابق بالكامل في الأصناف والكميات والوحدات والمستودعات: '+counterparts.join('، '):
       sapProof?'مستند إلغاء SAP مثبت ومطابق: '+counterparts.join('، '):
