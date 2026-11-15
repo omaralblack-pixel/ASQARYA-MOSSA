@@ -3,6 +3,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
 import GroupLookup from './GroupLookup';
+import {isAqabaBranch} from '../lib/aqaba-instant-reference';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
 import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editGroupInvoiceDate, addTransferToDraft, withSapInvoiceNumbers, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
@@ -111,6 +112,10 @@ export default function InstantMatch({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [showItems, setShowItems] = useState(false);
+  const [aqabaPricing,setAqabaPricing] = useState<{reference:Item[];priceCount:number}|null>(null);
+  const [aqabaPricingError,setAqabaPricingError] = useState('');
+  const [aqabaPricingLoading,setAqabaPricingLoading] = useState(false);
+  const isAqaba=!!draft&&isAqabaBranch(draft.branch);
 
   const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind),[records,imports,number,kind]);
 
@@ -145,6 +150,19 @@ export default function InstantMatch({
     void initialize();
     return ()=>{active=false};
   },[branches]);
+
+  useEffect(()=>{
+    if(!isAqaba){setAqabaPricing(null);setAqabaPricingError('');setAqabaPricingLoading(false);return}
+    let active=true;
+    setAqabaPricing(null);setAqabaPricingError('');setAqabaPricingLoading(true);
+    getJson<{reference:Item[];priceCount:number}>('/api/reconcile?aqabaPricing=1')
+      .then(data=>{if(active){
+        if(!Array.isArray(data.reference)||!data.reference.length)throw Error('لا توجد أسعار عقبة معتمدة.');
+        setAqabaPricing(data);
+      }}).catch(e=>{if(active)setAqabaPricingError(e instanceof Error?e.message:'تعذّر قراءة أسعار العقبة.')})
+      .finally(()=>{if(active)setAqabaPricingLoading(false)});
+    return ()=>{active=false};
+  },[isAqaba]);
 
   function update(next:Draft) {
     setDraft(withInvoiceDates(next));
@@ -321,14 +339,17 @@ export default function InstantMatch({
     finally {setBusy(false);}
   }
 
-  const prepared=useMemo(()=>draft?prepareReconciliation(draft,reference):null,[draft,reference]);
+  const matchingReference=isAqaba?(aqabaPricing?.reference||[]):reference;
+  const pricedDraft=isAqaba&&draft?{...draft,useCurrentReference:true,referenceSnapshot:undefined}:draft;
+  const prepared=useMemo(()=>pricedDraft?prepareReconciliation(pricedDraft,matchingReference):null,[pricedDraft,matchingReference]);
   const originalResult=prepared?.result??null;
   const result=originalResult;
   const transferWarnings=useMemo(()=>draft ? draft.transfers.flatMap(transfer=>{
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     return [...parsed.issues,...parsed.excluded].map(issue=>'الترحيل '+transfer.number+': '+issue);
   }):[],[draft]);
-  const canSave=!!draft&&!!result&&result.status==='match'&&result.priceDifference===0
+  const canSave=!!draft&&!!result&&(!isAqaba||!!aqabaPricing&&!aqabaPricingLoading&&!aqabaPricingError)
+    &&result.status==='match'&&result.priceDifference===0
     &&transferWarnings.length===0&&!!draft.branch
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
     &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null&&dateValue(item.date));
@@ -406,6 +427,14 @@ export default function InstantMatch({
           <GroupLookup label="الفرع" items={branches} required value={draft.branch} onChange={branch=>update({...draft,branch})} placeholder="ابحث باسم الفرع أو رقمه"/>
           <label>تاريخ الكشف<input type="date" value={draft.date} onChange={e=>update({...draft,date:e.target.value})}/></label>
         </div>
+        {isAqaba&&<div className="banner info" role="status">
+          <strong>فرع 84 — العقبة: أسعار العقبة فقط</strong>
+          <p>{aqabaPricingLoading?'جاري تحميل الأسعار من سجل فواتير العقبة…':
+            aqabaPricingError?'تعذّر تحميل الأسعار: '+aqabaPricingError:
+            aqabaPricing?'تم تحميل '+aqabaPricing.priceCount+' سعر صنف من مرجع العقبة. السعر بالدينار للحبة، والحساب بالفلس. لا تستخدم أسعار عمّان.':
+            'لا توجد أسعار عقبة متاحة؛ الحفظ معطل حتى تظهر الأسعار.'}</p>
+          <p>أي صنف غير معرّف في أسعار العقبة، أو شدّته غير مؤكدة، يظهر كملاحظة ولا يُعتمد بسعر عمّان.</p>
+        </div>}
         <h3>الفواتير الزرقاء</h3>
         <p className="hint">التاريخ التلقائي يسبق الترحيل بيوم. تعديل تاريخ أي فاتورة يطبّق التاريخ نفسه على جميع فواتير الكشف.</p>
         <div className="invoice-grid">
@@ -485,7 +514,9 @@ export default function InstantMatch({
 
           <button type="button" className="button secondary" onClick={()=>setShowItems(!showItems)}>
             {showItems?'إخفاء الأصناف':'عرض تفاصيل الأصناف ('+result.rows.length+')'}</button>
-          <button type="button" className="button secondary" onClick={()=>onDetailed(prepared?.draft??draft,sources)}>
+          <button type="button" className="button secondary" onClick={()=>onDetailed(isAqaba&&prepared?{
+              ...prepared.draft,referenceSnapshot:prepared.reference,useCurrentReference:false
+            }:prepared?.draft??draft,sources)}>
             فتح المطابقة التفصيلية</button>
         </div>
         {showItems&&<div className="table-scroll"><table className="blue-table"><thead><tr>
