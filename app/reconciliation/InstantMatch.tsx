@@ -463,7 +463,7 @@ export default function InstantMatch({
       {result&&<section className="panel results-panel">
         <div className="section-title"><h2>نتيجة المطابقة الفورية</h2></div>
         <p className="hint">{draft.id?'هذه مجموعة مسترجعة من السجل؛ أي تعديلات حالية لا تُثبت حتى تضغط حفظ.':'هذا كشف قيد الإعداد؛ لم يتم تسجيله في قاعدة البيانات بعد.'}</p>
-        {draft.invoices.length>1&&<p className="hint">المطابقة المالية هنا لمجموع الفواتير مع الترحيلات مجتمعة؛ لا تؤكد وحدها توزيع أصناف كل ترحيل على صفحات الفواتير. جندي السيريل يراجع أرقام الفواتير وروابط الصفحات بشكل مستقل.</p>}
+        {draft.invoices.length>1&&<p className="hint">المطابقة المالية هنا لمجموع الفواتير والترحيلات مجتمعة؛ لا تثبت توزيع الكميات بين الفواتير منفردة. أرقام الصفحات للتشييك الشخصي فقط ولا تؤثر على جندي السيريل أو الاعتماد.</p>}
         <div className="stats">
           <div className="stat"><span>مجموع الفواتير الزرقاء</span><strong>{money(result.total)} د.أ</strong></div>
           <div className="stat"><span>قيمة الترحيلات بأسعار المؤسسة</span><strong>{money(result.expected)} د.أ</strong></div>
