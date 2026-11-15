@@ -15,7 +15,7 @@ export default function CashVanAudit({transfers,sourceName}:{transfers:Lieutenan
   const valid=!!from&&!!to&&from<=to&&to<=localDay();
   const rows=useMemo(()=>valid?cashVanMovementReport(transfers,from,to):[],[transfers,from,to,valid]);
   const latest=useMemo(()=>transfers.map(row=>row.transfer.date).filter(Boolean).sort().at(-1)||'',[transfers]);
-  const settled=rows.filter(row=>['reversed','sap-canceled'].includes(row.movement.kind)&&!row.source.issues.length).length;
+  const settled=rows.filter(row=>(['reversed','sap-canceled'].includes(row.movement.kind)||row.movement.verifiedOffset)&&!row.source.issues.length).length;
   return <section className="panel" aria-label="كاش فان — جميع الخطوط والعكسي والإلغاء">
     <div className="section-title"><div>
       <h2>كاش فان — جميع الخطوط والعكسي والإلغاء</h2>
@@ -35,14 +35,14 @@ export default function CashVanAudit({transfers,sourceName}:{transfers:Lieutenan
         <thead><tr><th>رقم الترحيل</th><th>التاريخ</th><th>الخط من الملاحظات</th><th>اتجاه الترحيل</th><th>تسوية العكسي</th><th>حالة الإلغاء</th><th>المستند المقابل وتاريخه واتجاهه</th><th>الملاحظات والأصناف</th></tr></thead>
         <tbody>{rows.map(row=>{
           const {source,movement}=row;
-          const complete=['reversed','sap-canceled'].includes(movement.kind)&&!source.issues.length;
+          const complete=(['reversed','sap-canceled'].includes(movement.kind)||movement.verifiedOffset)&&!source.issues.length;
           return <tr key={source.transfer.number}>
             <td dir="ltr"><b>{source.transfer.number}</b></td>
             <td dir="ltr">{source.transfer.date}</td>
             <td>{row.route}</td><td dir="ltr">{row.directions.join('، ')}</td>
             <td><span className={'badge '+(complete?'match':'review')}>
               {source.issues.length?'بيانات تحتاج مراجعة':movement.kind==='reversed'?'عكسي مطابق بالكامل':
-                movement.kind==='sap-canceled'?'مسوّى بإلغاء SAP':'لم يثبت عكسي كامل'}
+                movement.kind==='sap-canceled'?'مسوّى بإلغاء SAP':movement.verifiedOffset?'تصحيح إلغاء مطابق بالكامل':'لم يثبت عكسي كامل'}
               </span><small style={{display:'block'}}>{movement.note}</small>
               {!!source.issues.length&&<p className="red">{source.issues.join(' · ')}</p>}
             </td>
@@ -62,7 +62,7 @@ export default function CashVanAudit({transfers,sourceName}:{transfers:Lieutenan
         })}</tbody>
       </table></div>}
       {valid&&!rows.length&&<p>لم يُعثر على ترحيلات تحمل وصف كاش فان في ملاحظات الكشف ضمن الفترة المختارة.</p>}
-      <p className="hint">العكسي من 011 إلى 001 يُراجع مقابل وارد 001 فقط، وإلى 002 مقابل وارد 002 فقط، مع تطابق جميع الأكواد والكميات والوحدات. لا يُعدّ العكسي إلغاءً رسميًا. عند غياب CANCELED تبقى حالة الإلغاء غير مثبتة.</p>
+      <p className="hint">العكسي من 011 إلى 001 يُراجع مقابل وارد 001 فقط، وإلى 002 مقابل وارد 002 فقط. أما التصحيح السالب في نفس اتجاه الأصل، فتُقارن كمياته المطلقة بالأصل بندًا بندًا ويُعرض رقم المستند من Remarks. لا تُفسَّر هذه المطابقة وحدها على أنها إثبات لحالة SAP CANCELED=Y/C.</p>
     </>:<p className="hint">بانتظار قراءة كشف ترحيلات SAP المحفوظ.</p>}
   </section>;
 }
