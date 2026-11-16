@@ -8,7 +8,7 @@ const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
 const collector=url(compile(fs.readFileSync('app/lib/invoice-collector.ts','utf8').replace("'./reconcile'","'"+rec+"'")));
 const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'")
  .replace("'./invoice-collector'","'"+collector+"'");
-const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,duplicateGeneratedSerialRows}=await import(url(compile(source)));
+const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,duplicateGeneratedSerialRows,serialMergeProposals}=await import(url(compile(source)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from,to)=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
 const invoice=(number,amount,complete=true)=>({number,amount,complete});
@@ -207,6 +207,31 @@ assert.equal(duplicateGeneratedSerialRows([{...row(493,'2621610051','176.920'),o
 assert.equal(duplicateGeneratedSerialRows([
  {...row(493,'2621610051','176.920'),origin:'project'},row(136,'2621610051','176.920')
 ]).get(493),136,'Real Saja row always wins, regardless of source order');
+const proposal=serialMergeProposals([
+ {...row(144,'2621610051','176.920'),workbookBranch:'مجمع الكرامة'},
+ {...row(497,'2621610051','176.92'),origin:'project',workbookBranch:'مجمع الكرامة'},
+ {...row(498,'2621111100','8.000'),origin:'project'},
+]);
+assert.equal(proposal.length,1,'Find exactly one proposed merge for an existing Saja invoice and generated duplicate');
+assert.equal(proposal[0].number,'2621610051');
+assert.equal(proposal[0].keepRow,144,'Keep the original Saja row instead of generated blue duplicate');
+assert.deepEqual(proposal[0].removeRows,[497]);
+assert.equal(proposal[0].canMerge,true,'Matching amounts with different decimal precision are safe after approval');
+assert.equal(serialMergeProposals([
+ {...row(144,'2621610051','176.920'),workbookBranch:'فرع أ'},
+ {...row(497,'2621610051','177.000'),origin:'project',workbookBranch:'فرع أ'},
+])[0].canMerge,false,'Conflicting amounts must not be merged with a single button');
+assert.equal(serialMergeProposals([
+ {...row(144,'2621610051','176.920'),workbookBranch:'فرع أ'},
+ {...row(497,'2621610051','176.920'),origin:'project',workbookBranch:'فرع ب'},
+])[0].canMerge,false,'Different branches block approval');
+assert.equal(serialMergeProposals([
+ {...row(144,'2621610051','176.920'),date:'2026-11-07'},
+ {...row(497,'2621610051','176.920'),date:'2026-11-08',origin:'project'},
+])[0].canMerge,false,'Different dates block approval');
+assert.equal(serialMergeProposals([
+ row(144,'2621610051','176.920'),row(497,'2621610051','176.920')
+])[0].canMerge,true,'Original duplicate Saja rows can be proposed when amounts and dates agree');
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: confirmed arrival is counted despite amount/number differences while uncertain links remain unresolved');
 console.log('PASS: serial soldier ignores ALL personal pages for both historical and new groups while retaining true validation errors');
