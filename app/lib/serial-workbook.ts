@@ -231,13 +231,15 @@ function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:Se
  const sheetIndex=sheetList.indexOf(sheet);
  const knownNames=new Set(sheetList.map(el=>el.getAttribute('name')));
  const knownIds=new Set(Array.from(relRoot.children).map(el=>el.getAttribute('Id')));
+ const templateDoc=pkg.doc.cloneNode(true) as Document;
+ const templateBody=find(templateDoc,'sheetData')!;
+ for(const row of children(templateBody,'row'))if(Number(row.getAttribute('r'))>4)templateBody.removeChild(row);
  let previous=sheet;
  for(const [i,day] of days.entries()){
   const name=day.slice(8)+'-'+day.slice(5,7)+'-'+day.slice(0,4);
   if(knownNames.has(name))throw Error('شيت يوم '+name+' موجود مسبقًا في الملف.');
   knownNames.add(name);
-  const daily=pkg.doc.cloneNode(true) as Document,body=find(daily,'sheetData')!;
-  for(const row of children(body,'row'))if(Number(row.getAttribute('r'))>4)body.removeChild(row);
+  const daily=templateDoc.cloneNode(true) as Document,body=find(daily,'sheetData')!;
   const list=grouped.get(day)||[];
   for(const [j,item] of list.entries()){
    const original=source.get(item.row)!;
