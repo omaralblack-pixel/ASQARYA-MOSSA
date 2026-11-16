@@ -8,7 +8,7 @@ import type {BlueLine} from '../../lib/aqaba';
 import schemaStatements from '../../lib/reconciliation-schema.json';
 import branches from '../../branches.json';
 import drivers from '../../drivers.json';
-import {reconcile,readReconciliationRecord,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,digits,approvedBranchException,type BranchException,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
+import {reconcile,readReconciliationRecord,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,digits,sapInvoiceNumbers,approvedBranchException,type BranchException,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
 export const dynamic='force-dynamic';
 declare const __ASQARYA_COMMIT__:string;
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
@@ -32,6 +32,36 @@ export async function GET(req:Request){try{await ensureSchema();const u=new URL(
 if(u.searchParams.has('aqabaPricing')){
  const reference=await aqabaRefs(await refs());
  return json({reference,priceCount:reference.length,branch:'84 — العقبة',currencyUnit:'fils'});
+}
+if(u.searchParams.has('sapLookup')){
+ // Read-only search in D1, independent of the replaceable current.json preview.
+ const searched=digits(u.searchParams.get('sapLookup')||'').trim();
+ if(!/^\d{4,20}$/.test(searched))return json({error:'رقم الفاتورة أو الترحيل غير صالح.'},400);
+ const suffix='%'+searched;
+ const rows=await db().prepare(`SELECT transfer_no,doc_date,payload,source_file FROM lieutenant_queue q
+   WHERE q.transfer_no LIKE ? OR EXISTS(
+     SELECT 1 FROM json_each(CASE WHEN json_valid(q.payload) THEN q.payload ELSE '{}' END,'$.invoiceNumbers') n
+     WHERE n.type='text' AND n.value LIKE ?
+   ) OR COALESCE(json_extract(CASE WHEN json_valid(q.payload) THEN q.payload ELSE '{}' END,'$.remarks'),'') LIKE ?
+   ORDER BY doc_date DESC,transfer_no DESC LIMIT 401`)
+   .bind(suffix,suffix,'%'+searched+'%').all<{transfer_no:string;doc_date:string;payload:string;source_file:string}>();
+ const hits=rows.results.flatMap(row=>{
+   try{
+     const value=JSON.parse(row.payload) as {transfer?:{number?:string;date?:string;paste?:string;id?:string};branch?:string;remarks?:string;
+       invoiceNumbers?:string[];reverse?:boolean;cancellationState?:string};
+     const transfer=value.transfer;
+     if(!transfer||typeof transfer.paste!=='string'||transfer.number!==row.transfer_no)return [];
+     const invoiceNumbers=[...new Set([...(Array.isArray(value.invoiceNumbers)?value.invoiceNumbers:[]),
+       ...sapInvoiceNumbers(String(value.remarks||''))].filter(x=>typeof x==='string'&&/^\d{10}$/.test(x)))];
+     if(!row.transfer_no.endsWith(searched)&&!invoiceNumbers.some(n=>n.endsWith(searched)))return [];
+     return [{transfer:{id:String(transfer.id||'sap-'+row.transfer_no),number:row.transfer_no,
+         date:String(transfer.date||row.doc_date),paste:transfer.paste},
+       branch:String(value.branch||''),remarks:String(value.remarks||''),
+       invoiceNumbers,reverse:value.reverse===true,
+       cancellationState:String(value.cancellationState||'unknown'),sourceFile:row.source_file}];
+   }catch{return [];}
+ });
+ return json({hits,partial:rows.results.length>400,source:'سجل ترحيلات SAP المستوردة'});
 }
 if(u.searchParams.has('version'))return json({commit:typeof __ASQARYA_COMMIT__==='string'?__ASQARYA_COMMIT__:'unknown',workerVersion:env.CF_VERSION_METADATA?.id||null});
 if(u.searchParams.has('branchExceptions')){
