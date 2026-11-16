@@ -35,6 +35,7 @@ assert.equal(archivedXlsxToTsv(xlsx),'رقم الصنف\tTom & Jerry\t2');
 assert.equal(decodeArchivedSapSource(xlsx,'source.xlsx'),'رقم الصنف\tTom & Jerry\t2');
 assert.throws(()=>archivedXlsxToTsv(bytes('not-zip')));
 const ref=JSON.parse(fs.readFileSync('app/reference.json','utf8'));
+const referenceBefore=JSON.stringify(ref);
 const audit=auditInstitutionReference(ref);
 assert.equal(audit.missingPrices.length,6);
 assert.deepEqual(audit.packDifferences.map(row=>row.sapCode).sort(),['CHS00596','CHS00620']);
@@ -42,6 +43,5 @@ assert.equal(audit.packDifferences.find(row=>row.sapCode==='CHS00620').invoicePa
 assert.equal(audit.packDifferences.find(row=>row.sapCode==='CHS00620').cartonPieces,32);
 assert.equal(audit.packDifferences.find(row=>row.sapCode==='CHS00596').invoicePack,48);
 assert.equal(audit.packDifferences.find(row=>row.sapCode==='CHS00596').cartonPieces,50);
-assert.equal(JSON.stringify(ref),fs.readFileSync('app/reference.json','utf8').trim(),
- 'Read-only reference audit must never rewrite the source catalog');
+assert.equal(JSON.stringify(ref),referenceBefore,'Read-only reference audit must never rewrite the source catalog');
 console.log('PASS: original TXT/CSV/UTF-16/XLSX decoding and read-only reference pack/price audit.');
