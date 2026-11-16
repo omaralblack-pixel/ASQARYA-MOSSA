@@ -8,7 +8,7 @@ const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
 const collector=url(compile(fs.readFileSync('app/lib/invoice-collector.ts','utf8').replace("'./reconcile'","'"+rec+"'")));
 const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'")
  .replace("'./invoice-collector'","'"+collector+"'");
-const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,duplicateGeneratedSerialRows,serialMergeProposals}=await import(url(compile(source)));
+const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,duplicateGeneratedSerialRows,serialMergeProposals,previouslyApprovedSerialMerges}=await import(url(compile(source)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from,to)=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
 const invoice=(number,amount,complete=true)=>({number,amount,complete});
@@ -236,6 +236,23 @@ assert.equal(serialMergeProposals([
 assert.equal(serialMergeProposals([
  row(144,'2621610051','176.920'),row(497,'2621610051','176.920')
 ])[0].canMerge,true,'Original duplicate Saja rows can be proposed when amounts and dates agree');
+const acceptedCase=[
+ {...row(144,'2621610051','176.920'),workbookBranch:'مجمع الكرامة التجاري'},
+ {...row(497,'2621610051','176.92'),origin:'project',workbookBranch:'1 — الكرامة'},
+];
+const consentName='16.11-جندي-السيريل-جندي-السيريل.xlsx';
+assert.deepEqual(previouslyApprovedSerialMerges(acceptedCase,consentName),['2621610051'],
+ 'Chat consent applies ONLY to the exact previously reported row pair with a generated blue duplicate');
+assert.deepEqual(previouslyApprovedSerialMerges(acceptedCase,'17.11-جندي-السيريل-جندي-السيريل.xlsx'),[],
+ 'Future and other files must never inherit chat approval');
+assert.deepEqual(previouslyApprovedSerialMerges(acceptedCase.map(r=>({...r,row:r.row===497?498:r.row})),consentName),[],
+ 'New or shifted duplicate rows require another explicit approval');
+assert.deepEqual(previouslyApprovedSerialMerges(acceptedCase.map(r=>({...r,origin:undefined})),consentName),[],
+ 'Two original Saja invoices must never be merged by the stored approval');
+assert.deepEqual(previouslyApprovedSerialMerges(acceptedCase.map(r=>({...r,amount:r.row===497?'177.000':r.amount})),consentName),[],
+ 'Conflicting amounts override previously supplied consent');
+assert.deepEqual(previouslyApprovedSerialMerges(acceptedCase.map(r=>({...r,date:r.row===497?'2026-11-10':r.date})),consentName),[],
+ 'Conflicting dates override previously supplied consent');
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: confirmed arrival is counted despite amount/number differences while uncertain links remain unresolved');
 console.log('PASS: serial soldier ignores ALL personal pages for both historical and new groups while retaining true validation errors');
