@@ -58,6 +58,21 @@ export default function SerialSoldier(){
    if(!file)return;
    await checkExcel(file);
  }
+ async function downloadProjectInvoices(){
+   if(busy)return;
+   setBusy(true);setError('');
+   try{
+     const saved=await getSaved();
+     const {createProjectInvoicesWorkbook}=await import('../lib/project-invoice-export');
+     const blob=createProjectInvoicesWorkbook(saved);
+     const url=URL.createObjectURL(blob),a=document.createElement('a');
+     a.href=url;
+     a.download='جميع-فواتير-المشروع-'+new Date().toISOString().slice(0,10)+'.xlsx';
+     a.click();
+     setTimeout(()=>URL.revokeObjectURL(url),1200);
+   }catch(e){setError(e instanceof Error?e.message:'تعذر تنزيل فواتير المشروع.');}
+   finally{setBusy(false);}
+ }
  async function download(){
    if(!buffer||!file||!report||busy)return;
    setBusy(true);setError('');
@@ -92,9 +107,11 @@ export default function SerialSoldier(){
        <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={e=>{const f=e.target.files?.[0];if(f)void checkExcel(f);e.target.value='';}}/>
      </label>
      <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+       <button type="button" className="button secondary" onClick={()=>void downloadProjectInvoices()} disabled={busy}><Download size={17}/>تنزيل كشف جميع فواتير المشروع</button>
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
        <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
      </div>
+     <p className="hint">كشف جميع فواتير المشروع مستقل عن ملف سجى ويشمل كل التواريخ المحفوظة، حتى الفواتير التي لم يُثبت تاريخها. يظهر رقم الفاتورة مرة واحدة، وتُبيَّن السجلات المتعارضة دون حذف أي بيانات.</p>
      <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. المجموعات متعددة الفواتير تُعرض ترحيلاتها المشتركة على مستوى المجموعة بدون افتراض تبعية الترحيل لفاتورة بعينها.</p>
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
      {error&&<p role="alert" className="red"><AlertTriangle size={16} style={{verticalAlign:'middle'}}/> {error}</p>}
