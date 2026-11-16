@@ -146,9 +146,9 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
 
   async function openPaperInvoice(){
     const invoice=invoiceDocumentNo(paperInvoice||query);
-    const transferNo=digits(paperTransfer||(/^-?\\d{4,20}$/.test(search)?search:'')).trim();
+    const transferNo=digits(paperTransfer||(/^-?\d{4,20}$/.test(search)?search:'')).trim();
     setPaperError('');
-    if(!/^\\d{10}$/.test(invoice)||!/^\\d{4,20}$/.test(transferNo)){
+    if(!/^\d{10}$/.test(invoice)||!/^\d{4,20}$/.test(transferNo)){
       setPaperError('اكتب رقم الفاتورة الورقية (10 خانات) ورقم ترحيل SAP الصحيح من الورقة.');
       return;
     }
@@ -248,6 +248,16 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
       setMessage('');
     }}/></label>
     <button className="button primary" type="button" disabled={busy||loadingFile||!paste.trim()} onClick={()=>preview()}>معاينة الاستيراد</button>
+    <details className="paper-invoice-link">
+      <summary>ربط فاتورة زرقاء من نسخة SAP المطبوعة برقم الترحيل</summary>
+      <p className="hint">إذا ظهرت الفاتورة على ورقة SAP ولم تظهر في عمود Remarks أو Journal Remarks بالكشف المحفوظ، ابحث برقم الترحيل. سيُفتح السجل الأصلي إن كان محفوظًا، أو مسودة غير محفوظة للمراجعة. لا تتغير ملفات SAP أو الاعتمادات تلقائيًا.</p>
+      <div className="form-grid">
+        <label>رقم الفاتورة الزرقاء على الورقة<input aria-label="رقم الفاتورة الزرقاء من الورقة" dir="ltr" inputMode="numeric" value={paperInvoice} onChange={event=>setPaperInvoice(event.target.value)} placeholder="2623415853"/></label>
+        <label>رقم ترحيل SAP<input aria-label="رقم ترحيل SAP من الورقة" dir="ltr" inputMode="numeric" value={paperTransfer} onChange={event=>setPaperTransfer(event.target.value)} placeholder="2616473"/></label>
+        <button className="button secondary" type="button" disabled={busy||paperBusy} onClick={()=>void openPaperInvoice()}>{paperBusy?'جارٍ التحقق…':'فحص وفتح الترحيل للمراجعة'}</button>
+      </div>
+      {paperError&&<p className="red" role="alert">{paperError}</p>}
+    </details>
     {issues.length>0&&<div className="banner error" role="alert">{issues.join(' · ')}</div>}
     {groups.length>0&&<>
       <div className="table-controls">
