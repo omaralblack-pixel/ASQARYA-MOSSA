@@ -74,8 +74,8 @@ export function projectInvoiceExportRows(records:SerialRecord[]):ProjectInvoiceE
   if(duplicated){
    notes.unshift('رقم الفاتورة مكرر في '+sources.length+' مواضع من سجلات المشروع؛ عُرض مرة واحدة دون حذف النسخ الأصلية');
    if(amounts.length>1)notes.push('مبالغ متعارضة في السجلات: '+amounts.join(' / '));
-   if(dates.length>1)notes.push('تواريخ متعارضة في السجلات');
-   if(branches.length>1)notes.push('فروع متعارضة في السجلات');
+   if(dates.length>1)notes.push('تواريخ متعارضة في السجلات: '+dates.join(' / '));
+   if(branches.length>1)notes.push('فروع متعارضة في السجلات: '+branches.join(' / '));
   }
   const amountFils=amounts.length===1?fils(amounts[0]):null;
   rows.push({
