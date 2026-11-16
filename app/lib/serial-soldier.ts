@@ -6,6 +6,28 @@ export const PROJECT_ONLY_NOTE='موجودة بالمشروع وغير موجو�
 export type SerialPeriod = {from:string;to:string};
 export type SerialInput = {row:number; number:string; amount:string; date:string; originalTransfers?:string[]; origin?:'project'};
 export type SerialState = 'received'|'received_difference'|'pending'|'missing'|'review';
+/** Program-generated blue rows from older exports must never duplicate a Saja
+ * row or another blue row. Map each removable row to its surviving source row.
+ * Original Saja rows are ALWAYS retained for audit, even when Saja itself repeats.
+ */
+export function duplicateGeneratedSerialRows(rows:SerialInput[]):Map<number,number>{
+ const original=new Map<string,number>(),blue=new Map<string,number>(),removed=new Map<number,number>();
+ for(const row of rows){
+  const number=invoiceDocumentNo(row.number).replace(/[,٬]/g,'');
+  if(row.origin!=='project'&&/^\d{8,20}$/.test(number)&&!original.has(number))
+   original.set(number,row.row);
+ }
+ for(const row of rows){
+  if(row.origin!=='project')continue;
+  const number=invoiceDocumentNo(row.number).replace(/[,٬]/g,'');
+  if(!/^\d{8,20}$/.test(number))continue;
+  const surviving=original.get(number)??blue.get(number);
+  if(surviving!==undefined)removed.set(row.row,surviving);
+  else blue.set(number,row.row);
+ }
+ return removed;
+}
+
 export type SerialTransfer = {number:string; kind:'main'|'dry'|'adjustment'};
 export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; unassignedTransfers:SerialTransfer[]; branch:string; omarNumber:string; omarAmount:string};
 export type SerialRecord = {id:string; branch:string; status?:string; payload:string};
