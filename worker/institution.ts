@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { maxSapFileBytes, type SavedSapImport } from "../app/lib/saved-sap-import";
+import { themeRuntimeScript } from "../lib/theme";
 
 const sessionCookie = "__Host-institution";
 const sessionSeconds = 8 * 60 * 60;
@@ -69,17 +70,23 @@ function redirect(request: Request, path: string, cookie?: string) {
 }
 
 function loginPage(error = "", status = 200) {
+  const nonce = randomBytes(18).toString("base64");
   return new Response(`<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>إدارة المؤسسة</title>
-<style>body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#f2f6f8;color:#163449;font:15px/1.6 "Segoe UI","Noto Sans Arabic",system-ui,Tahoma,Arial,sans-serif}
-main{width:min(86vw,24rem);box-sizing:border-box;padding:2rem;border:1px solid #d7e2e9;border-radius:1rem;background:white}
-h1{margin:0 0 .4rem;font-size:27px;line-height:1.4}p{margin:0 0 1.5rem;color:#496779}label{display:block;font-weight:600}
-input,button{box-sizing:border-box;width:100%;padding:.8rem;margin-top:.6rem;border:1px solid #b7cbd7;border-radius:.45rem;font:inherit}
-button{background:#196f82;color:white;cursor:pointer}.error{color:#a32929;margin-top:1rem;margin-bottom:0}</style>
-<main><h1>إدارة المؤسسة</h1><p>مركز الكيلاني للأغذية</p><form method="post" action="/login">
+<script nonce="${nonce}">${themeRuntimeScript}</script>
+<style>:root{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:light-dark(#f2f6f8,#0d161f);color:light-dark(#163449,#e5eef4);font:15px/1.6 "Segoe UI","Noto Sans Arabic",system-ui,Tahoma,Arial,sans-serif}
+main{width:min(86vw,24rem);box-sizing:border-box;padding:2rem;border:1px solid light-dark(#d7e2e9,#385062);border-radius:1rem;background:light-dark(white,#15232e)}
+h1{margin:0 0 .4rem;font-size:27px;line-height:1.4}p{margin:0 0 1.5rem;color:light-dark(#496779,#c3d3df)}label{display:block;font-weight:600}
+input,button{box-sizing:border-box;width:100%;padding:.8rem;margin-top:.6rem;border:1px solid light-dark(#b7cbd7,#508ca2);border-radius:.45rem;font:inherit}
+input{background:light-dark(white,#1b2d3b);color:inherit}input:focus-visible,button:focus-visible{outline:2px solid light-dark(#196f82,#8cdaeb);outline-offset:3px}
+button{background:#196f82;color:white;cursor:pointer}.error{color:light-dark(#a32929,#ffb5ac);margin-top:1rem;margin-bottom:0}
+.theme-toggle{width:auto;display:flex;align-items:center;gap:.5rem;margin:0 0 1.5rem auto;background:light-dark(#f5f9fb,#1b2d3b);color:inherit;font-size:13px;padding:.6rem .8rem}
+.theme-light-action{display:none}:root[data-theme="dark"] .theme-light-action{display:inline}:root[data-theme="dark"] .theme-dark-action{display:none}
+@media print{:root{color-scheme:light!important}.theme-toggle{display:none}}</style>
+<main><button type="button" class="theme-toggle" data-theme-toggle aria-label="تبديل الوضع الليلي والنهاري"><span class="theme-dark-action">☾ الوضع الليلي</span><span class="theme-light-action">☀ الوضع النهاري</span></button><h1>إدارة المؤسسة</h1><p>مركز الكيلاني للأغذية</p><form method="post" action="/login">
 <label for="password">كلمة السر</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required>
 <button>تسجيل الدخول</button></form>${error ? `<p class="error" role="alert">${error}</p>` : ""}</main></html>`,
-  { status, headers: { ...privateHeaders, "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'" } });
+  { status, headers: { ...privateHeaders, "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'` } });
 }
 
 async function readBody(request: Request, limit: number) {

@@ -1,0 +1,63 @@
+/* Original light colors are preserved by light-dark(). All screens, including
+   popups rendered outside the reconciliation scope, share these dark tokens. */
+:root {
+  color-scheme: light;
+  --theme-canvas: #0d161f;
+  --theme-surface: #15232e;
+  --theme-surface-soft: #1b2d3b;
+  --theme-surface-hover: #233e50;
+  --theme-text: #e5eef4;
+  --theme-secondary: #c3d3df;
+  --theme-muted: #a4b9c9;
+  --theme-border: #385062;
+  --theme-control-border: #5c7b90;
+  --theme-accent: #8cdaeb;
+  --theme-accent-border: #508ca2;
+  --theme-info-surface: #1a3448;
+  --theme-info-text: #a6d8ff;
+  --theme-info-border: #3e6683;
+  --theme-success-surface: #183c32;
+  --theme-success-text: #9ce4b9;
+  --theme-success-border: #3b7158;
+  --theme-warning-surface: #3b321f;
+  --theme-warning-text: #f4d18c;
+  --theme-warning-border: #806637;
+  --theme-danger-surface: #412b2e;
+  --theme-danger-text: #ffb5ac;
+  --theme-danger-border: #885558;
+  --theme-pink-surface: #3d2a3c;
+  --theme-pink-text: #f6bddf;
+  accent-color: light-dark(#21788f, #8cdaeb);
+}
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+
+::selection { background: light-dark(#cce7f0, #365f79); color: light-dark(#173d50, #fff); }
+input::placeholder,textarea::placeholder { color: light-dark(#7d909c, var(--theme-muted)); opacity: 1; }
+button:focus-visible,a:focus-visible,summary:focus-visible {
+  outline: 2px solid light-dark(#21788f, var(--theme-accent)); outline-offset: 3px;
+}
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 42px; flex-shrink: 0; padding: 9px 12px; border-radius: 9px;
+  border: 1px solid light-dark(#cbdce5, var(--theme-control-border));
+  background: light-dark(#f5f9fb, var(--theme-surface-soft));
+  color: light-dark(#275a70, var(--theme-text)); font: inherit; font-size: 12px;
+  line-height: 1.5; cursor: pointer;
+}
+.theme-toggle:hover { background: light-dark(#e8f3f8, var(--theme-surface-hover)); }
+.theme-light-action { display: none; }
+:root[data-theme="dark"] .theme-light-action { display: inline; }
+:root[data-theme="dark"] .theme-dark-action { display: none; }
+.header-actions { display: flex; align-items: center; gap: 12px; }
+@media (max-width: 760px) {
+  .theme-toggle { width: 42px; min-height: 42px; padding: 9px; }
+  .theme-toggle span { display: none !important; }
+}
+@media print {
+  :root { color-scheme: light !important; }
+  .theme-toggle { display: none !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  button,input,select,textarea,a { transition: none !important; }
+}

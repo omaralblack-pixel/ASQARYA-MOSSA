@@ -183,7 +183,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
         </div>
         <div className="table-scroll"><table>
           <thead><tr><th>رقم الفاتورة</th><th>تاريخ SAP</th><th>الفرع SAP</th><th>ترحيلات SAP</th><th>حالة الورق</th><th>الملاحظة</th><th>المجموعة المحفوظة</th></tr></thead>
-          <tbody>{visibleComparison.map(row=><tr key={row.number} style={{backgroundColor:row.state==='received'?'#d8f3dc':row.state==='review'?'#fff0bf':'#fad5e5'}}>
+          <tbody>{visibleComparison.map(row=><tr key={row.number} style={{backgroundColor:row.state==='received'?'light-dark(#d8f3dc, var(--theme-success-surface))':row.state==='review'?'light-dark(#fff0bf, var(--theme-warning-surface))':'light-dark(#fad5e5, var(--theme-pink-surface))'}}>
             <td dir="ltr">{row.number}</td>
             <td dir="ltr">{row.dates.join('، ')||'—'}</td>
             <td>{row.branches.join('، ')||'—'}</td>

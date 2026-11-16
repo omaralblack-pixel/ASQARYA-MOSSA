@@ -4,7 +4,7 @@ import {AlertTriangle,CheckCircle2,Download,FileSpreadsheet,RefreshCw,Upload} fr
 import {evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
 
 const label={received:'واصل ومطابق',received_difference:'واصلة — فرق في الملاحظات',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
-const color={received:'#d8f3dc',received_difference:'#fff0bf',pending:'#fad5e5',missing:'#fad5e5',review:'#fff0bf'};
+const color={received:'light-dark(#d8f3dc, var(--theme-success-surface))',received_difference:'light-dark(#fff0bf, var(--theme-warning-surface))',pending:'light-dark(#fad5e5, var(--theme-pink-surface))',missing:'light-dark(#fad5e5, var(--theme-pink-surface))',review:'light-dark(#fff0bf, var(--theme-warning-surface))'};
 async function getSaved():Promise<SerialRecord[]> {
  const response=await fetch('/api/reconcile?export=1',{cache:'no-store'});
  const data:any=await response.json();
@@ -105,7 +105,7 @@ export default function SerialSoldier(){
        <div className="section-title"><CheckCircle2 size={20}/><div><h2>نتيجة الفحص</h2><p>التصنيف يفصل وصول الورق عن اختلاف الرقم أو المبلغ؛ تُسجل الفروقات بالملاحظات وتُحسب الفواتير المؤكد وصولها ضمن الواصلة. تؤخذ الترحيلات من حركات المستودعات الفعلية.</p></div></div>
        <div className="stats">
          <div className="stat"><span>جميع فواتير سجى</span><strong>{report.rows.filter(row=>row.origin!=='project').length}</strong></div>
-         <div className="stat" style={{backgroundColor:'#cce5ff'}}><span>بالمشروع فقط — بالأزرق</span><strong>{projectOnlyCount}</strong></div>
+         <div className="stat" style={{backgroundColor:'light-dark(#cce5ff, var(--theme-info-surface))'}}><span>بالمشروع فقط — بالأزرق</span><strong>{projectOnlyCount}</strong></div>
          <div className="stat"><span>الفواتير الواصلة (شاملة الفروقات)</span><strong>{report.count.received}</strong></div>
          <div className="stat"><span>منها واصلة مع فرق</span><strong>{report.rows.filter(row=>row.origin!=='project'&&row.state==='received_difference').length}</strong></div>
          <div className="stat"><span>غير مسجلة / ورق غير مؤكد</span><strong>{report.count.missing+report.count.pending}</strong></div>
@@ -123,7 +123,7 @@ export default function SerialSoldier(){
      <section className="panel">
        <h2>ملخص فواتير كل يوم</h2>
        <div className="table-scroll"><table><thead><tr><th>التاريخ</th><th>الإجمالي</th><th>واصل (شامل الفروقات)</th><th>منها بفرق</th><th>بالمشروع فقط — أزرق</th><th>غير مسجلة بالمشروع</th><th>غير مؤكد</th><th>مراجعة</th></tr></thead>
-       <tbody>{daily.map(([date,c])=><tr key={date}><td dir="ltr">{date}</td><td>{c.total}</td><td>{c.received}</td><td>{c.differences}</td><td style={{backgroundColor:'#cce5ff'}}>{c.projectOnly}</td><td>{c.missing}</td><td>{c.pending}</td><td>{c.review}</td></tr>)}</tbody></table></div>
+       <tbody>{daily.map(([date,c])=><tr key={date}><td dir="ltr">{date}</td><td>{c.total}</td><td>{c.received}</td><td>{c.differences}</td><td style={{backgroundColor:'light-dark(#cce5ff, var(--theme-info-surface))'}}>{c.projectOnly}</td><td>{c.missing}</td><td>{c.pending}</td><td>{c.review}</td></tr>)}</tbody></table></div>
      </section>
      <section className="panel">
        <div className="table-controls"><h2>تفاصيل الفواتير</h2>
@@ -135,7 +135,7 @@ export default function SerialSoldier(){
          const associated=[...item.transfers,...item.unassignedTransfers];
          const cols=associated.filter(x=>x.kind==='main'||x.kind==='dry');
          const adjustments=associated.filter(x=>x.kind==='adjustment');
-         return <tr key={item.row} style={{backgroundColor:item.origin==='project'?'#cce5ff':color[item.state]}}>
+         return <tr key={item.row} style={{backgroundColor:item.origin==='project'?'light-dark(#cce5ff, var(--theme-info-surface))':color[item.state]}}>
            <td>{item.row<0?'يُضاف للكشف':item.row}</td><td dir="ltr">{item.number||'—'}</td><td dir="ltr">{item.amount||'—'}</td><td>{item.origin==='project'?'بالمشروع فقط — غير موجودة بكشف سجى':label[item.state]}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='main').map(t=>t.number).join('، ')||'—'}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='dry').map(t=>t.number).join('، ')||'—'}</td>
