@@ -38,6 +38,8 @@ jobs:
           for test in scripts/test-reconcile.mjs scripts/test-add-transfer.mjs scripts/test-exchange.mjs scripts/test-history-export.mjs scripts/test-reverse-lookup.mjs scripts/test-serial-soldier.mjs scripts/test-sap-invoice-register.mjs; do
             node "$test"
           done
+      - name: SAP source authenticity and reference integrity tests
+        run: node scripts/test-sap-source-integrity.mjs
       - name: First lieutenant 011 regression tests
         run: |
           node scripts/test-lieutenant-import.mjs
