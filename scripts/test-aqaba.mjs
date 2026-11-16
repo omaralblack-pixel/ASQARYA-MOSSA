@@ -147,12 +147,12 @@ assert.equal(aqabaPriceBook.isAqabaBranch('٨٤ — العقبة'),true);
 assert.equal(aqabaPriceBook.isAqabaBranch('23 — خالد'),false);
 assert.equal(aqabaPriceBook.isAqabaBranch('184 — العقبة'),false);
 const aqabaOriginal=aqabaPriceBook.aqabaMatchReference(ammanOnly,[]);
-assert.equal(aqabaOriginal.length,52);
+assert.equal(aqabaOriginal.filter(item=>item.price!==null).length,52);
 assert.equal(aqabaOriginal.find(item=>item.sapCode==='CHS00561').price,350,
  'The Aqaba blue 0.350 JD piece price converts to 350 fils');
 assert.equal(aqabaOriginal.find(item=>item.sapCode==='CHS00561').code,'CHS00561');
-assert.equal(aqabaOriginal.some(item=>item.sapCode==='CFC00999'),false,
- 'An Amman-only code must never sneak into the Aqaba price book');
+assert.equal(aqabaOriginal.find(item=>item.sapCode==='CFC00999').price,null,
+ 'A confirmed mapping without an Aqaba price stays visible with no Amman price');
 assert.equal(ammanOnly[0].price,1650,'Loading Aqaba prices cannot change the Amman reference');
 const correctedAqabaPrice={
  ...priceSeed.aqabaSeedInvoiceLines(ammanOnly).find(row=>row.item==='CHS00561'),
@@ -181,6 +181,27 @@ const unmatchedAqabaDraft={...aqabaDraft,transfers:[{...aqabaDraft.transfers[0],
  paste:aqabaDraft.transfers[0].paste.replaceAll('CHS00561','CFC00999')}]};
 assert.notEqual(reconcileModule.prepareReconciliation(unmatchedAqabaDraft,correctedBook).result.status,'match',
  'A missing Aqaba price or code must block matching even though Amman knows the item');
+const mappedWithoutPrice=reconcileModule.prepareReconciliation(unmatchedAqabaDraft,correctedBook).result;
+assert.equal(mappedWithoutPrice.rows[0].transfer,1,'A mapped item without an Aqaba price still converts its quantity');
+assert.equal(mappedWithoutPrice.rows[0].unitPrice,null);
+assert.equal(mappedWithoutPrice.expected,null);
+assert.ok(!mappedWithoutPrice.rows[0].errors.some(error=>error.includes('غير مربوط')));
+const linkedCatalog=[...ammanOnly,{code:'11880002',sapCode:'CFC00014',name:'معكرونة',price:9999,active:true,
+ sapUnit:'Carton',cartonPieces:12,kgPerPiece:null,invoicePack:null,
+ sapAliases:[{sapCode:'CHS00018',sapUnit:'Piece',cartonPieces:24,kgPerPiece:null}]}];
+const linkedBook=aqabaPriceBook.aqabaMatchReference(linkedCatalog,[]);
+for(const [code,unit,quantity] of [['CFC00014','Carton',24],['CHS00018','Piece',2]]){
+ const linkedDraft={...aqabaDraft,transfers:[{...aqabaDraft.transfers[0],paste:
+  'Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse\n'+code+'\tTest\t2\t'+unit+'\t001\t011'}]};
+ const before=reconcileModule.prepareReconciliation(linkedDraft,aqabaOriginal).result;
+ assert.equal(before.rows[0].transfer,null,'An unlinked SAP code must remain unresolved before linking');
+ const after=reconcileModule.prepareReconciliation(linkedDraft,linkedBook).result;
+ assert.equal(after.rows[0].transfer,quantity,'New primary and alias mappings immediately enable quantities in Aqaba');
+ assert.equal(after.rows[0].unitPrice,null,'Linking cannot import the Amman price');
+ assert.equal(after.expected,null);
+ assert.ok(!after.rows[0].errors.some(error=>error.includes('غير مربوط')));
+}
+
 const routeSource=fs.readFileSync(new URL('../app/api/reconcile/route.ts',import.meta.url),'utf8');
 assert.ok(routeSource.includes("u.searchParams.has('aqabaPricing')"));
 assert.ok(routeSource.includes('aqaba?await aqabaRefs(standardReference):standardReference'),

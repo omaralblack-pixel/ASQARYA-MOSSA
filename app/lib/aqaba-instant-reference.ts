@@ -38,7 +38,7 @@ export function aqabaMatchReference(amman:Item[],saved:BlueLine[]):Item[]{
   const values=[...new Set(items.map(item=>item[key]))];
   return values.length===1?values[0]:null;
  };
- return [...latest.values()].map(row=>{
+ const priced:Item[]=[...latest.values()].map(row=>{
   const price=Math.round(row.price*1000);
   if(!Number.isSafeInteger(price)||Math.abs(price/1000-row.price)>0.000001)
    throw Error('سعر عقبة غير صالح للصنف '+row.item+'؛ يجب تسجيل الأسعار حتى ثلاثة منازل عشرية.');
@@ -54,5 +54,17 @@ export function aqabaMatchReference(amman:Item[],saved:BlueLine[]):Item[]{
    cartonPieces:agreedNumber(matches,'cartonPieces'),
    kgPerPiece:agreedNumber(matches,'kgPerPiece'),
   };
- }).sort((a,b)=>a.sapCode.localeCompare(b.sapCode));
+ });
+ // A catalog mapping and an Aqaba price are independent. Keep confirmed SAP
+ // conversions visible even before an Aqaba price is recorded, without ever
+ // borrowing the institution's Amman price. Retain SAP-based keys in Aqaba.
+ const unpriced:Item[]=[...source.entries()].filter(([sapCode])=>!latest.has(sapCode))
+  .map(([sapCode,matches])=>{
+   const match=matches.length===1?matches[0]:null;
+   return {code:sapCode,sapCode,name:match?.name||sapCode,price:null,active:true,
+    invoicePack:null,sapUnit:match?.sapUnit||'Piece',
+    warehouseUnit:match?.warehouseUnit||null,warehouseName:match?.warehouseName||null,
+    cartonPieces:agreedNumber(matches,'cartonPieces'),kgPerPiece:agreedNumber(matches,'kgPerPiece')};
+  });
+ return [...priced,...unpriced].sort((a,b)=>a.sapCode.localeCompare(b.sapCode));
 }
