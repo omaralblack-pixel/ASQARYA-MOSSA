@@ -5,21 +5,25 @@ import {Search} from 'lucide-react';
 import {digits,invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
+import {groupSapEvidence,searchArchivedSapEvidence,type SapEvidence} from '../lib/sap-document-lookup';
+import {draftFromPaperInvoice} from '../lib/sap-import-paper-invoice';
 
 type SavedRecord={id:string;payload:string};
-type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;unsavedMembers:SapImportGroup['members'];originalRecordId?:string};
+type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;unsavedMembers:SapImportGroup['members'];originalRecordId?:string;linkedInvoiceNumbers:string[]};
 
 function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):PreviewGroup[]{
   const byTransfer=new Map<string,string>();
   const byInvoice=new Map<string,Set<string>>();
   const add=(map:Map<string,Set<string>>,key:string,id:string)=>{const ids=map.get(key)||new Set<string>();ids.add(id);map.set(key,ids)};
   const transferOwners=new Map<string,Set<string>>();
+  const invoicesByRecord=new Map<string,string[]>();
   for(const record of records){
     const draft=readReconciliationRecord(record.payload);
     if(!draft)continue;
     for(const transfer of draft.transfers||[]){
       for(const number of transferNumbers(transfer.number||'')){byTransfer.set(number,record.id);add(transferOwners,number,record.id)}
     }
+    invoicesByRecord.set(record.id,(draft.invoices||[]).map(invoice=>invoiceDocumentNo(invoice.number)).filter(Boolean));
     for(const invoice of draft.invoices||[]){
       const number = invoiceDocumentNo(invoice.number);
       if (number) add(byInvoice, number, record.id);
@@ -32,7 +36,8 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
     const unsavedMembers=group.members.filter(member=>!transferOwners.has(member.transfer.number));
     const allTransfersSaved=unsavedMembers.length===0;
     const original=group.members[0].canceledTransferNo;
-    return {...group,savedIds,allTransfersSaved,unsavedMembers,originalRecordId:original?byTransfer.get(original):undefined};
+    const linkedInvoiceNumbers=[...new Set(savedIds.flatMap(id=>invoicesByRecord.get(id)||[]))];
+    return {...group,savedIds,allTransfersSaved,unsavedMembers,linkedInvoiceNumbers,originalRecordId:original?byTransfer.get(original):undefined};
   });
 }
 
@@ -61,20 +66,27 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
   const [errors,setErrors]=useState<Record<string,string>>({});
   const [filter,setFilter]=useState('pending');
   const [query,setQuery]=useState('');
+  const [paperInvoice,setPaperInvoice]=useState('');
+  const [paperTransfer,setPaperTransfer]=useState('');
+  const [paperBusy,setPaperBusy]=useState(false);
+  const [paperError,setPaperError]=useState('');
   const groups=useMemo(()=>compareWithSaved(importedGroups,records),[importedGroups,records]);
   const pending=groups.filter(group=>!group.reversal&&!group.allTransfersSaved);
   const ready=groups.filter(isReady);
   const selectedGroups=ready.filter(group=>selected.includes(keyOf(group)));
   const search=searchText(query);
-  const visibleMembers=(group:PreviewGroup)=>filter==='saved'||group.reversal?group.members:group.unsavedMembers;
+  const visibleMembers=(group:PreviewGroup)=>!!search||filter==='saved'||group.reversal?group.members:group.unsavedMembers;
   const matching=groups.filter(group=>!search||[
     group.draft.branch,
     ...visibleMembers(group).flatMap(member=>[member.transfer.number,member.branchLabel,member.canceledTransferNo||'']),
     ...group.draft.invoices.map(invoice=>invoice.number),
+    ...group.linkedInvoiceNumbers,
   ].some(value=>searchText(value).includes(search)));
   const reversals=groups.filter(group=>group.reversal);
   const visibleReversals=matching.filter(group=>group.reversal);
-  const shown=matching.filter(group=>!group.reversal&&(filter==='saved'?group.allTransfersSaved:
+  // Explicit searches cross the status filter: a stored transfer must never
+  // disappear just because the default filter is 'not yet saved'.
+  const shown=matching.filter(group=>!group.reversal&&(search?true:filter==='saved'?group.allTransfersSaved:
     !group.allTransfersSaved&&(filter==='pending'||(filter==='ready'?isReady(group):!isReady(group)))));
   const shownReady=shown.filter(isReady);
   const hiddenSelected=selectedGroups.filter(group=>!shown.includes(group)).length;
@@ -236,7 +248,9 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
               <summary><code>{item.transfer.number}</code></summary><p dir="auto">{item.remarks||'بدون Remarks'}</p>
             </details>)}</td>
             <td>{group.draft.branch||group.members[0].branchLabel||'—'}</td>
-            <td dir="ltr">{group.draft.invoices.map(invoice=>invoice.number).filter(Boolean).join('، ')||'—'}</td>
+            <td dir="ltr">{group.draft.invoices.map(invoice=>invoice.number).filter(Boolean).join('، ')||'—'}
+              {group.linkedInvoiceNumbers.some(number=>!group.draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number)===number))&&
+                <small>محفوظ بالسجل: {group.linkedInvoiceNumbers.filter(number=>!group.draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number)===number)).join('، ')}</small>}</td>
             <td>{members.reduce((count,item)=>count+item.lineCount,0)}</td>
             <td>{group.allTransfersSaved?'محفوظ':group.savedIds.length?'مرتبط بسجل سابق':group.issues.join('، ')||
               (group.draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'جاهز للحفظ':'ترحيل بلا فاتورة زرقاء')}
@@ -247,7 +261,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
           </tr>;
         })}</tbody>
       </table></div>
-      {!shown.length&&<p className="hint">{search?'ما في كشوف بتطابق البحث والفلتر.':filter==='pending'?'كل الترحيلات في هذه القائمة محفوظة بالسجل.':'ما في كشوف بهالحالة.'}</p>}
+      {!shown.length&&<p className="hint">{search?'الرقم غير ظاهر في Remarks أو سجل الفواتير المرتبطة بالكشف الحالي. إذا موجود على ورقة SAP المطبوعة، استخدم «ربط فاتورة ورقية برقم ترحيل» أدناه.':filter==='pending'?'كل الترحيلات في هذه القائمة محفوظة بالسجل.':'ما في كشوف بهالحالة.'}</p>}
       </>}
     </>}
   </details>{notification&&<div className="modal-backdrop notification-backdrop"><section className="modal panel notification-dialog" role="alertdialog" aria-modal="true" aria-label={notification.error?'تنبيه':'إشعار'}><h2>{notification.error?'تنبيه':'إشعار'}</h2><p>{notification.text}</p><div className="notification-actions"><button type="button" className="button primary" onClick={()=>setNotification(null)}>حسنًا</button></div></section></div>}</>;
