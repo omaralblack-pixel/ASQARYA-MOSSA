@@ -1,7 +1,7 @@
 'use client';
 import {useMemo,useState} from 'react';
 import {AlertTriangle,CheckCircle2,Download,FileSpreadsheet,RefreshCw,Upload} from 'lucide-react';
-import {serialMergeProposals,evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
+import {serialMergeProposals,previouslyApprovedSerialMerges,evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
 
 const label={received:'واصل ومطابق',received_difference:'واصلة — فرق في الملاحظات',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
 const color={received:'light-dark(#d8f3dc, var(--theme-success-surface))',received_difference:'light-dark(#fff0bf, var(--theme-warning-surface))',pending:'light-dark(#fad5e5, var(--theme-pink-surface))',missing:'light-dark(#fad5e5, var(--theme-pink-surface))',review:'light-dark(#fff0bf, var(--theme-warning-surface))'};
@@ -56,6 +56,11 @@ export default function SerialSoldier(){
      const saved=await getSaved();
      const result=evaluateSerial(parsed.rows,saved,parsed.period);
      result.blockers=[...new Set([...parsed.errors,...result.blockers])];
+     const priorConsent=previouslyApprovedSerialMerges(parsed.rows,nextFile.name);
+     setApprovedMerges(priorConsent);
+     if(priorConsent.length)
+       setMergeNotice('موافقتك السابقة محفوظة للفاتورة '+priorConsent.join('، ')+
+         ' (الصف 144 مع 497). سيُتحقق من ترحيلات وملاحظات الصفين ويُنفذ الدمج عند تنزيل النسخة، وإلا سيتوقف دون فقدان بيانات.');
      setReport(result);setBuffer(content);setUpdated(new Date().toLocaleString('ar-JO'));
    }catch(e){setError(e instanceof Error?e.message:'تعذر تحليل الملف.');}
    finally{setBusy(false);}
@@ -151,7 +156,7 @@ export default function SerialSoldier(){
        <p>الصفوف: {proposal.allRows.join('، ')} · الصف المعتمد بعد الدمج: {proposal.keepRow}</p>
        <p>المبالغ: {proposal.amounts.join(' / ')||'—'} · التواريخ: {proposal.dates.join(' / ')||'—'} · الفروع: {proposal.branches.join(' / ')||'—'}</p>
        <p>{proposal.reason}</p>
-       {approvedMerges.includes(proposal.number)?<p className="hint">تمت موافقتك على هذا الدمج في نسخة التنزيل الحالية.</p>:
+       {approvedMerges.includes(proposal.number)?<p className="hint">موافقتك محفوظة لهذه الحالة؛ اضغط زر «تنزيل ملف سجى» لتنفيذ الدمج بعد التحقق من البيانات.</p>:
         <button type="button" className="button secondary" disabled={busy||!proposal.canMerge}
           onClick={()=>void download(proposal.number)}>أوافق على دمج الفاتورة وتنزيل النسخة المصححة</button>}
      </div>)}
