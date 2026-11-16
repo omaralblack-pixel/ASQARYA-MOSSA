@@ -1,6 +1,6 @@
 import {strFromU8,strToU8,unzipSync,zipSync} from 'fflate';
 import {digits,dateValue as invoiceDateValue,fils} from './reconcile';
-import {PROJECT_ONLY_NOTE,serialMergeProposals,serialInvoiceColumns,serialReviewNote,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
+import {PROJECT_ONLY_NOTE,serialMergeProposals,serialInvoiceColumns,serialReviewNote,serialWorkingDays,auditSerialExport,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
 
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -193,6 +193,162 @@ function writeNumber(doc:Document,cell:Element,value:number){
  const number=element(doc,'v');setText(doc,number,String(value));cell.appendChild(number);
 }
 // Generated blue rows retain their project origin when this workbook is uploaded again.
+
+/** A daily worksheet is an exact clone of the source formatting and headers.
+ * Invoices move as WHOLE rows, including K:Q and the remarks column.
+ */
+function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:SerialPeriod|null,lastColumn:number){
+ const days=serialWorkingDays(period,allRows.map(row=>row.date));
+ if(!days.length)throw Error('لا يوجد يوم عمل في فترة كشف سجى.');
+ const data=find(pkg.doc,'sheetData')!;
+ const source=new Map(children(data,'row').map(row=>[Number(row.getAttribute('r')),row]));
+ const grouped=new Map<string,typeof allRows>();
+ const audit=allRows.map(item=>{
+  const current=source.get(item.row);
+  if(!current)throw Error('صف الفاتورة '+item.number+' غير موجود.');
+  const transfers:string[]=[];
+  for(let col=11;col<=17;col++){
+   const raw=text(getCell(current,columnName(col)+item.row),pkg.shared);
+   if(raw&&!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(raw))
+    throw Error('فاتورة '+item.number+': خانة الترحيل '+columnName(col)+' غير صالحة.');
+   transfers.push(...(raw.match(/\d{4,20}/g)||[]));
+  }
+  const date=invoiceDateValue(item.date);
+  if(!date||!days.includes(date))throw Error('فاتورة '+item.number+': تاريخ خارج أيام العمل.');
+  grouped.set(date,[...(grouped.get(date)||[]),item]);
+  return {number:item.number,date:item.date,groupId:item.groupId,transfers,
+   confirmedTransfers:serialInvoiceColumns(item).filter(Boolean)};
+ });
+ auditSerialExport(audit);
+ const book=readXml(pkg.files['xl/workbook.xml']);
+ const sheet=Array.from(book.getElementsByTagNameNS(NS,'sheet')).find(el=>el.getAttribute('name')==='للطباعة');
+ if(!sheet)throw Error('شيت سجى الأصلي غير موجود.');
+ const rels=readXml(pkg.files['xl/_rels/workbook.xml.rels']);
+ const types=readXml(pkg.files['[Content_Types].xml']);
+ const relRoot=rels.documentElement,typeRoot=types.documentElement;
+ const sheetList=Array.from(book.getElementsByTagNameNS(NS,'sheet'));
+ let sheetId=Math.max(...sheetList.map(el=>Number(el.getAttribute('sheetId'))||0))+1;
+ const sheetIndex=sheetList.indexOf(sheet);
+ const knownNames=new Set(sheetList.map(el=>el.getAttribute('name')));
+ const knownIds=new Set(Array.from(relRoot.children).map(el=>el.getAttribute('Id')));
+ const templateDoc=pkg.doc.cloneNode(true) as Document;
+ const templateBody=find(templateDoc,'sheetData')!;
+ for(const row of children(templateBody,'row'))if(Number(row.getAttribute('r'))>4)templateBody.removeChild(row);
+ for(const [i,day] of days.entries()){
+  const name=day.slice(8)+'-'+day.slice(5,7)+'-'+day.slice(0,4);
+  if(knownNames.has(name))throw Error('شيت يوم '+name+' موجود مسبقًا في الملف.');
+  knownNames.add(name);
+  const daily=templateDoc.cloneNode(true) as Document,body=find(daily,'sheetData')!;
+  const list=grouped.get(day)||[];
+  for(const [j,item] of list.entries()){
+   const original=source.get(item.row)!;
+   if(original.getElementsByTagNameNS(NS,'f').length)
+    throw Error('فاتورة '+item.number+' فيها معادلات؛ ممنوع نقلها دون مراجعة.');
+   const copy=original.cloneNode(true) as Element,no=j+5;
+   copy.setAttribute('r',String(no));
+   for(const cell of children(copy,'c'))cell.setAttribute('r',columnName(cellColumn(cell.getAttribute('r')||''))+no);
+   writeNumber(daily,ensureCell(daily,copy,2,no),j+1);
+   body.appendChild(copy);
+  }
+  const heading=children(body,'row').find(row=>row.getAttribute('r')==='3');
+  if(heading)overwriteText(daily,ensureCell(daily,heading,2,3),
+   'استلامات المؤسسة الاستهلاكية العسكرية يوم '+name);
+  const summary=children(body,'row').find(row=>row.getAttribute('r')==='2');
+  const total=summary&&getCell(summary,'G2');
+  if(total&&find(total,'f')){
+   setText(daily,find(total,'f')!,'SUM(F5:F'+Math.max(5,4+list.length)+')');
+   const v=find(total,'v');if(v)total.removeChild(v);
+  }
+  // The original Excel table ends at I: sorting it detaches the K:Q transfers.
+  // Replace with a native whole-row autofilter through the last remarks column.
+  for(const child of Array.from(daily.documentElement.children))
+   if(child.namespaceURI===NS&&['tableParts','autoFilter'].includes(child.localName))
+    daily.documentElement.removeChild(child);
+  const filter=element(daily,'autoFilter');
+  filter.setAttribute('ref','B4:'+columnName(lastColumn)+Math.max(5,4+list.length));
+  const anchor=Array.from(daily.documentElement.children).find(el=>
+   ['mergeCells','conditionalFormatting','dataValidations','hyperlinks','printOptions','pageMargins','pageSetup','headerFooter'].includes(el.localName));
+  if(anchor)daily.documentElement.insertBefore(filter,anchor);else daily.documentElement.appendChild(filter);
+  const dimension=find(daily,'dimension');
+  if(dimension)dimension.setAttribute('ref','B1:'+columnName(lastColumn)+Math.max(5,4+list.length));
+  for(const view of Array.from(daily.getElementsByTagNameNS(NS,'sheetView'))){
+   if(i===0)view.setAttribute('tabSelected','1');else view.removeAttribute('tabSelected');
+  }
+  for(const kind of ['drawing','legacyDrawing','picture','oleObjects','pivotTableParts'])
+   if(daily.getElementsByTagNameNS(NS,kind).length)
+    throw Error('الشيت يحتوي عنصرًا مرتبطًا خارجيًا ('+kind+')؛ لا يجوز نسخه دون حماية التصميم.');
+  const bytes=strToU8(new XMLSerializer().serializeToString(daily));
+  if(i===0){sheet.setAttribute('name',name);pkg.files[pkg.name]=bytes;}
+  else{
+   const file='xl/worksheets/serial-day-'+day.replace(/-/g,'')+'.xml';
+   if(pkg.files[file])throw Error('اسم شيت مكرر داخل الأرشيف.');
+   pkg.files[file]=bytes;
+   const newSheet=sheet.cloneNode(true) as Element;
+   newSheet.setAttribute('name',name);newSheet.setAttribute('sheetId',String(sheetId++));
+   let id='rSerialDay'+i;while(knownIds.has(id))id+='x';
+   knownIds.add(id);newSheet.setAttributeNS(REL,'r:id',id);
+   const rel=rels.createElementNS(relRoot.namespaceURI,'Relationship');
+   rel.setAttribute('Id',id);
+   rel.setAttribute('Type','http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet');
+   rel.setAttribute('Target','/'+file);relRoot.appendChild(rel);
+   const override=types.createElementNS(typeRoot.namespaceURI,'Override');
+   override.setAttribute('PartName','/'+file);
+   override.setAttribute('ContentType','application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
+   typeRoot.appendChild(override);
+   sheet.parentNode!.appendChild(newSheet);
+  }
+ }
+ const view=book.getElementsByTagNameNS(NS,'workbookView')[0];
+ if(view)view.setAttribute('activeTab',String(sheetIndex));
+ const first=days[0].slice(8)+'-'+days[0].slice(5,7)+'-'+days[0].slice(0,4);
+ for(const named of Array.from(book.getElementsByTagNameNS(NS,'definedName')))
+  if(named.textContent?.includes('للطباعة'))named.textContent=named.textContent.replace(/'?للطباعة'?(?=!)/g,"'"+first+"'");
+ pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(book));
+ pkg.files['xl/_rels/workbook.xml.rels']=strToU8(new XMLSerializer().serializeToString(rels));
+
+ pkg.files['[Content_Types].xml']=strToU8(new XMLSerializer().serializeToString(types));
+ // The old B:I Excel Table must no longer be attached through the first
+ // worksheet's relationships after its tableParts are removed.
+ const relPath=pkg.name.replace(/^xl\/worksheets\//,'xl/worksheets/_rels/')+'.rels';
+ if(pkg.files[relPath]){
+  const linked=readXml(pkg.files[relPath]);
+  for(const link of Array.from(linked.documentElement.children))
+   if((link.getAttribute('Type')||'').endsWith('/table'))linked.documentElement.removeChild(link);
+  pkg.files[relPath]=strToU8(new XMLSerializer().serializeToString(linked));
+ }
+ // Independent read-back validation of the ACTUAL day-sheet XML, not merely
+ // the input projection. One physical invoice and all transfers must survive.
+ const seen=new Map<string,string>();
+ const expected=new Map(audit.map(row=>[row.number,row]));
+ for(const day of days){
+  const filename=day===days[0]?pkg.name:'xl/worksheets/serial-day-'+day.replace(/-/g,'')+'.xml';
+  const bytes=pkg.files[filename];
+  if(!bytes)throw Error('شيت اليوم '+day+' مفقود من ملف Excel الناتج.');
+  const daily=readXml(bytes),body=find(daily,'sheetData');
+  if(!body)throw Error('شيت '+day+' بلا بيانات.');
+  for(const line of children(body,'row')){
+   const n=Number(line.getAttribute('r'));
+   if(n<5)continue;
+   const no=digits(text(getCell(line,'D'+n),pkg.shared)).replace(/\s/g,'');
+   if(!no)continue;
+   if(seen.has(no))throw Error('فشل تدقيق Excel: فاتورة '+no+' تكررت بين '+seen.get(no)+' و'+day+'.');
+   seen.set(no,day);
+   const original=expected.get(no);
+   if(!original||original.date!==day)
+    throw Error('فشل تدقيق Excel: فاتورة '+no+' ظهرت في شيت يوم غير صحيح.');
+   const actual:string[]=[];
+   for(let col=11;col<=17;col++)
+    actual.push(...(text(getCell(line,columnName(col)+n),pkg.shared).match(/\d{4,20}/g)||[]));
+   if(actual.length!==original.transfers.length||
+     actual.some((transfer,i)=>transfer!==original.transfers[i]))
+    throw Error('فشل تدقيق Excel: تغيّرت ترحيلات الفاتورة '+no+' بعد توزيع الأيام.');
+  }
+ }
+ if(seen.size!==expected.size)
+  throw Error('فشل تدقيق Excel: عدد الفواتير في شيتات الأيام لا يطابق المصدر ('
+   +seen.size+' من '+expected.size+').');
+}
+
 export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,approvedMergeNumbers:string[]=[]):Blob {
  const pkg=load(new Uint8Array(input));
  const actual=rowsFrom(pkg);
@@ -210,6 +366,8 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   if(!proposal||!proposal.canMerge)
    throw Error('لا يمكن دمج الفاتورة '+number+'؛ البيانات تغيّرت أو يوجد تعارض. أعد فحص الملف.');
  }
+ for(const proposal of proposals)if(!approved.has(proposal.number))
+  throw Error('رقم الفاتورة '+proposal.number+' مكرر؛ وافق على الدمج الآمن أو صحح التعارض قبل تنزيل الملف.');
  const discarded=new Map<number,number>();
  const removedNotes=new Map<number,number[]>();
  for(const proposal of proposals){
@@ -260,23 +418,30 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
     }
     if(item.column===11||item.column===12){
      const existing=getCell(keeper,columnName(item.column)+proposal.keepRow);
-     if(existing&&text(existing,pkg.shared))
-      throw Error('ترحيل رئيسي أو نواشف مختلف في الصفين '+proposal.keepRow+' و'+rowNo+
-       '؛ لا يجوز نقل رقم الترحيل إلى عمود باتجاه مختلف.');
      if(existing&&find(existing,'f'))
       throw Error('خلية ترحيل تحتوي معادلة في الصف '+proposal.keepRow+'؛ لا يمكن تعديلها.');
-     overwriteText(d,ensureCell(d,keeper,item.column,proposal.keepRow),item.number);
+     const prior=existing?text(existing,pkg.shared):'';
+     if(prior&&!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(prior))
+      throw Error('بيانات غير صالحة في خانة الترحيل أثناء الدمج.');
+     overwriteText(d,ensureCell(d,keeper,item.column,proposal.keepRow),
+      prior?prior+'، '+item.number:item.number);
      transferSlots.set(item.number,item.column);
     }else{
      const free=Array.from({length:5},(_,i)=>13+i).find(col=>{
       const cell=getCell(keeper,columnName(col)+proposal.keepRow);
       return !cell||(!find(cell,'f')&&!text(cell,pkg.shared));
      });
-     if(free===undefined)
-      throw Error('خانات التعديلات M:Q لا تتسع لترحيل '+item.number+
-       '؛ لم يتم حذف الصف المكرر حفاظًا على أرقام الترحيلات.');
-     overwriteText(d,ensureCell(d,keeper,free,proposal.keepRow),item.number);
-     transferSlots.set(item.number,free);
+     if(free===undefined){
+      const cell=ensureCell(d,keeper,17,proposal.keepRow);
+      const existing=text(cell,pkg.shared);
+      if(find(cell,'f')||!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(existing))
+       throw Error('لا يمكن حفظ الترحيل '+item.number+' أثناء دمج الصفوف؛ خانة Q غير صالحة.');
+      overwriteText(d,cell,existing+'، '+item.number);
+      transferSlots.set(item.number,17);
+     }else{
+      overwriteText(d,ensureCell(d,keeper,free,proposal.keepRow),item.number);
+      transferSlots.set(item.number,free);
+     }
     }
    }
    for(const cell of children(row,'c')){
@@ -392,32 +557,34 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   // A confirmed historical group belongs to every invoice in that saved group, even
   // when the old record has no per-invoice page allocation. Place its shared transfer
   // numbers in Saja's transfer slots as GROUP associations (not claimed page ownership).
-  const transfers=serialInvoiceColumns(item);
-  // Re-read the current worksheet after an approved merge so transferred
-  // numbers copied from the removed row cannot be inserted a second time.
+  const transfers=[...new Map([...item.transfers,...item.unassignedTransfers]
+   .map(t=>[t.number,t] as const)).values()];
   const original=new Set([
    ...(item.originalTransfers||[]),
    ...Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+item.row),pkg.shared))
-     .flatMap(raw=>raw.match(/\d{4,20}/g)||[]),
+    .flatMap(raw=>raw.match(/\d{4,20}/g)||[]),
   ].filter(Boolean));
+  let combinedTransfers=false;
   const missingTransfers:string[]=[];
-  // Fill ONLY empty slots in K:Q. Never replace an existing Saja transfer.
-  // Historic shared group transfers are shown on every related invoice row, without
-  // modifying or fabricating invoice-page allocations in the saved database.
-  for(const [index,transferNo] of transfers.entries()){
-   if(!transferNo||original.has(transferNo))continue;
-   const preferred=11+index;
-   const alternatives=Array.from({length:Math.max(0,18-preferred)},(_,i)=>preferred+i);
-   const target=alternatives.find(col=>{
-    const cell=getCell(row,columnName(col)+item.row);
-    return !cell||(!find(cell,'f')&&!value(cell,pkg.shared).trim());
-   });
-   if(target===undefined){missingTransfers.push(transferNo);continue;}
-   const cell=ensureCell(d,row,target,item.row);
+  for(const transfer of transfers){
+   if(!transfer.number||original.has(transfer.number))continue;
+   // Multiple verified main/dry transfers stay inside K/L; adjustment
+   // overflow is comma-separated in Q. Never silently drop a number.
+   const col=transfer.kind==='main'?11:transfer.kind==='dry'?12:
+    (Array.from({length:5},(_,i)=>13+i).find(c=>{
+      const cell=getCell(row,columnName(c)+item.row);
+      return !cell||(!find(cell,'f')&&!text(cell,pkg.shared));
+    })??17);
+   const cell=ensureCell(d,row,col,item.row);
+   if(find(cell,'f'))throw Error('فاتورة '+item.number+': خلية ترحيل فيها معادلة.');
+   const previous=text(cell,pkg.shared);
+   if(previous&&!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(previous))
+    throw Error('فاتورة '+item.number+': بيانات غير رقمية في خانة '+columnName(col)+'.');
    const template=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row)||getCell(row,'D'+item.row);
    if(!cell.getAttribute('s')&&template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
-   editCell(d,cell,transferNo,pkg.shared);
-   original.add(transferNo);
+   if(previous){overwriteText(d,cell,previous+'، '+transfer.number);combinedTransfers=true;}
+   else editCell(d,cell,transfer.number,pkg.shared);
+   original.add(transfer.number);
   }
   const discrepancy=serialReviewNote(item);
   const transferWarning=missingTransfers.length?
@@ -426,6 +593,14 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   const cleanupNote=removed.length?'دُمج الصف '+removed.join('، ')+' في هذا الصف بموافقة المستخدم؛ رقم الفاتورة يظهر مرة واحدة':'';
   const note=[discrepancy,transferWarning,cleanupNote].filter(Boolean).join(' | ');
   const effectiveState=item.origin==='project'?'project_only':transferWarning?'review':item.state;
+  if(combinedTransfers){
+   const maximum=Math.max(1,...Array.from({length:7},(_,i)=>
+    (text(getCell(row,columnName(11+i)+item.row),pkg.shared).match(/\d{4,20}/g)||[]).length));
+   const required=Math.min(300,Math.max(44,Math.ceil(maximum/2)*18));
+   if(Number(row.getAttribute('ht')||'0')<required){
+    row.setAttribute('ht',String(required));row.setAttribute('customHeight','1');
+   }
+  }
   if(note){
    const cell=ensureCell(d,row,notes.column,item.row);
    if(!cell.getAttribute('s')){
@@ -446,7 +621,8 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
     if(template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
    }
    const colored=styles.apply(cell.getAttribute('s'),effectiveState);
-   cell.setAttribute('s',col===notes.column&&note?wrapped(colored):colored);
+   const multiTransfer=col>=11&&col<=17&&text(cell,pkg.shared).includes('،');
+   cell.setAttribute('s',(col===notes.column&&note||multiTransfer)?wrapped(colored):colored);
   }
  }
  if(report.projectOnly?.length){
@@ -472,6 +648,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
  }
  pkg.files[pkg.name]=strToU8(new XMLSerializer().serializeToString(d));
  pkg.files['xl/styles.xml']=strToU8(new XMLSerializer().serializeToString(styles.doc));
+ splitIntoDailySheets(pkg,allRows,report.period,last);
  const output=zipSync(pkg.files,{level:6});
  return new Blob([new Uint8Array(output)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
 }

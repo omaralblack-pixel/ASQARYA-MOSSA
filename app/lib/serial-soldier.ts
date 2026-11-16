@@ -98,7 +98,7 @@ export function duplicateGeneratedSerialRows(rows:SerialInput[]):Map<number,numb
 }
 
 export type SerialTransfer = {number:string; kind:'main'|'dry'|'adjustment'};
-export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; unassignedTransfers:SerialTransfer[]; branch:string; omarNumber:string; omarAmount:string};
+export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; unassignedTransfers:SerialTransfer[]; branch:string; omarNumber:string; omarAmount:string; groupId:string};
 export type SerialRecord = {id:string; branch:string; status?:string; payload:string};
 export type SerialReport = {rows:SerialRow[]; projectOnly:SerialRow[]; period:SerialPeriod|null; blockers:string[]; legacyWarnings:string[]; count:{received:number;pending:number;missing:number;review:number}};
 
@@ -180,7 +180,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
   const evaluate=(row:SerialInput):SerialRow=>{
     const number=normalNumber(row.number);
     const key=number;
-    const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في سجل المطابقة؛ لا يعني أن ورقها غير واصل',transfers:[] as SerialTransfer[],unassignedTransfers:[] as SerialTransfer[],branch:'',omarNumber:'',omarAmount:''};
+    const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في سجل المطابقة؛ لا يعني أن ورقها غير واصل',transfers:[] as SerialTransfer[],unassignedTransfers:[] as SerialTransfer[],branch:'',omarNumber:'',omarAmount:'',groupId:''};
     if(!/^\d{8,20}$/.test(number)){
       blockers.push('صف '+row.row+': رقم فاتورة مفقود أو غير صالح.');
       return {...base,state:'review',reason:'رقم فاتورة غير صالح'};
@@ -223,7 +223,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
       for(const saved of candidates)
         represented.add(saved.record.id+'|'+number);
       return {...base,state:'review',reason:conflicts.join('؛ '),
-        branch:branches.join(' / '),omarNumber:number,omarAmount:amounts.length===1?amounts[0]:'',
+        branch:branches.join(' / '),omarNumber:number,omarAmount:amounts.length===1?amounts[0]:'',groupId:'',
         transfers,unassignedTransfers};
     }
     if(!candidates.length)return base;
@@ -238,7 +238,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
     const payloadSummary=(saved.draft as Draft & {summary?:{status?:string}}).summary;
     const approvedStatus=payloadSummary?.status||saved.record.status;
     const omarNumber=normalNumber(saved.invoice.number),omarAmount=String(saved.invoice.amount||'');
-    const rowBase={...base,transfers,unassignedTransfers,branch:saved.record.branch||'',omarNumber,omarAmount};
+    const rowBase={...base,transfers,unassignedTransfers,branch:saved.record.branch||'',omarNumber,omarAmount,groupId:saved.record.id};
     if(amount===null||confirmed===null){
       blockers.push('فاتورة '+number+': مبلغ غير صالح أو مفقود في ملف سجى أو سجل المشروع.');
       return {...rowBase,state:'review',reason:'المبلغ غير صالح أو مفقود'};
@@ -311,4 +311,67 @@ export function serialColumns(transfers:SerialTransfer[]):string[] {
   const main=uniq.filter(t=>t.kind==='main'),dry=uniq.filter(t=>t.kind==='dry');
   const others=uniq.filter(t=>t.kind==='adjustment');
   return [main.shift()?.number||'',dry.shift()?.number||'',...main.map(t=>t.number),...dry.map(t=>t.number),...others.map(t=>t.number)];
+}
+
+
+/** Final, physical Excel row audit. A repeated transfer is legal ONLY when both
+ * printed invoices share the same saved reconciliation record AND that record
+ * explicitly links the transfer to each invoice. Stale values from Saja's
+ * original K:Q cells are not proof of group ownership.
+ */
+export type SerialExportAuditRow={
+ number:string;date:string;groupId:string;transfers:string[];confirmedTransfers:string[];
+};
+export function auditSerialExport(rows:SerialExportAuditRow[]):void{
+ const invoiceOwners=new Map<string,number>();
+ const transferOwners=new Map<string,{invoice:string;groupId:string;confirmed:boolean}>();
+ for(const [i,row] of rows.entries()){
+  const invoice=normalNumber(row.number);
+  if(!/^\d{8,20}$/.test(invoice))throw Error('صف تصدير '+(i+1)+': رقم فاتورة غير صالح.');
+  if(invoiceOwners.has(invoice))throw Error('ممنوع تسليم Excel: رقم الفاتورة '+invoice+' مكرر بين صفّي '+(invoiceOwners.get(invoice)!+1)+' و'+(i+1)+'.');
+  invoiceOwners.set(invoice,i);
+  const verified=new Set(row.confirmedTransfers);
+  const within=new Set<string>();
+  for(const number of row.transfers){
+   if(!/^\d{4,20}$/.test(number))throw Error('فاتورة '+invoice+': ترحيل غير صالح '+number+'.');
+   if(within.has(number))throw Error('فاتورة '+invoice+': الترحيل '+number+' مكتوب مرتين في نفس الصف.');
+   within.add(number);
+   const previous=transferOwners.get(number);
+   if(previous){
+    const realGroup=row.groupId&&row.groupId===previous.groupId&&
+     verified.has(number)&&previous.confirmed;
+    if(!realGroup)throw Error('الترحيل '+number+' مكرر بين الفاتورتين '+previous.invoice+' و'+invoice+
+     ' دون إثبات مجموعة مشتركة واحدة في سجلات المشروع.');
+   }else transferOwners.set(number,{invoice,groupId:row.groupId,confirmed:verified.has(number)});
+  }
+  for(const number of verified){
+   if(!within.has(number))throw Error('فاتورة '+invoice+': الترحيل المثبت '+number+' مفقود من خانات K:Q. توقّف التصدير لمنع فقدان البيانات.');
+  }
+ }
+}
+
+/** Every working day gets its own sheet, including days with zero invoices.
+ * Friday is a holiday in Jordan; a Friday-dated invoice is not silently
+ * moved to Thursday or Saturday.
+ */
+export function serialWorkingDays(period:SerialPeriod|null,invoiceDates:string[]):string[]{
+ const valid=invoiceDates.map(value=>dateValue(value));
+ if(valid.some(date=>!date))throw Error('هناك فاتورة بدون تاريخ صحيح؛ لا يمكن وضعها في شيت يوم دون تخمين.');
+ const sorted=(valid as string[]).sort();
+ const from=period?.from||sorted[0],to=period?.to||sorted[sorted.length-1];
+ if(!from||!to||from>to||!dateValue(from)||!dateValue(to))throw Error('نطاق تاريخ كشف سجى غير صالح.');
+ const start=Date.parse(from+'T00:00:00Z'),end=Date.parse(to+'T00:00:00Z');
+ if(!Number.isFinite(start)||!Number.isFinite(end)||(end-start)/86400000>61)
+  throw Error('تقسيم الأيام يحتاج فترة لا تزيد عن 62 يومًا. ارفع كشف الشهر المطلوب فقط.');
+ const days:string[]=[];
+ for(let at=start;at<=end;at+=86400000){
+  const day=new Date(at);
+  if(day.getUTCDay()!==5)days.push(day.toISOString().slice(0,10));
+ }
+ for(const date of sorted){
+  if(date<from||date>to)throw Error('فاتورة مؤرخة '+date+' خارج فترة كشف سجى '+from+' إلى '+to+'.');
+  if(new Date(date+'T00:00:00Z').getUTCDay()===5)
+   throw Error('هناك فاتورة بتاريخ الجمعة '+date+' (عطلة). راجع تاريخها؛ لن أنقلها ليوم آخر ولن أسقطها من Excel.');
+ }
+ return days;
 }

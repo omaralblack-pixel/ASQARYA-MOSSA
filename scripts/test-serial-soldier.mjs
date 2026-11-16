@@ -8,7 +8,7 @@ const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
 const collector=url(compile(fs.readFileSync('app/lib/invoice-collector.ts','utf8').replace("'./reconcile'","'"+rec+"'")));
 const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'")
  .replace("'./invoice-collector'","'"+collector+"'");
-const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,duplicateGeneratedSerialRows,serialMergeProposals,previouslyApprovedSerialMerges}=await import(url(compile(source)));
+const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,duplicateGeneratedSerialRows,serialMergeProposals,previouslyApprovedSerialMerges,auditSerialExport,serialWorkingDays}=await import(url(compile(source)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from,to)=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
 const invoice=(number,amount,complete=true)=>({number,amount,complete});
@@ -253,6 +253,35 @@ assert.deepEqual(previouslyApprovedSerialMerges(acceptedCase.map(r=>({...r,amoun
  'Conflicting amounts override previously supplied consent');
 assert.deepEqual(previouslyApprovedSerialMerges(acceptedCase.map(r=>({...r,date:r.row===497?'2026-11-10':r.date})),consentName),[],
  'Conflicting dates override previously supplied consent');
+
+const physical=(number,date,groupId,transfers,confirmedTransfers=transfers)=>({number,date,groupId,transfers,confirmedTransfers});
+const dayA='2026-11-01',dayB='2026-11-02';
+assert.deepEqual(serialWorkingDays({from:'2026-11-01',to:'2026-11-14'},[dayA,dayB]),
+ ['2026-11-01','2026-11-02','2026-11-03','2026-11-04','2026-11-05',
+  '2026-11-07','2026-11-08','2026-11-09','2026-11-10','2026-11-11','2026-11-12','2026-11-14'],
+ 'Both November 6 and 13 (Fridays) must be excluded; all other days get tabs');
+assert.throws(()=>serialWorkingDays({from:'2026-11-01',to:'2026-11-30'},['2026-11-06']),/الجمعة/,
+ 'Friday invoices must never be silently omitted or moved');
+assert.throws(()=>serialWorkingDays({from:'2026-11-01',to:'2026-11-30'},['2026-12-01']),/خارج فترة/,
+ 'Out-of-range dates must never be silently omitted');
+auditSerialExport([physical('2621111101',dayA,'grp1',['1234'],['1234']),
+ physical('2621111102',dayB,'grp1',['1234'],['1234'])]);
+assert.throws(()=>auditSerialExport([physical('2621111101',dayA,'grp1',['1234']),
+ physical('2621111102',dayB,'grp2',['1234'])]),/دون إثبات مجموعة/,
+ 'Shared transfers across different groups are prohibited');
+assert.throws(()=>auditSerialExport([physical('2621111101',dayA,'grp1',['1234']),
+ physical('2621111102',dayB,'grp1',['1234'],[])]),/دون إثبات مجموعة/,
+ 'A stale Saja transfer number is NOT sufficient group evidence');
+assert.throws(()=>auditSerialExport([physical('2621111101',dayA,'grp1',['1234']),
+ physical('2621111101',dayB,'grp1',['1234'])]),/رقم الفاتورة/,
+ 'Same invoice number across two different day sheets is prohibited');
+assert.throws(()=>auditSerialExport([physical('2621111101',dayA,'grp1',['1234','1234'])]),/مرتين/,
+ 'A transfer repeated inside one row is prohibited');
+assert.throws(()=>auditSerialExport([physical('2621111101',dayA,'grp1',['1234'],['1234','1235'])]),/مفقود/,
+ 'Truncating verified project transfer numbers must block download');
+console.log('PASS: final Excel audit enforces globally unique invoice numbers and verified shared-group exceptions.');
+console.log('PASS: daily sheets skip November Fridays without losing or moving Friday-dated invoices.');
+
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: confirmed arrival is counted despite amount/number differences while uncertain links remain unresolved');
 console.log('PASS: serial soldier ignores ALL personal pages for both historical and new groups while retaining true validation errors');

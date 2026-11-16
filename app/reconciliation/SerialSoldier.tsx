@@ -24,6 +24,7 @@ export default function SerialSoldier(){
  const [mergeNotice,setMergeNotice]=useState('');
  const mergeProposals=useMemo(()=>serialMergeProposals(report?.rows||[]),[report]);
  const duplicateRows=new Set(mergeProposals.flatMap(proposal=>proposal.removeRows));
+ const awaitingMerges=mergeProposals.filter(proposal=>!approvedMerges.includes(proposal.number));
  const allRows=useMemo(()=>{
    if(!report)return [];
    const rows=[...report.rows,...report.projectOnly];
@@ -84,7 +85,7 @@ export default function SerialSoldier(){
    }catch(e){setError(e instanceof Error?e.message:'تعذر تنزيل فواتير المشروع.');}
    finally{setBusy(false);}
  }
- async function download(approveNumber?:string){
+ async function download(){
    if(!buffer||!file||!report||busy)return;
    setBusy(true);setError('');
    try{
@@ -95,24 +96,10 @@ export default function SerialSoldier(){
      const fresh=evaluateSerial(parsed.rows,saved,parsed.period);
      fresh.blockers=[...new Set([...parsed.errors,...fresh.blockers])];
      setReport(fresh);
-     const allowed=approveNumber?[...new Set([...approvedMerges,approveNumber])]:approvedMerges;
-     // Download a review copy as-is unless the user explicitly approved a merge.
-     const blob=createSerialWorkbook(buffer,fresh,allowed);
+     // Safe final download only: validation rejects duplicates and lost transfers.
+     const blob=createSerialWorkbook(buffer,fresh,approvedMerges);
      const name=file.name.replace(/\.xlsx$/i,'')+'-جندي-السيريل.xlsx';
-     // Re-open the generated workbook before presenting a successful merge.
-     // This also clears the stale duplicate error from the screen immediately.
-     if(allowed.length){
-       const mergedBuffer=await blob.arrayBuffer();
-       const checked=readSerialWorkbook(mergedBuffer);
-       const checkedReport=evaluateSerial(checked.rows,saved,checked.period);
-       checkedReport.blockers=[...new Set([...checked.errors,...checkedReport.blockers])];
-       for(const number of allowed)if(serialMergeProposals(checked.rows).some(p=>p.number===number))
-         throw Error('رقم الفاتورة '+number+' ما زال مكررًا بعد إنشاء الملف؛ تم إيقاف تنزيل النسخة.');
-       setReport(checkedReport);setIssues(checked.errors);setBuffer(mergedBuffer);
-       setFile(new File([blob],name,{type:blob.type}));
-       setApprovedMerges([]);
-       setMergeNotice('تم تجهيز نسخة مصححة ودمج الفاتورة '+allowed.join('، ')+' بعد موافقتك. لا تغيير على ملف سجى الأصلي أو قاعدة البيانات.');
-     }
+     setMergeNotice('تم تدقيق عدم التكرار وتجهيز شيت مستقل لكل يوم عمل باستثناء الجمعة.');
      const url=URL.createObjectURL(blob),a=document.createElement('a');
      a.href=url;
      a.download=name;
@@ -138,11 +125,11 @@ export default function SerialSoldier(){
      </div>
      <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
-       <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
+       <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy||awaitingMerges.length>0}><Download size={17}/>تنزيل Excel — شيت لكل يوم عمل</button>
      </div>
-     <p className="hint">عند العثور على رقم فاتورة مكرر، نسألك هل توافق على دمج الصفوف. لا يُدمج أو يُحذف أي صف تلقائيًا، ولا تتغير قاعدة المشروع. عند الموافقة يُنشأ كشف جديد بالدمج وتبقى النسخة الأصلية كما هي.</p>
+     <p className="hint">رقم الفاتورة لا يظهر إلا مرة واحدة؛ الترحيل المشترك مسموح فقط إذا أثبت المشروع أنه ضمن نفس المجموعة. لا يُنشأ Excel مع تكرار غير مسموح أو ترحيل مفقود. كل يوم عمل في شيت مستقل والجمعة عطلة.</p>
      <p className="hint">كشف جميع فواتير المشروع مستقل عن ملف سجى ويشمل كل التواريخ المحفوظة، حتى الفواتير التي لم يُثبت تاريخها. يظهر رقم الفاتورة مرة واحدة، وتُبيَّن السجلات المتعارضة دون حذف أي بيانات.</p>
-     <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. المجموعات متعددة الفواتير تُعرض ترحيلاتها المشتركة على مستوى المجموعة بدون افتراض تبعية الترحيل لفاتورة بعينها.</p>
+     <p className="hint">اختلافات المطابقة تبقى للمراجعة، لكن التكرارات غير المسموحة أو فقدان الترحيلات أو فاتورة بتاريخ الجمعة توقف التصدير. يُنقل الصف كاملًا مع K:Q والملاحظات؛ فرز Excel يشمل جميع الأعمدة.</p>
      {mergeNotice&&<p role="status" className="hint">{mergeNotice}</p>}
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
      {error&&<p role="alert" className="red"><AlertTriangle size={16} style={{verticalAlign:'middle'}}/> {error}</p>}
@@ -156,9 +143,9 @@ export default function SerialSoldier(){
        <p>الصفوف: {proposal.allRows.join('، ')} · الصف المعتمد بعد الدمج: {proposal.keepRow}</p>
        <p>المبالغ: {proposal.amounts.join(' / ')||'—'} · التواريخ: {proposal.dates.join(' / ')||'—'} · الفروع: {proposal.branches.join(' / ')||'—'}</p>
        <p>{proposal.reason}</p>
-       {approvedMerges.includes(proposal.number)?<p className="hint">موافقتك محفوظة لهذه الحالة؛ اضغط زر «تنزيل ملف سجى» لتنفيذ الدمج بعد التحقق من البيانات.</p>:
+       {approvedMerges.includes(proposal.number)?<p className="hint">موافقتك مسجلة؛ بعد اعتماد كل حالات التكرار يمكنك تنزيل الملف المدقق.</p>:
         <button type="button" className="button secondary" disabled={busy||!proposal.canMerge}
-          onClick={()=>void download(proposal.number)}>أوافق على دمج الفاتورة وتنزيل النسخة المصححة</button>}
+          onClick={()=>setApprovedMerges(current=>[...new Set([...current,proposal.number])])}>أوافق على دمج هذه الفاتورة</button>}
      </div>)}
    </section>}
    {report&&<>
@@ -174,12 +161,12 @@ export default function SerialSoldier(){
        </div>
        {report.period&&<p className="hint">فترة مقارنة فواتير المشروع: <b dir="ltr">{report.period.from}</b> إلى <b dir="ltr">{report.period.to}</b>. الأزرق يعني أن الفاتورة موجودة عندك وغير موجودة بكشف سجى.</p>}
        {report.blockers.length>0&&<div role="alert" className="review-list" style={{marginTop:15}}>
-         <h3><AlertTriangle size={18} style={{verticalAlign:'middle'}}/> {report.blockers.length} أخطاء تحتاج مراجعة — التنزيل متاح</h3>
+         <h3><AlertTriangle size={18} style={{verticalAlign:'middle'}}/> {report.blockers.length} أخطاء تحتاج مراجعة</h3>
          <p>الملف الناتج نسخة للمراجعة مع جميع الفروقات. لا تتحول الأخطاء إلى مطابقة معتمدة، ولا يتم تعديل البيانات المحفوظة. «غير مسجلة» تعني غياب رقم الفاتورة عن سجلات المشروع ولا تثبت غياب ورقها. أرقام الصفحات الشخصية لا تدخل في فحص السيريل إطلاقًا.</p>
          <div style={{maxHeight:260,overflowY:'auto'}}>{report.blockers.map((b,i)=><p key={i}>{b}</p>)}</div>
        </div>}
        {report.legacyWarnings.length>0&&<details className="review-list" style={{marginTop:14}}><summary>ملاحظات السجل وربط المجموعات القديمة ({report.legacyWarnings.length})</summary><div style={{maxHeight:240,overflowY:'auto'}}>{report.legacyWarnings.map((item,i)=><p key={i}>{item}</p>)}</div></details>}
-       {(report.count.review>0||report.rows.some(row=>row.state==='received_difference'))&&<p className="amber">اختلاف المبلغ أو رقم الفاتورة لا يلغي وصول الورق المؤكد: تُحسب الفاتورة واصلة وتُظلل بالأصفر ويُكتب الفرق في الملاحظات. أما عدم تأكيد الورق أو المطابقة المحفوظة أو وجود مشكلة ربط فعلية فيبقى بحاجة مراجعة أو تأكيد. التنزيل متاح دائمًا.</p>}
+       {(report.count.review>0||report.rows.some(row=>row.state==='received_difference'))&&<p className="amber">اختلاف المبلغ أو رقم الفاتورة لا يلغي وصول الورق المؤكد: تُحسب الفاتورة واصلة وتُظلل بالأصفر ويُكتب الفرق في الملاحظات. أما عدم تأكيد الورق أو المطابقة المحفوظة أو وجود مشكلة ربط فعلية فيبقى بحاجة مراجعة أو تأكيد. التنزيل النهائي مشروط بنجاح تدقيق التكرار والترحيلات.</p>}
      </section>
      <section className="panel">
        <h2>ملخص فواتير كل يوم</h2>
@@ -190,7 +177,7 @@ export default function SerialSoldier(){
        <div className="table-controls"><h2>تفاصيل الفواتير</h2>
          <label>فلترة حسب اليوم <select aria-label="تصفية فواتير جندي السيريل حسب التاريخ" value={day} onChange={e=>setDay(e.target.value)}><option value="">كل الأيام</option>{daily.map(([date])=><option key={date} value={date}>{date}</option>)}</select></label>
        </div>
-       <p className="hint">تظهر الفواتير الزرقاء أولًا هنا، وتُضاف بعد فواتير سجى في ملف التنزيل. يُعرض أول 200 صف للتصفح، ويشمل التصدير جميع الفواتير.</p>
+       <p className="hint">تظهر الفواتير الزرقاء أولًا هنا، وتُدرج في شيت اليوم الصحيح داخل الملف. يُعرض أول 200 صف للتصفح، ويشمل التصدير جميع الفواتير.</p>
        <div className="table-scroll"><table><thead><tr><th>صف Excel</th><th>رقم الفاتورة</th><th>المبلغ</th><th>الحالة</th><th>رئيسي 001→011</th><th>نواشف 002→011</th><th>تعديلات / عكسي</th><th>ملاحظات</th></tr></thead>
        <tbody>{filtered.slice(0,200).map((item:SerialRow)=>{
          const associated=[...item.transfers,...item.unassignedTransfers];
