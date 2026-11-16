@@ -6,7 +6,7 @@ import {defaultAqabaDates,officialAqabaQuery,transferAqabaQuery,aqabaInventoryQu
 import {CheckCircle2,AlertTriangle,Copy,FileText,RefreshCw,Save} from 'lucide-react';
 
 const initial=defaultAqabaDates();
-type ResponseData={official:AqabaLine[];blue:BlueLine[];transfers:AqabaTransfer[];journal:AqabaMovement[];partial?:boolean};
+type ResponseData={official:AqabaLine[];blue:BlueLine[];transfers:AqabaTransfer[];journal:AqabaMovement[];partial?:boolean;nextOffset?:number|null};
 const template=[
  'رقم الفاتورة الزرقاء\tالتاريخ\tكود SAP\tاسم الصنف\tالكمية\tالوحدة\tالسعر\tأرقام الفواتير الرسمية\tأرقام الترحيلات',
  '2650710369\t2026-11-03\tCHS00561\tجبنة فيتا جولد\t600\tPiece\t0.350\t\t2615754',
@@ -94,8 +94,19 @@ export default function AqabaWorkspace(){
   if(!from||!to||from>to)return;
   LOADING(true);
   try{
-   const data=await request(undefined,'?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)) as ResponseData;
-   S(data);PART(data.partial===true);
+   const all:ResponseData={official:[],blue:[],transfers:[],journal:[],partial:false};
+   let offset=0,complete=false;
+   for(let page=0;page<200;page++){
+    const data=await request(undefined,'?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+'&offset='+offset) as ResponseData;
+    all.official.push(...data.official);all.blue.push(...data.blue);
+    all.transfers.push(...data.transfers);all.journal.push(...data.journal);
+    if(!data.partial){complete=true;break;}
+    const next=data.nextOffset;
+    if(typeof next!=='number'||!Number.isSafeInteger(next)||next<=offset)throw Error('تعذّر استكمال صفحات العقبة. لن تُعتمد بيانات جزئية.');
+    offset=next;
+   }
+   if(!complete)throw Error('عدد صفحات العقبة يتجاوز حد الفحص. ضيّق الفترة حتى يمكن التحقق من جميع المستندات.');
+   S(all);PART(false);
   }finally{LOADING(false)}
  };
  useEffect(()=>{load().catch(e=>E(e.message))},[from,to]);
@@ -139,7 +150,7 @@ export default function AqabaWorkspace(){
   }catch(e){E((e instanceof Error?e.message:String(e))+' — قد تكون دفعات سابقة حُفظت؛ حدّث السجل قبل إعادة اللصق.')}
   finally{W(false)}
  };
- const matched=results.filter(x=>!x.differences.length&&!x.issues.length).length;
+ const matched=partial?0:results.filter(x=>!x.differences.length&&!x.issues.length).length;
  return <div dir="rtl" className="aqaba-workspace">
   <div className="page-title"><div><p className="eyebrow">الزبون {AQABA_CUSTOMER} · المستودع 011</p>
    <h1>مؤسسة العقبة — الفواتير والمطابقة</h1><p>من 01/11/2026؛ فصل كامل عن بيانات مؤسسة عمّان. لا يُعتبر أي مستند سببًا لخصم المخزون ما لم تثبته حركات SAP.</p></div>
