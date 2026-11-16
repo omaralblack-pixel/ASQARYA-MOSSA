@@ -40,6 +40,8 @@ jobs:
           done
       - name: SAP source authenticity and reference integrity tests
         run: node scripts/test-sap-source-integrity.mjs
+      - name: Blue invoice and SAP transfer lookup regressions
+        run: node scripts/test-blue-invoice-lookup.mjs
       - name: First lieutenant 011 regression tests
         run: |
           node scripts/test-lieutenant-import.mjs
