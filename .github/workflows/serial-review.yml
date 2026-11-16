@@ -3,16 +3,22 @@ on:
   push:
     paths:
       - 'app/lib/serial-soldier.ts'
+      - 'app/lib/project-invoice-export.ts'
+      - 'app/lib/invoice-collector.ts'
       - 'app/lib/serial-workbook.ts'
       - 'app/reconciliation/SerialSoldier.tsx'
       - 'scripts/test-serial-soldier.mjs'
+      - 'scripts/test-project-invoice-export.mjs'
       - '.github/workflows/serial-review.yml'
   pull_request:
     paths:
       - 'app/lib/serial-soldier.ts'
+      - 'app/lib/project-invoice-export.ts'
+      - 'app/lib/invoice-collector.ts'
       - 'app/lib/serial-workbook.ts'
       - 'app/reconciliation/SerialSoldier.tsx'
       - 'scripts/test-serial-soldier.mjs'
+      - 'scripts/test-project-invoice-export.mjs'
       - '.github/workflows/serial-review.yml'
 jobs:
   validate:
@@ -32,3 +38,7 @@ jobs:
         run: pnpm exec tsc --noEmit
       - name: Serial soldier regression
         run: node scripts/test-serial-soldier.mjs
+      - name: All project invoice export regression
+        run: node scripts/test-project-invoice-export.mjs
+      - name: Production build
+        run: pnpm build
