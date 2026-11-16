@@ -234,7 +234,6 @@ function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:Se
  const templateDoc=pkg.doc.cloneNode(true) as Document;
  const templateBody=find(templateDoc,'sheetData')!;
  for(const row of children(templateBody,'row'))if(Number(row.getAttribute('r'))>4)templateBody.removeChild(row);
- let previous=sheet;
  for(const [i,day] of days.entries()){
   const name=day.slice(8)+'-'+day.slice(5,7)+'-'+day.slice(0,4);
   if(knownNames.has(name))throw Error('شيت يوم '+name+' موجود مسبقًا في الملف.');
@@ -296,7 +295,7 @@ function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:Se
    override.setAttribute('PartName','/'+file);
    override.setAttribute('ContentType','application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
    typeRoot.appendChild(override);
-   sheet.parentNode!.insertBefore(newSheet,previous.nextSibling);previous=newSheet;
+   sheet.parentNode!.appendChild(newSheet);
   }
  }
  const view=book.getElementsByTagNameNS(NS,'workbookView')[0];
@@ -308,6 +307,15 @@ function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:Se
  pkg.files['xl/_rels/workbook.xml.rels']=strToU8(new XMLSerializer().serializeToString(rels));
 
  pkg.files['[Content_Types].xml']=strToU8(new XMLSerializer().serializeToString(types));
+ // The old B:I Excel Table must no longer be attached through the first
+ // worksheet's relationships after its tableParts are removed.
+ const relPath=pkg.name.replace(/^xl\/worksheets\//,'xl/worksheets/_rels/')+'.rels';
+ if(pkg.files[relPath]){
+  const linked=readXml(pkg.files[relPath]);
+  for(const link of Array.from(linked.documentElement.children))
+   if((link.getAttribute('Type')||'').endsWith('/table'))linked.documentElement.removeChild(link);
+  pkg.files[relPath]=strToU8(new XMLSerializer().serializeToString(linked));
+ }
  // Independent read-back validation of the ACTUAL day-sheet XML, not merely
  // the input projection. One physical invoice and all transfers must survive.
  const seen=new Map<string,string>();
