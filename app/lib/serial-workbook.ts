@@ -1,6 +1,6 @@
 import {strFromU8,strToU8,unzipSync,zipSync} from 'fflate';
 import {digits,dateValue as invoiceDateValue,fils} from './reconcile';
-import {PROJECT_ONLY_NOTE,duplicateGeneratedSerialRows,serialInvoiceColumns,serialReviewNote,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
+import {PROJECT_ONLY_NOTE,serialMergeProposals,serialInvoiceColumns,serialReviewNote,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
 
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -89,7 +89,7 @@ function rowsFrom(p:Package):{rows:SerialInput[]; errors:string[];period:SerialP
   const originalTransfers=Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+index),p.shared))
     .flatMap(raw=>raw.match(/\d{4,20}/g)||[]);
   const projectOnly=noteColumns.some(col=>text(getCell(row,columnName(col)+index),p.shared).includes(PROJECT_ONLY_NOTE));
-  result.push({row:index,number,amount,date:dateValue(text(getCell(row,'C'+index),p.shared)),originalTransfers,
+  result.push({row:index,number,amount,date:dateValue(text(getCell(row,'C'+index),p.shared)),workbookBranch:text(getCell(row,'E'+index),p.shared),originalTransfers,
    ...(projectOnly?{origin:'project' as const}:{})});
  }
  if(!result.length)errors.push('لم أعثر على أي فواتير صالحة في الشيت.');
@@ -193,7 +193,7 @@ function writeNumber(doc:Document,cell:Element,value:number){
  const number=element(doc,'v');setText(doc,number,String(value));cell.appendChild(number);
 }
 // Generated blue rows retain their project origin when this workbook is uploaded again.
-export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob {
+export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,approvedMergeNumbers:string[]=[]):Blob {
  const pkg=load(new Uint8Array(input));
  const actual=rowsFrom(pkg);
  if(actual.rows.length!==report.rows.length||actual.rows.some((r,i)=>r.row!==report.rows[i].row||r.number!==report.rows[i].number||r.amount!==report.rows[i].amount))
@@ -202,17 +202,81 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
  const d=pkg.doc,data=find(d,'sheetData')!;
  const rowElements=new Map(children(data,'row').map(row=>[Number(row.getAttribute('r')),row]));
  const notes=notesColumn(rowElements,pkg,report);
- const discarded=duplicateGeneratedSerialRows(actual.rows);
+ const proposals=serialMergeProposals(actual.rows);
+ const approved=new Set(approvedMergeNumbers);
+ // Every approved number must still describe a safe merge in this exact file.
+ for(const number of approved){
+  const proposal=proposals.find(item=>item.number===number);
+  if(!proposal||!proposal.canMerge)
+   throw Error('لا يمكن دمج الفاتورة '+number+'؛ البيانات تغيّرت أو يوجد تعارض. أعد فحص الملف.');
+ }
+ const discarded=new Map<number,number>();
  const removedNotes=new Map<number,number[]>();
- for(const [rowNo,keptRow] of discarded){
-  const row=rowElements.get(rowNo);
-  if(!row)continue;
-  // This is only a blue, previously generated row; original Saja rows are not deleted.
-  // If it has been edited to contain a formula, do not silently discard that work.
-  if(row.getElementsByTagNameNS(NS,'f').length)
-   throw Error('الصف الأزرق المكرر '+rowNo+' يحتوي معادلات؛ راجعه قبل حذف التكرار.');
-  data.removeChild(row);rowElements.delete(rowNo);
-  removedNotes.set(keptRow,[...(removedNotes.get(keptRow)||[]),rowNo]);
+ for(const proposal of proposals){
+  if(!approved.has(proposal.number))continue;
+  const keeper=rowElements.get(proposal.keepRow);
+  if(!keeper)throw Error('الصف الأصلي '+proposal.keepRow+' غير متوفر للدمج.');
+  for(const rowNo of proposal.removeRows){
+   const row=rowElements.get(rowNo);
+   if(!row)throw Error('صف الدمج '+rowNo+' غير متوفر.');
+   if(row.getElementsByTagNameNS(NS,'f').length)
+    throw Error('الصف '+rowNo+' يحتوي معادلات؛ لا يمكن دمجه بأمان.');
+   // Validate everything before removing this copy. Do not discard distinct
+   // non-transfer content or silently replace a source cell.
+   const mergeTransfers:string[]=[];
+   const special=new Set([1,2,3,4,5,6,notes.column]);
+   for(const cell of children(row,'c')){
+    const col=cellColumn(cell.getAttribute('r')||'');
+    const raw=text(cell,pkg.shared);
+    if(!raw||special.has(col))continue;
+    if(col>=11&&col<=17){
+     mergeTransfers.push(...(raw.match(/\d{4,20}/g)||[]));
+     if(!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(raw))
+      throw Error('صف '+rowNo+': بيانات غير رقمية في خانة ترحيل؛ يحتاج مراجعة قبل الدمج.');
+     continue;
+    }
+    const retained=getCell(keeper,columnName(col)+proposal.keepRow);
+    const current=text(retained,pkg.shared);
+    if(current&&current!==raw)
+     throw Error('صفا '+proposal.keepRow+' و'+rowNo+' فيهما بيانات مختلفة في العمود '+columnName(col)+'؛ لا يمكن دمجهما تلقائيًا.');
+   }
+   // Prevent difference in the source company's branch or invoice amount.
+   const kBranch=text(getCell(keeper,'E'+proposal.keepRow),pkg.shared);
+   const sBranch=text(getCell(row,'E'+rowNo),pkg.shared);
+   if(kBranch&&sBranch&&kBranch!==sBranch)
+    throw Error('فرع الفاتورة مختلف بين صفّي '+proposal.keepRow+' و'+rowNo+'.');
+   const already=new Set<string>();
+   for(let col=11;col<=17;col++)
+    for(const value of (text(getCell(keeper,columnName(col)+proposal.keepRow),pkg.shared).match(/\d{4,20}/g)||[]))
+     already.add(value);
+   const overflow:string[]=[];
+   for(const number of new Set(mergeTransfers)){
+    if(already.has(number))continue;
+    const free=Array.from({length:7},(_,i)=>11+i).find(col=>{
+     const cell=getCell(keeper,columnName(col)+proposal.keepRow);
+     return !cell||(!find(cell,'f')&&!text(cell,pkg.shared));
+    });
+    if(free===undefined){overflow.push(number);continue;}
+    overwriteText(d,ensureCell(d,keeper,free,proposal.keepRow),number);
+    already.add(number);
+   }
+   for(const cell of children(row,'c')){
+    const col=cellColumn(cell.getAttribute('r')||''),raw=text(cell,pkg.shared);
+    if(!raw||special.has(col)||col>=11&&col<=17)continue;
+    const retained=ensureCell(d,keeper,col,proposal.keepRow);
+    if(!text(retained,pkg.shared))overwriteText(d,retained,raw);
+   }
+   const noteCell=ensureCell(d,keeper,notes.column,proposal.keepRow);
+   const sourceNote=text(getCell(row,columnName(notes.column)+rowNo),pkg.shared)
+    .split(' | ').filter(part=>part.trim()&&part.trim()!==PROJECT_ONLY_NOTE).join(' | ');
+   const existing=text(noteCell,pkg.shared);
+   const additional=['دمج مع الصف '+rowNo+' بموافقة المستخدم',
+    sourceNote&&!existing.includes(sourceNote)?sourceNote:'',
+    overflow.length?'ترحيلات لم تتسع لها الخانات: '+overflow.join('، '):''].filter(Boolean);
+   overwriteText(d,noteCell,[existing,...additional].filter(Boolean).join(' | '));
+   data.removeChild(row);rowElements.delete(rowNo);discarded.set(rowNo,proposal.keepRow);
+   removedNotes.set(proposal.keepRow,[...(removedNotes.get(proposal.keepRow)||[]),rowNo]);
+  }
  }
  const last=Math.max(17,notes.column);
  const allRows=report.rows.filter(item=>!discarded.has(item.row));
@@ -333,7 +397,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
   const transferWarning=missingTransfers.length?
     'ترحيلات عمر لم تتسع لها خانات سجى: '+missingTransfers.join('، '):'';
   const removed=removedNotes.get(item.row)||[];
-  const cleanupNote=removed.length?'أُزيل صف أزرق مكرر أُضيف بتصدير سابق (صف '+removed.join('، ')+')؛ رقم الفاتورة محفوظ هنا مرة واحدة':'';
+  const cleanupNote=removed.length?'دُمج الصف '+removed.join('، ')+' في هذا الصف بموافقة المستخدم؛ رقم الفاتورة يظهر مرة واحدة':'';
   const note=[discrepancy,transferWarning,cleanupNote].filter(Boolean).join(' | ');
   const effectiveState=item.origin==='project'?'project_only':transferWarning?'review':item.state;
   if(note){
