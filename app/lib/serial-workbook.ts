@@ -223,16 +223,16 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
     throw Error('الصف '+rowNo+' يحتوي معادلات؛ لا يمكن دمجه بأمان.');
    // Validate everything before removing this copy. Do not discard distinct
    // non-transfer content or silently replace a source cell.
-   const mergeTransfers:string[]=[];
-   const special=new Set([1,2,3,4,5,6,notes.column]);
+   const mergeTransfers:{number:string;column:number}[]=[];
+   const special=new Set([2,3,4,5,6,notes.column]);
    for(const cell of children(row,'c')){
     const col=cellColumn(cell.getAttribute('r')||'');
     const raw=text(cell,pkg.shared);
     if(!raw||special.has(col))continue;
     if(col>=11&&col<=17){
-     mergeTransfers.push(...(raw.match(/\d{4,20}/g)||[]));
      if(!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(raw))
       throw Error('صف '+rowNo+': بيانات غير رقمية في خانة ترحيل؛ يحتاج مراجعة قبل الدمج.');
+     mergeTransfers.push(...(raw.match(/\d{4,20}/g)||[]).map(number=>({number,column:col})));
      continue;
     }
     const retained=getCell(keeper,columnName(col)+proposal.keepRow);
@@ -246,20 +246,38 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
    const branchAlias=kBranch!==sBranch;
    if(branchAlias&&actual.rows.find(item=>item.row===rowNo)?.origin!=='project')
     throw Error('فرع الفاتورة مختلف بين صفّي '+proposal.keepRow+' و'+rowNo+'؛ لا يجوز دمج صفّي سجى مختلفين.');
-   const already=new Set<string>();
+   const transferSlots=new Map<string,number>();
    for(let col=11;col<=17;col++)
-    for(const value of (text(getCell(keeper,columnName(col)+proposal.keepRow),pkg.shared).match(/\d{4,20}/g)||[]))
-     already.add(value);
-   const overflow:string[]=[];
-   for(const number of new Set(mergeTransfers)){
-    if(already.has(number))continue;
-    const free=Array.from({length:7},(_,i)=>11+i).find(col=>{
-     const cell=getCell(keeper,columnName(col)+proposal.keepRow);
-     return !cell||(!find(cell,'f')&&!text(cell,pkg.shared));
-    });
-    if(free===undefined){overflow.push(number);continue;}
-    overwriteText(d,ensureCell(d,keeper,free,proposal.keepRow),number);
-    already.add(number);
+    for(const number of (text(getCell(keeper,columnName(col)+proposal.keepRow),pkg.shared).match(/\d{4,20}/g)||[]))
+     transferSlots.set(number,col);
+   for(const item of mergeTransfers){
+    const originalCol=transferSlots.get(item.number);
+    if(originalCol!==undefined){
+     const sameCategory=(item.column>=13&&originalCol>=13)||item.column===originalCol;
+     if(!sameCategory)
+      throw Error('ترحيل '+item.number+' مصنف بأعمدة مختلفة بين الصفين؛ لا يمكن دمجه دون مراجعة اتجاهه.');
+     continue;
+    }
+    if(item.column===11||item.column===12){
+     const existing=getCell(keeper,columnName(item.column)+proposal.keepRow);
+     if(existing&&text(existing,pkg.shared))
+      throw Error('ترحيل رئيسي أو نواشف مختلف في الصفين '+proposal.keepRow+' و'+rowNo+
+       '؛ لا يجوز نقل رقم الترحيل إلى عمود باتجاه مختلف.');
+     if(existing&&find(existing,'f'))
+      throw Error('خلية ترحيل تحتوي معادلة في الصف '+proposal.keepRow+'؛ لا يمكن تعديلها.');
+     overwriteText(d,ensureCell(d,keeper,item.column,proposal.keepRow),item.number);
+     transferSlots.set(item.number,item.column);
+    }else{
+     const free=Array.from({length:5},(_,i)=>13+i).find(col=>{
+      const cell=getCell(keeper,columnName(col)+proposal.keepRow);
+      return !cell||(!find(cell,'f')&&!text(cell,pkg.shared));
+     });
+     if(free===undefined)
+      throw Error('خانات التعديلات M:Q لا تتسع لترحيل '+item.number+
+       '؛ لم يتم حذف الصف المكرر حفاظًا على أرقام الترحيلات.');
+     overwriteText(d,ensureCell(d,keeper,free,proposal.keepRow),item.number);
+     transferSlots.set(item.number,free);
+    }
    }
    for(const cell of children(row,'c')){
     const col=cellColumn(cell.getAttribute('r')||''),raw=text(cell,pkg.shared);
@@ -274,7 +292,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
    const additional=['دمج مع الصف '+rowNo+' بموافقة المستخدم',
     branchAlias?'اسم الفرع في صف '+rowNo+': '+(sBranch||'غير مسجل')+'؛ فرع سجى المحتفظ به: '+(kBranch||'غير مسجل'):'',
     sourceNote&&!existing.includes(sourceNote)?sourceNote:'',
-    overflow.length?'ترحيلات لم تتسع لها الخانات: '+overflow.join('، '):''].filter(Boolean);
+    ].filter(Boolean);
    overwriteText(d,noteCell,[existing,...additional].filter(Boolean).join(' | '));
    data.removeChild(row);rowElements.delete(rowNo);discarded.set(rowNo,proposal.keepRow);
    removedNotes.set(proposal.keepRow,[...(removedNotes.get(proposal.keepRow)||[]),rowNo]);
