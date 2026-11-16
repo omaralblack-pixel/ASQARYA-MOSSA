@@ -172,8 +172,23 @@ assert.equal(evaluateSerial([guessedSaja],[linkedDated]).projectOnly.length,0,
  'A Saja number typo uniquely linked by transfer must not append the same saved invoice again');
 const duplicateProject=record('duplicate-project',[dated('2629999988','12.345')],[transfer('2619095','DAR00001','001','011')]);
 const duplicateResult=evaluateSerial([row(5,'2624002303','186.400')],[correct,projectOnly,duplicateProject]);
-assert.equal(duplicateResult.projectOnly.length,2,'Conflicting saved invoices must stay visible instead of being silently discarded');
-assert.ok(duplicateResult.projectOnly.every(row=>serialReviewNote(row).includes('مكرر في سجلات المشروع')));
+assert.equal(duplicateResult.projectOnly.length,1,'Each project-only invoice number is exported once despite duplicate saved records');
+assert.equal(duplicateResult.projectOnly[0].number,'2629999988');
+assert.ok(serialReviewNote(duplicateResult.projectOnly[0]).includes('مكرر في سجلات المشروع'));
+assert.deepEqual(serialInvoiceColumns(duplicateResult.projectOnly[0]),
+ ['2619091','2619092','2619093','2619095'],'Every conflicting source transfer stays visible on the single invoice row');
+assert.ok(duplicateResult.blockers.some(message=>message.includes('2629999988')&&message.includes('مكرر')));
+const disagreement=record('duplicate-amount',[dated('2629999988','13.200')],[transfer('2619096','DAR00001','001','011')]);
+const conflicting=evaluateSerial([row(5,'2624002303','186.400')],[correct,projectOnly,disagreement]);
+assert.equal(conflicting.projectOnly.length,1,'A contradictory amount must never generate a second invoice number');
+assert.ok(serialReviewNote(conflicting.projectOnly[0]).includes('12.345 / 13.200'),
+ 'Both saved amounts remain in the conflict note');
+assert.equal(conflicting.projectOnly[0].state,'review','Conflicted records must not silently become matched');
+assert.equal(new Set(conflicting.projectOnly.map(item=>item.number)).size,conflicting.projectOnly.length);
+const onSaja=evaluateSerial([row(5,'2629999988','12.345')],[projectOnly,disagreement]);
+assert.equal(onSaja.projectOnly.length,0,'A number found in Saja must never be re-appended in blue');
+assert.equal(onSaja.rows[0].state,'review','A stored duplicate found in Saja requires review');
+assert.ok(onSaja.rows[0].reason.includes('13.200'),'Saja reviewer sees the saved conflict');
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: confirmed arrival is counted despite amount/number differences while uncertain links remain unresolved');
 console.log('PASS: serial soldier ignores ALL personal pages for both historical and new groups while retaining true validation errors');
