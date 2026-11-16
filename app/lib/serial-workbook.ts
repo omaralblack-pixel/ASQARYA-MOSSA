@@ -302,7 +302,7 @@ function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:Se
  if(view)view.setAttribute('activeTab',String(sheetIndex));
  const first=days[0].slice(8)+'-'+days[0].slice(5,7)+'-'+days[0].slice(0,4);
  for(const named of Array.from(book.getElementsByTagNameNS(NS,'definedName')))
-  if(named.textContent?.includes('للطباعة'))named.textContent=named.textContent.replace(/للطباعة/g,first);
+  if(named.textContent?.includes('للطباعة'))named.textContent=named.textContent.replace(/'?للطباعة'?(?=!)/g,"'"+first+"'");
  pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(book));
  pkg.files['xl/_rels/workbook.xml.rels']=strToU8(new XMLSerializer().serializeToString(rels));
 
