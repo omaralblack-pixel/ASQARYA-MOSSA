@@ -8,7 +8,7 @@ import type {BlueLine} from '../../lib/aqaba';
 import schemaStatements from '../../lib/reconciliation-schema.json';
 import branches from '../../branches.json';
 import drivers from '../../drivers.json';
-import {reconcile,readReconciliationRecord,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,digits,sapInvoiceNumbers,approvedBranchException,type BranchException,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
+import {reconcile,readReconciliationRecord,prepareReconciliation,withInvoiceDates,sapReferences,documentNo,invoiceDocumentNo,dateValue,parseTransfer,transferNumbers,digits,fils,sapInvoiceNumbers,approvedBranchException,type BranchException,type Draft,type Item,type TransferSource} from '../../lib/reconcile';
 export const dynamic='force-dynamic';
 declare const __ASQARYA_COMMIT__:string;
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
@@ -460,7 +460,10 @@ if(b.action==='linkReference'){
  if(!item||item.active!==true)return json({error:'أكمل تعريف الصنف قبل الربط'},400);
  const existing=current.find(entry=>entry.code===item.code);
  const occupied=sapReferences(current).find(entry=>entry.sapCode===item.sapCode);
- if(occupied?.active&&occupied.code===item.code)return json({reference:current});
+ if(occupied?.active&&occupied.code===item.code){
+  if(b.aqabaPrice===undefined)return json({reference:current});
+  items=current;
+ }else{
  if(occupied&&(occupied.code!==item.code||occupied.active||existing?.sapCode!==item.sapCode))return json({error:'كود SAP مرتبط مسبقًا. راجع مرجع الأصناف أو حدّث الصفحة.'},409);
  if(existing&&existing.sapCode!==item.sapCode){
   if(!existing.active)return json({error:'فعّل صنف المؤسسة في المرجع قبل إضافة كود SAP آخر.'},409);
@@ -468,6 +471,7 @@ if(b.action==='linkReference'){
   items=current.map(entry=>entry===existing?{...entry,sapAliases:[...(entry.sapAliases||[]),{sapCode,sapUnit,cartonPieces,kgPerPiece}]}:entry);
  }else{
   items=existing?current.map(entry=>entry===existing?{...item,sapAliases:existing.sapAliases}:entry):[...current,item];
+ }
  }
 }else if(b.action==='saveReferenceItem'){
  const item=b.item as Item;
@@ -479,10 +483,31 @@ if(b.action==='linkReference'){
  return json({error:'تغيّر مرجع الأصناف. حدّث المرجع وأعد المحاولة.'},409);
 }
 if(!Array.isArray(items)||items.length<1||items.length>500)return json({error:'قائمة الأصناف غير صالحة'},400);
+if(b.aqabaPrice!==undefined){
+ const sapCode=String(b.aqabaSapCode||b.item?.sapCode||'');
+ const price=typeof b.aqabaPrice==='string'?fils(b.aqabaPrice):null;
+ if(price===null||price>100000000)return json({error:'أدخل سعر العقبة للحبة بالدينار بدقة حتى ثلاثة منازل، دون قيمة سالبة.'},400);
+ const owner=(items as Item[]).find(item=>item&&item.code===b.item?.code&&
+  [item.sapCode,...(item.sapAliases||[]).map(alias=>alias.sapCode)].includes(sapCode));
+ if(!owner)return json({error:'اربط كود SAP بصنف المؤسسة قبل حفظ سعر العقبة.'},400);
+ const old=sapReferences(current).find(item=>item.sapCode===sapCode)?.aqabaPrices?.[sapCode]??null;
+ if(JSON.stringify(old)!==JSON.stringify(b.aqabaPricePrevious))return json({error:'تغيّر سعر العقبة. افتح الصنف مجددًا قبل الحفظ.'},409);
+ items=(items as Item[]).map(item=>item===owner?{...item,aqabaPrices:{...item.aqabaPrices,
+  [sapCode]:{price,updatedAt:new Date().toISOString()}}}:item);
+}
+
 const codes=new Set<string>(),sap=new Set<string>();
 for(const item of items as Item[]){
  if(!item||!/^\d{8}$/.test(item.code)||!item.name?.trim()||item.name.length>350||codes.has(item.code)||typeof item.active!=='boolean'||item.price!==null&&(!Number.isInteger(item.price)||item.price<0||item.price>100000000)||item.sapAliases!==undefined&&(!Array.isArray(item.sapAliases)||item.sapAliases.some(alias=>!alias||typeof alias!=='object')))return json({error:'راجع رقم المؤسسة وتسمية الصنف والسعر.'},400);
  codes.add(item.code);
+ if(item.aqabaPrices!==undefined){
+  const allowed=new Set([item.sapCode,...(item.sapAliases||[]).map(alias=>alias.sapCode)]);
+  if(!item.aqabaPrices||typeof item.aqabaPrices!=='object'||Array.isArray(item.aqabaPrices)||
+    Object.entries(item.aqabaPrices).some(([sapCode,value])=>!allowed.has(sapCode)||!value||
+      !Number.isInteger(value.price)||value.price<0||value.price>100000000||
+      typeof value.updatedAt!=='string'||!/^\d{4}-\d{2}-\d{2}T/.test(value.updatedAt)))
+   return json({error:'راجع أسعار العقبة وأكواد SAP المرتبطة بها.'},400);
+ }
  for(const entry of [item,...(item.sapAliases||[])]){
   if(!/^[A-Z]{2,6}\d{3,10}$/.test(entry.sapCode)||sap.has(entry.sapCode)||!['Piece','Carton','KG'].includes(entry.sapUnit)||entry.cartonPieces!==null&&(!Number.isInteger(entry.cartonPieces)||entry.cartonPieces<=0||entry.cartonPieces>100000)||entry.kgPerPiece!==null&&(!Number.isFinite(entry.kgPerPiece)||entry.kgPerPiece<=0||entry.kgPerPiece>10000))return json({error:'راجع أكواد SAP والوحدات والشدّات. كل كود SAP يُربط بصنف مؤسسة واحد.'},400);
   sap.add(entry.sapCode);

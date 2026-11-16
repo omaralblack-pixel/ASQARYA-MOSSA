@@ -87,6 +87,9 @@ const [editOriginal,setEditOriginal]=useState<Item|null>(null);
 const focusOpenedTransfers=useRef(false);
 const [editAlias,setEditAlias]=useState('');
 const [linkQuery,setLinkQuery]=useState('');
+const [editorAqabaReference,setEditorAqabaReference]=useState<Item[]>([]);
+const [aqabaPriceInput,setAqabaPriceInput]=useState('');
+const [aqabaPriceDirty,setAqabaPriceDirty]=useState(false);
 const [sapPreview,setSapPreview]=useState<{groups:SapImportGroup[];records:{id:string;payload:string}[]}>({groups:[],records:[]});
 const [correctTransferInvoice,setCorrectTransferInvoice]=useState(false);
 const [branchMismatch,setBranchMismatch]=useState<BranchExceptionRequired|null>(null);
@@ -152,6 +155,10 @@ const numbersOnly=serial.trim()!==''&&serial.trim().split(/\r?\n/).filter(line=>
 const selectedPage=pageFilter==='all'?null:Number(pageFilter);
 const aliasTarget=linkSap&&edit?reference.find(item=>item.code===digits(edit.code).trim()&&item.sapCode!==linkSap):undefined;
 const sapDefinition=edit?.sapAliases?.find(alias=>alias.sapCode===editAlias)??edit;
+const aqabaEditor=tab==='aqaba'||tab==='work'&&aqabaWork;
+const editorSapCode=sapDefinition?.sapCode||'';
+const originalAqabaPrice=editorAqabaReference.find(item=>item.sapCode===editorSapCode)?.price??null;
+useEffect(()=>{setAqabaPriceInput(originalAqabaPrice===null?'':(originalAqabaPrice/1000).toFixed(3));setAqabaPriceDirty(false)},[editorSapCode,originalAqabaPrice]);
 const singleBlueInvoice=!!draft&&draft.invoices.length===1&&!!invoiceDocumentNo(draft.invoices[0].number);
 const getPage=(key:string)=>pageNumber(prepared?.draft.pages?.[key]); // A personal check-sheet mark, never invoice ownership.
 const entryPositions=new Map(draft?.pageEntryOrder?.map((key,index)=>[key,index]));
@@ -510,43 +517,41 @@ function showDefinition(item:Item,sapCode?:string){
   setEditAlias(item.sapAliases?.some(alias=>alias.sapCode===sapCode)?sapCode!:'');
   EDIT(item);
 }
+async function loadEditorReference(){
+ const [data,pricing]=await Promise.all([api(),api(undefined,'?aqabaPricing=1')]);
+ REF(data.reference);setEditorAqabaReference(pricing.reference);
+ return data.reference as Item[];
+}
 async function openDefinition(code:string,sapCode?:string){
   await run(async()=>{
-    const {reference:latest}=await api() as {reference:Item[]};
-    REF(latest);
+    const latest=await loadEditorReference();
     const item=latest.find(entry=>entry.code===code);
     if(!item)throw Error('هذا الصنف محفوظ في الكشف القديم. عرّفه في مرجع الأصناف لتعديله.');
     showDefinition(item,sapCode);
   });
 }
-function newDefinition(){
-  LINK('');
-  setEditOriginal(null);
-  setEditAlias('');
+async function newDefinition(){
+ await run(async()=>{
+  await loadEditorReference();LINK('');setEditOriginal(null);setEditAlias('');
   EDIT({code:'',sapCode:'',name:'',price:null,invoicePack:null,cartonPieces:null,sapUnit:'Piece',warehouseUnit:null,kgPerPiece:null,active:true});
+ });
 }
 async function openLink(row:NonNullable<typeof result>['rows'][number]){
-  await run(async()=>{
-    const {reference:latest}=await api() as {reference:Item[]};
-    REF(latest);
-    const existing=sapReferences(latest).find(item=>item.sapCode===row.sapCode);
-    if(existing?.active){
-      const owner=latest.find(item=>item.code===existing.code)!;
-      showDefinition(owner,row.sapCode);
-      return;
-    }
-    const inactive=existing&&latest.find(item=>item.code===existing.code);
-    if(inactive){
-      showDefinition(inactive,row.sapCode);
-      EDIT({...inactive,active:true});
-      return;
-    }
-    setLinkQuery('');
-    LINK(row.sapCode);
-    setEditOriginal(null);
-    setEditAlias('');
-    EDIT({code:'',sapCode:row.sapCode,name:row.name.trim(),price:null,invoicePack:null,cartonPieces:null,sapUnit:row.details[0]?.unit||'Piece',warehouseUnit:null,kgPerPiece:null,active:true});
-  });
+ return openSapLink(row.sapCode,row.name,row.details[0]?.unit||'Piece');
+}
+async function openSapLink(sapCode:string,name:string,unit='Piece'){
+ await run(async()=>{
+  const latest=await loadEditorReference();
+  const existing=sapReferences(latest).find(item=>item.sapCode===sapCode);
+  if(existing){
+   const owner=latest.find(item=>item.code===existing.code)!;
+   showDefinition(owner,sapCode);
+   if(!existing.active)EDIT({...owner,active:true});
+   return;
+  }
+  setLinkQuery('');LINK(sapCode);setEditOriginal(null);setEditAlias('');
+  EDIT({code:'',sapCode,name:name.trim(),price:null,invoicePack:null,cartonPieces:null,sapUnit:unit,warehouseUnit:null,kgPerPiece:null,active:true});
+ });
 }
 function updateSapDefinition(fields:Partial<SapAlias>){
   EDIT(item=>!item?item:editAlias
@@ -554,18 +559,24 @@ function updateSapDefinition(fields:Partial<SapAlias>){
     :{...item,...fields});
 }
 function closeEdit(){EDIT(null);LINK('');setEditOriginal(null);setEditAlias('');E('')}
-async function saveItem(){
+async function saveItem(priceOnly=false){
   if(!edit)return;
   await run(async()=>{
-    const item={...edit,code:digits(edit.code).trim(),sapCode:edit.sapCode.trim(),name:edit.name.trim()};
-    const response=await api(linkSap?{action:'linkReference',item}:{action:'saveReferenceItem',item,previous:editOriginal});
+    const item=priceOnly&&editOriginal?editOriginal:{...edit,code:digits(edit.code).trim(),sapCode:edit.sapCode.trim(),name:edit.name.trim()};
+    const price=aqabaPriceInput.trim()===''?null:fils(aqabaPriceInput);
+    if(aqabaPriceInput.trim()&&(price===null||price>100000000)||priceOnly&&price===null)
+      throw Error('أدخل سعر العقبة للحبة بالدينار بدقة حتى ثلاثة منازل.');
+    const savePrice=price!==null&&(priceOnly||aqabaPriceDirty);
+    const priceFields=savePrice?{aqabaPrice:aqabaPriceInput,aqabaSapCode:editorSapCode,
+      aqabaPricePrevious:sapReferences(reference).find(item=>item.sapCode===editorSapCode)?.aqabaPrices?.[editorSapCode]??null}:{};
+    const response=await api(linkSap?{action:'linkReference',item,...priceFields}:{action:'saveReferenceItem',item,previous:editOriginal,...priceFields});
     REF(response.reference);
     if(tab==='work'){
       const sapCode=editAlias||item.sapCode;
       D(d=>d?{...d,linkedSapCodes:[...new Set([...(d.linkedSapCodes||[]),sapCode])]}:d);
     }
     closeEdit();
-    N(linkSap?'تم حفظ الربط في المرجع وتحديث الكشف.':'تم حفظ تعريف الصنف في المرجع.');
+    N(savePrice?'تم حفظ سعر العقبة'+(linkSap?' وربط الصنف':'')+' وتحديث السعر المعتمد للمطابقة.':linkSap?'تم حفظ الربط في المرجع وتحديث الكشف.':'تم حفظ تعريف الصنف في المرجع.');
   });
 }
 function excludeItem(row:NonNullable<typeof result>['rows'][number]){
@@ -659,8 +670,8 @@ async function save() {
 }
 function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);COLS(monthlyColumns(text))}
 if(!draft)return <div className="initial">جاري تجهيز مساحة المطابقة…</div>;
-return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="topbar-private"><span className="private-dot"/>مساحة عمل خاصة</span><ThemeToggle/><form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');T(key);if(key==='history'||key==='invoices'||key==='monthly')void run(getRecords)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
-{tab==='aqaba'&&<AqabaWorkspace/>}
+return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="topbar-private"><span className="private-dot"/>مساحة عمل خاصة</span><ThemeToggle/><form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');T(key);if(key==='history'||key==='invoices'||key==='monthly')void run(getRecords)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{error&&!edit&&<div className="banner error" role="alert"><span>{error}</span><button type="button" aria-label="إغلاق التنبيه" onClick={()=>E('')}>×</button></div>}{notice&&<div className="banner success" role="status"><span>{notice}</span><button type="button" aria-label="إغلاق الرسالة" onClick={()=>N('')}>×</button></div>}{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
+{tab==='aqaba'&&<AqabaWorkspace catalog={reference} onEditPrice={(sapCode,name)=>void openSapLink(sapCode,name)}/>}
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
@@ -713,7 +724,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
     }
     assignPage(r.key,value);
     input.value=String(pageNumber(value)||'');
-  }}/><span className="print-check">{getPage(r.key)}</span></td><td className="name-cell"><b>{r.name}</b>{r.details.length>0&&<details className="no-print"><summary>تفاصيل SAP</summary>{r.details.map((l,j)=><p key={j}>ترحيل {l.transferNo} · {l.quantity} {l.unit} · {l.from} ← {l.to}</p>)}</details>}{r.errors.map((e,j)=><small className="red" key={j}>{e}</small>)}<button type="button" className="text-button no-print" onClick={()=>excludeItem(r)}>استبعاد من الفاتورة</button>{aqabaWork?<><button type="button" className="button secondary small no-print" disabled={busy} onClick={()=>openLink(r)}>{sapReferences(reference).some(item=>item.active&&item.sapCode===r.sapCode)?'تعديل ربط الصنف':'ربط الصنف'}</button><small className="hint no-print">{r.unitPrice===null?'سعر العقبة غير مسجّل لهذا الصنف. ':''}سعر العقبة يُدار من شاشة العقبة</small></>:r.item?<button className="text-button" disabled={busy} onClick={()=>openDefinition(r.code,r.sapCode)}>تعديل التعريف</button>:<button className="button secondary small no-print" disabled={busy} onClick={()=>openLink(r)}>ربط الصنف</button>}</td><td className="qty">{r.transfer===null?num(r.transfer):<><button type="button" className="qty-check no-print" aria-pressed={checked} aria-label={'تشييك كمية '+r.name+'، '+num(r.transfer)+' حبة'} onClick={()=>toggleQuantityCheck(r.key,signature)}>{num(r.transfer)}</button><span className="print-check">{num(r.transfer)}</span></>}</td><td>{money(r.unitPrice)}</td><td>{money(r.expected)}</td></tr>})}</tbody></table>{result.rows.length>0&&!visibleRows.length&&<div className="empty">لا توجد أصناف ضمن العرض الحالي.</div>}{!result.rows.length&&<div className="empty"><ClipboardPaste size={35}/><h3>ألصق أول ترحيل ليظهر كشف المؤسسة</h3><p>الكميات تُحسب بالحبة من وحدات وشدّات SAP.</p></div>}</div>
+  }}/><span className="print-check">{getPage(r.key)}</span></td><td className="name-cell"><b>{r.name}</b>{r.details.length>0&&<details className="no-print"><summary>تفاصيل SAP</summary>{r.details.map((l,j)=><p key={j}>ترحيل {l.transferNo} · {l.quantity} {l.unit} · {l.from} ← {l.to}</p>)}</details>}{r.errors.map((e,j)=><small className="red" key={j}>{e}</small>)}<button type="button" className="text-button no-print" onClick={()=>excludeItem(r)}>استبعاد من الفاتورة</button>{aqabaWork?<><button type="button" className="button secondary small no-print" disabled={busy} onClick={()=>openLink(r)}>{sapReferences(reference).some(item=>item.active&&item.sapCode===r.sapCode)?'تعديل ربط الصنف':'ربط الصنف'}</button><button type="button" className="text-button no-print" disabled={busy} onClick={()=>openLink(r)}>{r.unitPrice===null?'إضافة سعر العقبة':'تعديل سعر العقبة'}</button></>:r.item?<button className="text-button" disabled={busy} onClick={()=>openDefinition(r.code,r.sapCode)}>تعديل التعريف</button>:<button className="button secondary small no-print" disabled={busy} onClick={()=>openLink(r)}>ربط الصنف</button>}</td><td className="qty">{r.transfer===null?num(r.transfer):<><button type="button" className="qty-check no-print" aria-pressed={checked} aria-label={'تشييك كمية '+r.name+'، '+num(r.transfer)+' حبة'} onClick={()=>toggleQuantityCheck(r.key,signature)}>{num(r.transfer)}</button><span className="print-check">{num(r.transfer)}</span></>}</td><td><button type="button" className="text-button no-print" disabled={busy} aria-label={'تعديل سعر '+r.name} onClick={()=>aqabaWork||!r.item?openLink(r):openDefinition(r.code,r.sapCode)}>{money(r.unitPrice)} · تعديل السعر</button><span className="print-check">{money(r.unitPrice)}</span></td><td>{money(r.expected)}</td></tr>})}</tbody></table>{result.rows.length>0&&!visibleRows.length&&<div className="empty">لا توجد أصناف ضمن العرض الحالي.</div>}{!result.rows.length&&<div className="empty"><ClipboardPaste size={35}/><h3>ألصق أول ترحيل ليظهر كشف المؤسسة</h3><p>الكميات تُحسب بالحبة من وحدات وشدّات SAP.</p></div>}</div>
 <div className="blue-total">
   <b>قيمة الترحيلات في المجموعة: {money(expected)} دينار</b>
   <span>مجموع مبالغ الفواتير الزرقاء: {money(paperAmount)} دينار</span>
@@ -789,6 +800,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
       <h2 id="institution-definition-title">{linkSap?'ربط صنف SAP بالمؤسسة':'تعريف صنف المؤسسة'}</h2>
       <button type="button" className="icon-button" aria-label="إغلاق" disabled={busy} onClick={closeEdit}>×</button>
     </div>
+    {error&&<div className="banner error" role="alert">{error}</div>}
     <p className="hint">{linkSap
       ?'أدخل رقم المادة بالمؤسسة. إذا كان الرقم موجودًا، يُضاف كود SAP لهذا الصنف وتحدد شدّة الكود الجديد حسب الحاجة.'
       :'يُحفظ التعديل في المرجع. تحتفظ الكشوف المحفوظة بقيمها المسجلة وقت الحفظ.'}</p>
@@ -804,7 +816,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
         <p className="hint">اختر الصنف الصحيح، أو أدخل رقم المادة أدناه لتعريف صنف جديد.</p>
       </div>}
     </div>}
-    {aqabaWork&&<p className="hint">الربط والشدّة يُحفظان في مرجع الأصناف. سعر العقبة يُحفظ مستقلًا من شاشة العقبة.</p>}
+    <p className="hint">سعر العقبة الذي تحفظه هنا يُستخدم مباشرة في مطابقة العقبة ويظهر في مرجع أسعارها.</p>
     <div className="two-fields">
       <label>رقم المادة بالمؤسسة
         <input dir="ltr" value={edit.code} disabled={Boolean(editOriginal)} onChange={e=>EDIT({...edit,code:e.target.value})}/>
@@ -821,13 +833,17 @@ return <div className="recon-app"><header className="topbar"><a className="brand
       </select>
     </label>}
     {aliasTarget
-      ?<p>ربط بكود إضافي للصنف <b>{aliasTarget.name}</b> ({aliasTarget.code}). {aqabaWork?'سعر العقبة مستقل عن سعر المؤسسة.':'سيُستخدم سعر الحبة المسجل للصنف.'}</p>
+      ?<p>ربط بكود إضافي للصنف <b>{aliasTarget.name}</b> ({aliasTarget.code}). {aqabaEditor?'سعر العقبة مستقل عن سعر المؤسسة.':'سيُستخدم سعر الحبة المسجل للصنف.'}</p>
       :<label>تسمية المؤسسة<input value={edit.name} onChange={e=>EDIT({...edit,name:e.target.value})}/></label>}
     <div className="two-fields">
-      {!aliasTarget&&!aqabaWork&&<label>سعر الحبة بالدينار
+      {!aliasTarget&&!aqabaEditor&&<label>سعر المؤسسة للحبة بالدينار
         <input type="number" step="0.001" min="0" value={edit.price===null?'':edit.price/1000}
           onChange={e=>EDIT({...edit,price:e.target.value===''?null:Math.round(Number(e.target.value)*1000)})}/>
       </label>}
+      <label>سعر العقبة للحبة بالدينار
+        <input inputMode="decimal" dir="ltr" value={aqabaPriceInput} placeholder="0.000"
+          onChange={e=>{setAqabaPriceInput(e.target.value);setAqabaPriceDirty(true)}}/>
+      </label>
       <label>حبات كرتونة SAP
         <input type="number" min="1" value={sapDefinition.cartonPieces??''}
           onChange={e=>updateSapDefinition({cartonPieces:e.target.value===''?null:Number(e.target.value)})}/>
@@ -846,8 +862,11 @@ return <div className="recon-app"><header className="topbar"><a className="brand
       <input type="checkbox" checked={edit.active} disabled={Boolean(linkSap)} onChange={e=>EDIT({...edit,active:e.target.checked})}/>
       الصنف ضمن قائمة المؤسسة المفعّلة
     </label>
-    <button type="button" className="button primary" disabled={busy} onClick={saveItem}>
-      <Save size={16}/>{linkSap?'حفظ الربط':'حفظ التعريف'}
+    {editOriginal&&<button type="button" className="button secondary" disabled={busy||!aqabaPriceInput.trim()} onClick={()=>void saveItem(true)}>
+      <Save size={16}/>حفظ سعر العقبة فقط
+    </button>}
+    <button type="button" className="button primary" disabled={busy} onClick={()=>void saveItem()}>
+      <Save size={16}/>{linkSap?'حفظ الربط والسعر':'حفظ التعريف والأسعار'}
     </button>
   </section>
 </div>}</div>}

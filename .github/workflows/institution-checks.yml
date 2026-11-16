@@ -60,7 +60,9 @@ jobs:
           python3 scripts/test-invoice-register.py
           python3 scripts/test-document-uniqueness.py
       - name: Aqaba document reconciliation regression tests
-        run: node scripts/test-aqaba.mjs
+        run: |
+          node scripts/test-aqaba.mjs
+          node scripts/test-aqaba-price-edit.mjs
       - name: TypeScript validation
         run: pnpm exec tsc --noEmit
       - name: Appearance, print and login checks
