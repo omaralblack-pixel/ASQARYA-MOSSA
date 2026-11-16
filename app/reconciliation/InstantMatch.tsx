@@ -211,7 +211,8 @@ export default function InstantMatch({
       setBusy(true);
       setError('');
       try {
-        const [latestRecords,queued]=await Promise.all([refreshRecords(),searchImportedSap(searched)]);
+        const latestRecords = await refreshRecords();
+        const queued=await searchImportedSap(searched);
         setQueueMatches(queued);
         const latest = matchingDocuments(latestRecords,imports,searched,selectedKind,queued);
         setSuggestionsOpen(true);
