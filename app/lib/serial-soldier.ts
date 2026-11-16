@@ -112,8 +112,28 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
       }
     }
     if(candidates.length>1){
-      blockers.push('رقم الفاتورة '+number+' مكرر في سجلات المشروع ('+candidates.length+' مرات).');
-      return {...base,state:'review',reason:'رقم الفاتورة مكرر في سجلات المشروع'};
+      // Collapse conflicting saved records into ONE invoice-number projection.
+      // Preserve every record and transfer in the database, and surface disagreements.
+      const amounts=[...new Set(candidates.map(saved=>String(saved.invoice.amount||'')))];
+      const branches=[...new Set(candidates.map(saved=>saved.record.branch||'').filter(Boolean))];
+      const dates=[...new Set(candidates.map(saved=>dateValue(saved.invoice.date||'')).filter(Boolean))];
+      const links=candidates.map(saved=>serialTransfer(saved.draft,saved,transferOwner,blockers,legacyWarnings));
+      const transfers=[...new Map(links.flatMap(link=>link.assigned).map(t=>[t.number,t])).values()];
+      const unassignedTransfers=[...new Map(links.flatMap(link=>link.unassigned).map(t=>[t.number,t])).values()]
+        .filter(t=>!transfers.some(link=>link.number===t.number));
+      const conflicts=[
+        'رقم الفاتورة مكرر في سجلات المشروع ('+candidates.length+' مرات؛ السجلات: '+
+          [...new Set(candidates.map(saved=>saved.record.id))].join('، ')+')',
+        ...(amounts.length>1?['المبالغ المختلفة: '+amounts.join(' / ')]:[]),
+        ...(branches.length>1?['الفروع المختلفة: '+branches.join(' / ')]:[]),
+        ...(dates.length>1?['التواريخ المختلفة: '+dates.join(' / ')]:[]),
+      ];
+      blockers.push('رقم الفاتورة '+number+': '+conflicts.join('؛ ')+'.');
+      for(const saved of candidates)
+        represented.add(saved.record.id+'|'+number);
+      return {...base,state:'review',reason:conflicts.join('؛ '),
+        branch:branches.join(' / '),omarNumber:number,omarAmount:amounts.length===1?amounts[0]:'',
+        transfers,unassignedTransfers};
     }
     if(!candidates.length)return base;
     const saved=candidates[0], amount=fils(row.amount);
@@ -153,8 +173,10 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
     const appended=new Set<string>();
     for(const invoice of collected.rows){
       const number=normalNumber(invoice.number),key=invoice.recordId+'|'+number;
-      if(!/^\d{8,20}$/.test(number)||inWorkbook.has(number)||represented.has(key)||appended.has(key))continue;
-      appended.add(key);
+      if(!/^\d{8,20}$/.test(number)||inWorkbook.has(number)||represented.has(key)||appended.has(number))continue;
+      // Deduplicate by invoice NUMBER, never by record ID. A conflicting
+      // project record becomes a review note on this one exported invoice.
+      appended.add(number);
       const checked=evaluate({row:-(projectOnly.length+1),number,amount:invoice.amount,date:invoice.date,origin:'project'});
       projectOnly.push({...checked,branch:invoice.branch,omarNumber:number,omarAmount:invoice.amount});
     }
