@@ -192,3 +192,5 @@ h2{display:block}aside{position:relative}header.topbar{height:86px;padding:0 36p
 .sap-files .row-actions{gap:6px;flex-wrap:wrap}
 .sap-files .sap-file-picker{position:relative}
 .sap-files .sap-file-picker:focus-within{outline:2px solid #237b88;outline-offset:3px}
+.link-search-results{display:grid;gap:.5rem;max-height:18rem;overflow:auto;margin-top:.75rem}
+.link-search-results .button{justify-content:flex-start;text-align:right;white-space:normal}
