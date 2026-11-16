@@ -1,5 +1,5 @@
 'use client';
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import {readAqabaOfficial,readAqabaBlue,readAqabaTransfers,readAqabaJournal,auditAqabaJournal,compareAqaba,reviewAqabaTransfers,AQABA_CUSTOMER,
  type AqabaLine,type BlueLine,type AqabaTransfer,type AqabaMovement} from '../lib/aqaba';
 import {defaultAqabaDates,officialAqabaQuery,transferAqabaQuery,aqabaInventoryQuery} from '../lib/aqaba-query';
@@ -23,6 +23,7 @@ async function request(body?:unknown,query=''):Promise<any>{
 }
 export default function AqabaWorkspace(){
  const [from,F]=useState(initial.from),[to,T]=useState(initial.to);
+ const loadRevision=useRef(0);
  const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState(''),[journalPaste,JP]=useState('');
  const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[],journal:[]});
  const [packs,PACK]=useState<Record<string,number>>({});
@@ -92,6 +93,7 @@ export default function AqabaWorkspace(){
  const [expanded,EXP]=useState('');
  const load=async()=>{
   if(!from||!to||from>to)return;
+  const revision=++loadRevision.current;
   LOADING(true);
   try{
    const all:ResponseData={official:[],blue:[],transfers:[],journal:[],partial:false};
@@ -106,8 +108,9 @@ export default function AqabaWorkspace(){
     offset=next;
    }
    if(!complete)throw Error('عدد صفحات العقبة يتجاوز حد الفحص. ضيّق الفترة حتى يمكن التحقق من جميع المستندات.');
-   S(all);PART(false);
-  }finally{LOADING(false)}
+   if(revision===loadRevision.current){S(all);PART(false)}
+  }catch(error){if(revision===loadRevision.current)throw error;
+  }finally{if(revision===loadRevision.current)LOADING(false)}
  };
  useEffect(()=>{load().catch(e=>E(e.message))},[from,to]);
  useEffect(()=>{
