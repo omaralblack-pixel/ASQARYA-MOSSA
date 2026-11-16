@@ -1,6 +1,6 @@
 import {strFromU8,strToU8,unzipSync,zipSync} from 'fflate';
 import {digits,dateValue as invoiceDateValue,fils} from './reconcile';
-import {PROJECT_ONLY_NOTE,serialInvoiceColumns,serialReviewNote,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
+import {PROJECT_ONLY_NOTE,duplicateGeneratedSerialRows,serialInvoiceColumns,serialReviewNote,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
 
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -202,9 +202,22 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
  const d=pkg.doc,data=find(d,'sheetData')!;
  const rowElements=new Map(children(data,'row').map(row=>[Number(row.getAttribute('r')),row]));
  const notes=notesColumn(rowElements,pkg,report);
+ const discarded=duplicateGeneratedSerialRows(actual.rows);
+ const removedNotes=new Map<number,number[]>();
+ for(const [rowNo,keptRow] of discarded){
+  const row=rowElements.get(rowNo);
+  if(!row)continue;
+  // This is only a blue, previously generated row; original Saja rows are not deleted.
+  // If it has been edited to contain a formula, do not silently discard that work.
+  if(row.getElementsByTagNameNS(NS,'f').length)
+   throw Error('الصف الأزرق المكرر '+rowNo+' يحتوي معادلات؛ راجعه قبل حذف التكرار.');
+  data.removeChild(row);rowElements.delete(rowNo);
+  removedNotes.set(keptRow,[...(removedNotes.get(keptRow)||[]),rowNo]);
+ }
  const last=Math.max(17,notes.column);
- const allRows=[...report.rows];
- const template=rowElements.get(actual.rows[actual.rows.length-1]?.row);
+ const allRows=report.rows.filter(item=>!discarded.has(item.row));
+ const sourceRow=actual.rows.filter(item=>!discarded.has(item.row)).at(-1)?.row;
+ const template=sourceRow===undefined?undefined:rowElements.get(sourceRow);
  let nextRow=Math.max(4,...actual.rows.map(row=>row.row))+1;
  let sequence=Math.max(0,...actual.rows.map(item=>Number(text(getCell(rowElements.get(item.row)!,'B'+item.row),pkg.shared))||0));
  const safeBlank=(row:Element)=>children(row,'c').every(cell=>{
@@ -230,7 +243,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
   }
   for(let col=2;col<=last;col++){
    const cell=ensureCell(d,row,col,rowNo);
-   const source=template?getCell(template,columnName(col)+actual.rows[actual.rows.length-1].row):undefined;
+   const source=template&&sourceRow!==undefined?getCell(template,columnName(col)+sourceRow):undefined;
    if(source?.hasAttribute('s'))cell.setAttribute('s',source.getAttribute('s')!);
    // Keep the company's template values, without copying another invoice's data.
    if((col===7||col===8)&&!text(cell,pkg.shared)&&source&&!find(source,'f')){
@@ -319,7 +332,9 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
   const discrepancy=serialReviewNote(item);
   const transferWarning=missingTransfers.length?
     'ترحيلات عمر لم تتسع لها خانات سجى: '+missingTransfers.join('، '):'';
-  const note=[discrepancy,transferWarning].filter(Boolean).join(' | ');
+  const removed=removedNotes.get(item.row)||[];
+  const cleanupNote=removed.length?'أُزيل صف أزرق مكرر أُضيف بتصدير سابق (صف '+removed.join('، ')+')؛ رقم الفاتورة محفوظ هنا مرة واحدة':'';
+  const note=[discrepancy,transferWarning,cleanupNote].filter(Boolean).join(' | ');
   const effectiveState=item.origin==='project'?'project_only':transferWarning?'review':item.state;
   if(note){
    const cell=ensureCell(d,row,notes.column,item.row);
