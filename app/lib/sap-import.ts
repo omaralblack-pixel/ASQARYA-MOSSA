@@ -35,7 +35,12 @@ export function readSapImportRows(paste:string):{rows:string[][];issues:string[]
   const rows=paste.replace(/^\uFEFF/,'').split(/\r?\n/);
   const headerIndex=rows.findIndex(line=>line.trim());
   const columns=(rows[headerIndex]||'').split('\t').map(normalize);
+  // SAP exports can have both Remarks (branch/transfer request) and Journal
+  // Remarks (blue invoice); include every notes column, even repeated headers.
+  const noteIndexes=columns.flatMap((name,index)=>
+    /remarks?|comments?|jrnlmemo|journalmemo|notes?|ملاحظ|ريماركس/.test(name)?[index]:[]);
   const indexes=headers.map(header=>columns.indexOf(normalize(header)));
+  if(indexes[4]<0&&noteIndexes.length)indexes[4]=noteIndexes[0];
   const missing=headers.filter((_,i)=>indexes[i]<0);
   if(missing.length)return {rows:[],issues:['أعمدة مفقودة: '+missing.join('، ')]};
   const data:string[][]=[];
@@ -44,6 +49,10 @@ export function readSapImportRows(paste:string):{rows:string[][];issues:string[]
     if(!rows[i].trim())continue;
     const cells=rows[i].split('\t');
     const values=indexes.map(index=>(cells[index]||'').trim());
+    // A ten-digit blue invoice may appear only in the second Remarks column.
+    // Keep notes in separate lines so "Based On ... Request" removal never
+    // removes an invoice number from the adjacent notes column.
+    values[4]=[...new Set(noteIndexes.map(index=>(cells[index]||'').trim()).filter(Boolean))].join('\n');
     if(normalize(values[0])===normalize(headers[0]))continue;
     values[0]=digits(values[0]);
     if(!/^\d+$/.test(values[0])){
@@ -67,7 +76,16 @@ function parseSapImportUncached(paste:string,branches:string[]):{groups:SapImpor
     const meta=values.slice(1,5);
     const existing=transfers.get(number);
     const entry=existing||{meta,lines:[],reversal:false,conflict:false};
-    if(existing&&meta.some((value,index)=>value!==entry.meta[index]))entry.conflict=true;
+    if(existing){
+      // Notes are expected to vary between item rows. Merge them without
+      // declaring the entire SAP document corrupt; still flag conflicting
+      // nonempty dates/branch identifiers.
+      if(meta.slice(0,3).some((value,index)=>
+        !!value&&!!entry.meta[index]&&value!==entry.meta[index]))entry.conflict=true;
+      for(let i=0;i<3;i++)if(!entry.meta[i]&&meta[i])entry.meta[i]=meta[i];
+      entry.meta[3]=[...new Set([entry.meta[3],meta[3]]
+        .flatMap(value=>value.split('\n')).filter(Boolean))].join('\n');
+    }
     entry.lines.push(values.slice(5).join('\t'));
     entry.reversal||=/has been cancel(?:ed|led)/i.test(values[4])||(signedNumeric(values[7])??0)<0;
     transfers.set(number,entry);

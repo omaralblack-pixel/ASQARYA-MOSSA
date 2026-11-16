@@ -51,12 +51,14 @@ export function sapInvoicesFromSavedFile(text:string):SapRegisterSource{
       withoutInvoice.push(number);continue;
     }
     const distinctRemarks=[...new Set(lines.map(line=>(line[4]||'').trim()).filter(Boolean))];
-    if(distinctRemarks.length!==1){
-      issues.push('الترحيل '+number+': Remarks غير موحدة بين سطوره؛ لم يُنسب لفاتورة.');
-      withoutInvoice.push(number);
-      continue;
-    }
-    const numbers=invoiceNumbersFromRemarks(distinctRemarks[0]);
+    // The blue invoice can be written only in a second SAP remarks field
+    // or on one item row. A missing note on another row is not a conflict.
+    const invoiceSets=distinctRemarks.map(remarks=>invoiceNumbersFromRemarks(remarks));
+    const numbers=[...new Set(invoiceSets.flat())];
+    const distinctInvoiceSets=[...new Set(invoiceSets.filter(rows=>rows.length)
+      .map(rows=>[...rows].sort().join('|')))];
+    if(distinctInvoiceSets.length>1)
+      issues.push('الترحيل '+number+': أرقام الفواتير تختلف بين ملاحظات سطور SAP؛ تم عرضها للمراجعة دون اعتماد تلقائي.');
     if(!numbers.length){
       withoutInvoice.push(number);
       continue;

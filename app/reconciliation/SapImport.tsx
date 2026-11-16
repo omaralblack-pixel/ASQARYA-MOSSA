@@ -5,21 +5,25 @@ import {Search} from 'lucide-react';
 import {digits,invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
+import {groupSapEvidence,searchArchivedSapEvidence,type SapEvidence} from '../lib/sap-document-lookup';
+import {draftFromPaperInvoice} from '../lib/sap-import-paper-invoice';
 
 type SavedRecord={id:string;payload:string};
-type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;unsavedMembers:SapImportGroup['members'];originalRecordId?:string};
+type PreviewGroup=SapImportGroup&{savedIds:string[];allTransfersSaved:boolean;unsavedMembers:SapImportGroup['members'];originalRecordId?:string;linkedInvoiceNumbers:string[]};
 
 function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):PreviewGroup[]{
   const byTransfer=new Map<string,string>();
   const byInvoice=new Map<string,Set<string>>();
   const add=(map:Map<string,Set<string>>,key:string,id:string)=>{const ids=map.get(key)||new Set<string>();ids.add(id);map.set(key,ids)};
   const transferOwners=new Map<string,Set<string>>();
+  const invoicesByRecord=new Map<string,string[]>();
   for(const record of records){
     const draft=readReconciliationRecord(record.payload);
     if(!draft)continue;
     for(const transfer of draft.transfers||[]){
       for(const number of transferNumbers(transfer.number||'')){byTransfer.set(number,record.id);add(transferOwners,number,record.id)}
     }
+    invoicesByRecord.set(record.id,(draft.invoices||[]).map(invoice=>invoiceDocumentNo(invoice.number)).filter(Boolean));
     for(const invoice of draft.invoices||[]){
       const number = invoiceDocumentNo(invoice.number);
       if (number) add(byInvoice, number, record.id);
@@ -32,7 +36,8 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
     const unsavedMembers=group.members.filter(member=>!transferOwners.has(member.transfer.number));
     const allTransfersSaved=unsavedMembers.length===0;
     const original=group.members[0].canceledTransferNo;
-    return {...group,savedIds,allTransfersSaved,unsavedMembers,originalRecordId:original?byTransfer.get(original):undefined};
+    const linkedInvoiceNumbers=[...new Set(savedIds.flatMap(id=>invoicesByRecord.get(id)||[]))];
+    return {...group,savedIds,allTransfersSaved,unsavedMembers,linkedInvoiceNumbers,originalRecordId:original?byTransfer.get(original):undefined};
   });
 }
 
@@ -61,20 +66,27 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
   const [errors,setErrors]=useState<Record<string,string>>({});
   const [filter,setFilter]=useState('pending');
   const [query,setQuery]=useState('');
+  const [paperInvoice,setPaperInvoice]=useState('');
+  const [paperTransfer,setPaperTransfer]=useState('');
+  const [paperBusy,setPaperBusy]=useState(false);
+  const [paperError,setPaperError]=useState('');
   const groups=useMemo(()=>compareWithSaved(importedGroups,records),[importedGroups,records]);
   const pending=groups.filter(group=>!group.reversal&&!group.allTransfersSaved);
   const ready=groups.filter(isReady);
   const selectedGroups=ready.filter(group=>selected.includes(keyOf(group)));
   const search=searchText(query);
-  const visibleMembers=(group:PreviewGroup)=>filter==='saved'||group.reversal?group.members:group.unsavedMembers;
+  const visibleMembers=(group:PreviewGroup)=>!!search||filter==='saved'||group.reversal?group.members:group.unsavedMembers;
   const matching=groups.filter(group=>!search||[
     group.draft.branch,
     ...visibleMembers(group).flatMap(member=>[member.transfer.number,member.branchLabel,member.canceledTransferNo||'']),
     ...group.draft.invoices.map(invoice=>invoice.number),
+    ...group.linkedInvoiceNumbers,
   ].some(value=>searchText(value).includes(search)));
   const reversals=groups.filter(group=>group.reversal);
   const visibleReversals=matching.filter(group=>group.reversal);
-  const shown=matching.filter(group=>!group.reversal&&(filter==='saved'?group.allTransfersSaved:
+  // Explicit searches cross the status filter: a stored transfer must never
+  // disappear just because the default filter is 'not yet saved'.
+  const shown=matching.filter(group=>!group.reversal&&(search?true:filter==='saved'?group.allTransfersSaved:
     !group.allTransfersSaved&&(filter==='pending'||(filter==='ready'?isReady(group):!isReady(group)))));
   const shownReady=shown.filter(isReady);
   const hiddenSelected=selectedGroups.filter(group=>!shown.includes(group)).length;
@@ -132,6 +144,60 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
     }
   }
 
+  async function openPaperInvoice(){
+    const invoice=invoiceDocumentNo(paperInvoice||query);
+    const transferNo=digits(paperTransfer||(/^-?\d{4,20}$/.test(search)?search:'')).trim();
+    setPaperError('');
+    if(!/^\d{10}$/.test(invoice)||!/^\d{4,20}$/.test(transferNo)){
+      setPaperError('اكتب رقم الفاتورة الورقية (10 خانات) ورقم ترحيل SAP الصحيح من الورقة.');
+      return;
+    }
+    setPaperBusy(true);
+    try{
+      // Check the current D1 reconciliation register before creating any draft.
+      // Existing owner records must be opened in place, never duplicated.
+      const latest=await readRecords();
+      const recordsWithDraft=latest.map(row=>({row,draft:readReconciliationRecord(row.payload)}));
+      const invoiceOwner=recordsWithDraft.find(({draft})=>
+        draft?.invoices.some(item=>invoiceDocumentNo(item.number)===invoice));
+      const transferOwner=recordsWithDraft.find(({draft})=>
+        draft?.transfers.some(item=>transferNumbers(item.number).includes(transferNo)));
+      if(invoiceOwner){
+        setPaperError('الفاتورة '+invoice+' محفوظة بالفعل في السجل. تم فتح سجلها الأصلي؛ راجع ربط الترحيل '+transferNo+' قبل أي تعديل.');
+        openSaved(invoiceOwner.row.id);
+        return;
+      }
+      if(transferOwner){
+        setPaperError('الترحيل '+transferNo+' محفوظ بالفعل بدون هذه الفاتورة. تم فتح كشفه الأصلي؛ اكتب رقم الفاتورة الورقية فيه ثم راجع واحفظ. لا ننشئ نسخة ثانية.');
+        openSaved(transferOwner.row.id);
+        return;
+      }
+      let member=groups.flatMap(group=>group.members).find(item=>item.transfer.number===transferNo);
+      if(!member){
+        const response=await fetch('/api/reconcile?sapLookup='+encodeURIComponent(transferNo),{cache:'no-store'});
+        const result=await response.json() as {hits?:SapEvidence[];partial?:boolean;error?:string};
+        if(!response.ok)throw Error(result.error||'تعذّر فحص ترحيلات SAP المستوردة.');
+        if(result.partial)throw Error('فحص ترحيلات SAP غير مكتمل؛ استخدم رقم الترحيل الكامل.');
+        member=groupSapEvidence(result.hits||[],transferNo,'transfer')?.members
+          .find(item=>item.transfer.number===transferNo);
+      }
+      if(!member){
+        const archived=await searchArchivedSapEvidence(transferNo,'transfer',branches);
+        if(archived.unreadable)throw Error('هناك ملفات SAP مؤرشفة لم تُقرأ؛ يلزم مراجعتها قبل الربط.');
+        member=groupSapEvidence(archived.hits,transferNo,'transfer')?.members
+          .find(item=>item.transfer.number===transferNo);
+      }
+      if(!member)throw Error('الترحيل '+transferNo+' غير موجود في كشوف SAP المتاحة. ارفع كشف الترحيلات الأصلي من «ملفات SAP» أولًا.');
+      const proposal=draftFromPaperInvoice(member,invoice);
+      openDraft(proposal);
+      setMessage('تم فتح الترحيل '+transferNo+' للربط اليدوي بالفاتورة الورقية '+invoice+'. لم تُحفظ أي مطابقة بعد.');
+    }catch(error){
+      setPaperError(error instanceof Error?error.message:'تعذّر التحقق من الربط الورقي.');
+    }finally{
+      setPaperBusy(false);
+    }
+  }
+
   async function saveSelected(){
     setBusy(true);
     setMessage('');
@@ -182,6 +248,16 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
       setMessage('');
     }}/></label>
     <button className="button primary" type="button" disabled={busy||loadingFile||!paste.trim()} onClick={()=>preview()}>معاينة الاستيراد</button>
+    <details className="paper-invoice-link">
+      <summary>ربط فاتورة زرقاء من نسخة SAP المطبوعة برقم الترحيل</summary>
+      <p className="hint">إذا ظهرت الفاتورة على ورقة SAP ولم تظهر في عمود Remarks أو Journal Remarks بالكشف المحفوظ، ابحث برقم الترحيل. سيُفتح السجل الأصلي إن كان محفوظًا، أو مسودة غير محفوظة للمراجعة. لا تتغير ملفات SAP أو الاعتمادات تلقائيًا.</p>
+      <div className="form-grid">
+        <label>رقم الفاتورة الزرقاء على الورقة<input aria-label="رقم الفاتورة الزرقاء من الورقة" dir="ltr" inputMode="numeric" value={paperInvoice} onChange={event=>setPaperInvoice(event.target.value)} placeholder="2623415853"/></label>
+        <label>رقم ترحيل SAP<input aria-label="رقم ترحيل SAP من الورقة" dir="ltr" inputMode="numeric" value={paperTransfer} onChange={event=>setPaperTransfer(event.target.value)} placeholder="2616473"/></label>
+        <button className="button secondary" type="button" disabled={busy||paperBusy} onClick={()=>void openPaperInvoice()}>{paperBusy?'جارٍ التحقق…':'فحص وفتح الترحيل للمراجعة'}</button>
+      </div>
+      {paperError&&<p className="red" role="alert">{paperError}</p>}
+    </details>
     {issues.length>0&&<div className="banner error" role="alert">{issues.join(' · ')}</div>}
     {groups.length>0&&<>
       <div className="table-controls">
@@ -236,7 +312,9 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
               <summary><code>{item.transfer.number}</code></summary><p dir="auto">{item.remarks||'بدون Remarks'}</p>
             </details>)}</td>
             <td>{group.draft.branch||group.members[0].branchLabel||'—'}</td>
-            <td dir="ltr">{group.draft.invoices.map(invoice=>invoice.number).filter(Boolean).join('، ')||'—'}</td>
+            <td dir="ltr">{group.draft.invoices.map(invoice=>invoice.number).filter(Boolean).join('، ')||'—'}
+              {group.linkedInvoiceNumbers.some(number=>!group.draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number)===number))&&
+                <small>محفوظ بالسجل: {group.linkedInvoiceNumbers.filter(number=>!group.draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number)===number)).join('، ')}</small>}</td>
             <td>{members.reduce((count,item)=>count+item.lineCount,0)}</td>
             <td>{group.allTransfersSaved?'محفوظ':group.savedIds.length?'مرتبط بسجل سابق':group.issues.join('، ')||
               (group.draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'جاهز للحفظ':'ترحيل بلا فاتورة زرقاء')}
@@ -247,7 +325,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
           </tr>;
         })}</tbody>
       </table></div>
-      {!shown.length&&<p className="hint">{search?'ما في كشوف بتطابق البحث والفلتر.':filter==='pending'?'كل الترحيلات في هذه القائمة محفوظة بالسجل.':'ما في كشوف بهالحالة.'}</p>}
+      {!shown.length&&<p className="hint">{search?'الرقم غير ظاهر في Remarks أو سجل الفواتير المرتبطة بالكشف الحالي. إذا موجود على ورقة SAP المطبوعة، استخدم «ربط فاتورة ورقية برقم ترحيل» أدناه.':filter==='pending'?'كل الترحيلات في هذه القائمة محفوظة بالسجل.':'ما في كشوف بهالحالة.'}</p>}
       </>}
     </>}
   </details>{notification&&<div className="modal-backdrop notification-backdrop"><section className="modal panel notification-dialog" role="alertdialog" aria-modal="true" aria-label={notification.error?'تنبيه':'إشعار'}><h2>{notification.error?'تنبيه':'إشعار'}</h2><p>{notification.text}</p><div className="notification-actions"><button type="button" className="button primary" onClick={()=>setNotification(null)}>حسنًا</button></div></section></div>}</>;

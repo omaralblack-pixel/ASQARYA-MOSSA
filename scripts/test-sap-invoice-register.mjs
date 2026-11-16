@@ -133,4 +133,39 @@ for(const changes of [{number:'2630806000'},{manualNumber:true},{amount:'10.000'
 }
 assert.equal(withSapInvoiceNumbers({...blank,id:'saved'},['2630806229'],'2616391').invoices[0].number,'');
 assert.equal(withSapInvoiceNumbers(populated,['2630806000'],'2616392'),populated);
+// 16-Nov regression: SAP exports both Remarks (branch/request) and Journal
+// Remarks (blue invoice). The invoice may appear on just one item row.
+const dualHeader=header.replace('\tRemarks\t','\tRemarks\tJournal Remarks\t');
+const dualRow=(transfer,comment,journal,code='CHS00007')=>
+  [transfer,'12.11.2026','5','شفا بدران',comment,journal,code,'Product',6,'Piece','001','011'].join('\t');
+const request='7800865 || شفا بدران Based On Inventory Transfer Request 2614779.';
+const doubleRemarks=[dualHeader,
+ dualRow('2616473',request,'2623415853'),
+ dualRow('2616473',request,'Inventory Transfers -','CHS00491')].join('\n');
+const parsedBoth=parseSapImport(doubleRemarks,['5 — شفا بدران']);
+assert.deepEqual(parsedBoth.issues,[]);
+assert.equal(parsedBoth.groups.length,1);
+assert.deepEqual(parsedBoth.groups[0].members[0].invoices,['2623415853']);
+assert.equal(parsedBoth.groups[0].members[0].issues.length,0,'Non-identical notes on SAP item rows must not make the transfer corrupt');
+assert.deepEqual(parsedBoth.groups[0].draft.invoices.map(i=>i.number),['2623415853']);
+const registerBoth=sapInvoicesFromSavedFile(doubleRemarks);
+assert.deepEqual(registerBoth.invoices.map(i=>i.number),['2623415853']);
+assert.deepEqual(registerBoth.invoices[0].transfers,['2616473']);
+assert.deepEqual(parseLieutenantTransfers(doubleRemarks,['5 — شفا بدران']).transfers[0].invoiceNumbers,['2623415853']);
+const withoutBlue=[dualHeader,dualRow('2616473',request,'Inventory Transfers -')].join('\n');
+assert.deepEqual(parseSapImport(withoutBlue,['5 — شفا بدران']).groups[0].members[0].invoices,[]);
+const {draftFromPaperInvoice}=loadTs('app/lib/sap-import-paper-invoice.ts');
+const proposed=draftFromPaperInvoice(parseSapImport(withoutBlue,['5 — شفا بدران']).groups[0].members[0],'2623415853');
+assert.equal(proposed.branch,'5 — شفا بدران');
+assert.equal(proposed.transfers[0].number,'2616473');
+assert.equal(proposed.invoices[0].number,'2623415853');
+assert.equal(proposed.invoices[0].manualNumber,true);
+assert.equal(proposed.invoices[0].complete,false,'Paper link remains pending until manually confirmed');
+assert.equal(proposed.invoices[0].date,'2026-11-11');
+assert.match(proposed.notes,/SAP Remarks/);
+assert.throws(()=>draftFromPaperInvoice(parsedBoth.groups[0].members[0],'2623415854'),/فواتير أخرى/);
+const importUI=fs.readFileSync('app/reconciliation/SapImport.tsx','utf8');
+assert.ok(importUI.includes('ربط فاتورة زرقاء من نسخة SAP المطبوعة'));
+assert.ok(importUI.includes("search?true:filter==='saved'"),'Exact SAP search shows saved transfers despite default pending filter');
+console.log('PASS: dual SAP Remarks, invoice 2623415853/transfer 2616473, mixed row notes, safe paper-only link and saved results.');
 console.log('PASS: labeled/bilingual Remarks, multiple invoices, SAP request exclusion and protected manual/saved invoice cards.');
