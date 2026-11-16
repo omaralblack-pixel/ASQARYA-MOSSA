@@ -304,7 +304,39 @@ function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:Se
   if(named.textContent?.includes('للطباعة'))named.textContent=named.textContent.replace(/للطباعة/g,first);
  pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(book));
  pkg.files['xl/_rels/workbook.xml.rels']=strToU8(new XMLSerializer().serializeToString(rels));
+
  pkg.files['[Content_Types].xml']=strToU8(new XMLSerializer().serializeToString(types));
+ // Independent read-back validation of the ACTUAL day-sheet XML, not merely
+ // the input projection. One physical invoice and all transfers must survive.
+ const seen=new Map<string,string>();
+ const expected=new Map(audit.map(row=>[row.number,row]));
+ for(const day of days){
+  const filename=day===days[0]?pkg.name:'xl/worksheets/serial-day-'+day.replace(/-/g,'')+'.xml';
+  const bytes=pkg.files[filename];
+  if(!bytes)throw Error('شيت اليوم '+day+' مفقود من ملف Excel الناتج.');
+  const daily=readXml(bytes),body=find(daily,'sheetData');
+  if(!body)throw Error('شيت '+day+' بلا بيانات.');
+  for(const line of children(body,'row')){
+   const n=Number(line.getAttribute('r'));
+   if(n<5)continue;
+   const no=digits(text(getCell(line,'D'+n),pkg.shared)).replace(/\s/g,'');
+   if(!no)continue;
+   if(seen.has(no))throw Error('فشل تدقيق Excel: فاتورة '+no+' تكررت بين '+seen.get(no)+' و'+day+'.');
+   seen.set(no,day);
+   const original=expected.get(no);
+   if(!original||original.date!==day)
+    throw Error('فشل تدقيق Excel: فاتورة '+no+' ظهرت في شيت يوم غير صحيح.');
+   const actual:string[]=[];
+   for(let col=11;col<=17;col++)
+    actual.push(...(text(getCell(line,columnName(col)+n),pkg.shared).match(/\d{4,20}/g)||[]));
+   if(actual.length!==original.transfers.length||
+     actual.some((transfer,i)=>transfer!==original.transfers[i]))
+    throw Error('فشل تدقيق Excel: تغيّرت ترحيلات الفاتورة '+no+' بعد توزيع الأيام.');
+  }
+ }
+ if(seen.size!==expected.size)
+  throw Error('فشل تدقيق Excel: عدد الفواتير في شيتات الأيام لا يطابق المصدر ('
+   +seen.size+' من '+expected.size+').');
 }
 
 export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,approvedMergeNumbers:string[]=[]):Blob {
