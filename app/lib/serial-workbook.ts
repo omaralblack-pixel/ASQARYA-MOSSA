@@ -410,23 +410,30 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
     }
     if(item.column===11||item.column===12){
      const existing=getCell(keeper,columnName(item.column)+proposal.keepRow);
-     if(existing&&text(existing,pkg.shared))
-      throw Error('ترحيل رئيسي أو نواشف مختلف في الصفين '+proposal.keepRow+' و'+rowNo+
-       '؛ لا يجوز نقل رقم الترحيل إلى عمود باتجاه مختلف.');
      if(existing&&find(existing,'f'))
       throw Error('خلية ترحيل تحتوي معادلة في الصف '+proposal.keepRow+'؛ لا يمكن تعديلها.');
-     overwriteText(d,ensureCell(d,keeper,item.column,proposal.keepRow),item.number);
+     const prior=existing?text(existing,pkg.shared):'';
+     if(prior&&!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(prior))
+      throw Error('بيانات غير صالحة في خانة الترحيل أثناء الدمج.');
+     overwriteText(d,ensureCell(d,keeper,item.column,proposal.keepRow),
+      prior?prior+'، '+item.number:item.number);
      transferSlots.set(item.number,item.column);
     }else{
      const free=Array.from({length:5},(_,i)=>13+i).find(col=>{
       const cell=getCell(keeper,columnName(col)+proposal.keepRow);
       return !cell||(!find(cell,'f')&&!text(cell,pkg.shared));
      });
-     if(free===undefined)
-      throw Error('خانات التعديلات M:Q لا تتسع لترحيل '+item.number+
-       '؛ لم يتم حذف الصف المكرر حفاظًا على أرقام الترحيلات.');
-     overwriteText(d,ensureCell(d,keeper,free,proposal.keepRow),item.number);
-     transferSlots.set(item.number,free);
+     if(free===undefined){
+      const cell=ensureCell(d,keeper,17,proposal.keepRow);
+      const existing=text(cell,pkg.shared);
+      if(find(cell,'f')||!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(existing))
+       throw Error('لا يمكن حفظ الترحيل '+item.number+' أثناء دمج الصفوف؛ خانة Q غير صالحة.');
+      overwriteText(d,cell,existing+'، '+item.number);
+      transferSlots.set(item.number,17);
+     }else{
+      overwriteText(d,ensureCell(d,keeper,free,proposal.keepRow),item.number);
+      transferSlots.set(item.number,free);
+     }
     }
    }
    for(const cell of children(row,'c')){
