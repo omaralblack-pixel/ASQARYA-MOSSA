@@ -24,7 +24,7 @@ export function draftFromPaperInvoice(
   const date=dateValue(member.transfer.date);
   if(!date)throw Error('تاريخ الترحيل غير صالح في كشف SAP.');
   const notes=['ربط ورقي مقترح للمراجعة فقط: الفاتورة '+number+' على الترحيل '+member.transfer.number+'.',
-    'رقم الفاتورة مأخوذ من مستند ورقي وليس مثبتًا في SAP Remarks.',
+    member.invoices.includes(number)?'رقم الفاتورة مثبت في ملاحظات SAP المحفوظة.':'رقم الفاتورة مأخوذ من المستند الورقي ولم يظهر في حقول ملاحظات كشف SAP المحفوظ.',
     'SAP Remarks الأصلي: '+member.remarks].join('\n').slice(0,4500);
   return withInvoiceDates({
     mode:'manual',branch:member.branch,driver:'',date,transfers:[member.transfer],
