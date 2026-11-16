@@ -49,6 +49,20 @@ test('Cartons and kg convert to pieces using verified pack factors',()=>{
   assert.equal(reassure(carton).rows[0].actual,100);assert.equal(reassure(carton).state,'match');
   const kg=fixture({actual:20,unit:'KG',transfers:[live(20,'2617001','KG')]});assert.equal(reassure(kg).state,'match');
 });
+test('Financial approval is reported separately from paper-backed quantity equality',()=>{
+  const recordRow={...record(),status:'review'};
+  const report=reassure(fixture({records:[recordRow]}));
+  assert.equal(report.state,'match','physical quantities may match without financial approval');
+  assert.equal(report.financialPending,1);
+  assert.equal(report.paperGroups,1);
+  assert.equal(report.approvedGroups,0);
+});
+test('An invalid dated opening snapshot blocks a final confirmation',()=>{
+  const input=fixture();input.opening.issues=['رصيد افتتاحي ناقص أو غير صالح'];
+  const report=reassure(input);
+  assert.equal(report.state,'review');
+  assert.ok(report.issues.some(note=>note.includes('رصيد افتتاحي')));
+});
 test('Unconfirmed opening remains unknown, not zero',()=>{
   const input=fixture();input.opening=null;const report=reassure(input);assert.equal(report.state,'review');assert.equal(report.rows[0].opening,null);assert.equal(report.rows[0].difference,null);
 });
