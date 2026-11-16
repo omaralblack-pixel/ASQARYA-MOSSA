@@ -50,6 +50,31 @@ export function serialMergeProposals(rows:SerialInput[]):SerialMergeProposal[]{
  return proposals.sort((a,b)=>a.keepRow-b.keepRow);
 }
 
+/** One-time approval supplied by the user on 2026-11-16, scoped to the
+ * precise file and rows seen in the serial soldier error report.
+ * This authorizes the export merge ONLY when all row-level checks pass.
+ * It must never modify stored reconciliation records or a different XLSX.
+ */
+const EXPLICIT_CHAT_MERGE_APPROVALS=[
+ {fileName:'16.11-جندي-السيريل-جندي-السيريل.xlsx',number:'2621610051',
+  keepRow:144,removeRows:[497]},
+] as const;
+export function previouslyApprovedSerialMerges(rows:SerialInput[],fileName:string):string[]{
+ const proposed=serialMergeProposals(rows);
+ return EXPLICIT_CHAT_MERGE_APPROVALS.filter(approval=>{
+  if(approval.fileName!==fileName)return false;
+  const proposal=proposed.find(item=>item.number===approval.number);
+  if(!proposal||!proposal.canMerge||proposal.keepRow!==approval.keepRow||
+   proposal.removeRows.length!==approval.removeRows.length||
+   !proposal.removeRows.every((row,i)=>row===approval.removeRows[i]))return false;
+  const keep=rows.find(row=>row.row===approval.keepRow);
+  const remove=rows.find(row=>row.row===approval.removeRows[0]);
+  // Confirm that the saved consent applies to one original Saja row plus
+  // one system-generated duplicate, rather than two genuine source invoices.
+  return keep?.origin!=='project'&&remove?.origin==='project';
+ }).map(item=>item.number);
+}
+
 /** Program-generated blue rows from older exports must never duplicate a Saja
  * row or another blue row. Map each removable row to its surviving source row.
  * Original Saja rows are ALWAYS retained for audit, even when Saja itself repeats.
