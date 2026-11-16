@@ -6,6 +6,7 @@ import GroupLookup from './GroupLookup';
 import {isAqabaBranch} from '../lib/aqaba-instant-reference';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
+import {groupSapEvidence,searchArchivedSapEvidence,type SapEvidence} from '../lib/sap-document-lookup';
 import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editGroupInvoiceDate, addTransferToDraft, withSapInvoiceNumbers, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
@@ -49,7 +50,7 @@ function matchesRecord(row:Summary, number:string, kind:SearchKind) {
     ? (saved.invoices || []).some(item=>invoiceDocumentNo(item.number)===number)
     : (saved.transfers || []).some(item=>transferNumbers(item.number).includes(number));
 }
-function matchingDocuments(rows:Summary[], groups:SapImportGroup[], query:string, filter:SearchFilter):DocumentHit[] {
+function matchingDocuments(rows:Summary[], groups:SapImportGroup[], query:string, filter:SearchFilter, extra:SapEvidence[]=[]):DocumentHit[] {
   const searched = digits(query).trim();
   if (!/^\d{4,20}$/.test(searched)) return [];
   const matches = new Map<string,DocumentHit>();
@@ -71,6 +72,10 @@ function matchingDocuments(rows:Summary[], groups:SapImportGroup[], query:string
       for (const number of member.invoices) add(number,'invoice',member.branch||group.draft.branch,'sap');
       add(member.transfer.number,'transfer',member.branch||group.draft.branch,'sap');
     }
+  for(const item of extra){
+    for(const invoice of item.invoiceNumbers)add(invoice,'invoice',item.branch,'sap');
+    add(item.transfer.number,'transfer',item.branch,'sap');
+  }
   return [...matches.values()].sort((a,b)=>
     (a.number===searched?-1:0)-(b.number===searched?-1:0) ||
     a.kind.localeCompare(b.kind) ||
@@ -99,6 +104,7 @@ export default function InstantMatch({
 }) {
   const [records, setRecords] = useState<Summary[]>([]);
   const [imports, setImports] = useState<SapImportGroup[]>([]);
+  const [queueMatches,setQueueMatches]=useState<SapEvidence[]>([]);
   const [fileWarning, setFileWarning] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -117,7 +123,13 @@ export default function InstantMatch({
   const [aqabaPricingLoading,setAqabaPricingLoading] = useState(false);
   const isAqaba=!!draft&&isAqabaBranch(draft.branch);
 
-  const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind),[records,imports,number,kind]);
+  const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind,queueMatches),[records,imports,number,kind,queueMatches]);
+
+  async function searchImportedSap(number:string){
+    const data=await getJson<{hits:SapEvidence[];partial:boolean}>('/api/reconcile?sapLookup='+encodeURIComponent(number));
+    if(data.partial)throw Error('نتائج الترحيلات المستوردة كثيرة وغير مكتملة. ابحث برقم المستند كاملًا.');
+    return data.hits;
+  }
 
   async function refreshRecords() {
     const data = await getJson<{records:Summary[]}>('/api/reconcile?records=1');
@@ -386,7 +398,7 @@ export default function InstantMatch({
         <div className="instant-document-search">
           <label htmlFor="instant-document-number">ابحث برقم الفاتورة الزرقاء أو الترحيل
             <input id="instant-document-number" dir="ltr" inputMode="numeric" autoComplete="off"
-              value={number} onChange={e=>{setNumber(e.target.value);setSuggestionsOpen(true);setError('')}}
+              value={number} onChange={e=>{setNumber(e.target.value);setQueueMatches([]);setSuggestionsOpen(true);setError('')}}
               onFocus={()=>setSuggestionsOpen(true)}
               onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();void lookup()}}}
               aria-expanded={suggestionsOpen&&/^\d{4,20}$/.test(digits(number).trim())}
