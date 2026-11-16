@@ -540,32 +540,34 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   // A confirmed historical group belongs to every invoice in that saved group, even
   // when the old record has no per-invoice page allocation. Place its shared transfer
   // numbers in Saja's transfer slots as GROUP associations (not claimed page ownership).
-  const transfers=serialInvoiceColumns(item);
-  // Re-read the current worksheet after an approved merge so transferred
-  // numbers copied from the removed row cannot be inserted a second time.
+  const transfers=[...new Map([...item.transfers,...item.unassignedTransfers]
+   .map(t=>[t.number,t] as const)).values()];
   const original=new Set([
    ...(item.originalTransfers||[]),
    ...Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+item.row),pkg.shared))
-     .flatMap(raw=>raw.match(/\d{4,20}/g)||[]),
+    .flatMap(raw=>raw.match(/\d{4,20}/g)||[]),
   ].filter(Boolean));
+  let combinedTransfers=false;
   const missingTransfers:string[]=[];
-  // Fill ONLY empty slots in K:Q. Never replace an existing Saja transfer.
-  // Historic shared group transfers are shown on every related invoice row, without
-  // modifying or fabricating invoice-page allocations in the saved database.
-  for(const [index,transferNo] of transfers.entries()){
-   if(!transferNo||original.has(transferNo))continue;
-   const preferred=11+index;
-   const alternatives=Array.from({length:Math.max(0,18-preferred)},(_,i)=>preferred+i);
-   const target=alternatives.find(col=>{
-    const cell=getCell(row,columnName(col)+item.row);
-    return !cell||(!find(cell,'f')&&!value(cell,pkg.shared).trim());
-   });
-   if(target===undefined){missingTransfers.push(transferNo);continue;}
-   const cell=ensureCell(d,row,target,item.row);
+  for(const transfer of transfers){
+   if(!transfer.number||original.has(transfer.number))continue;
+   // Multiple verified main/dry transfers stay inside K/L; adjustment
+   // overflow is comma-separated in Q. Never silently drop a number.
+   const col=transfer.kind==='main'?11:transfer.kind==='dry'?12:
+    (Array.from({length:5},(_,i)=>13+i).find(c=>{
+      const cell=getCell(row,columnName(c)+item.row);
+      return !cell||(!find(cell,'f')&&!text(cell,pkg.shared));
+    })??17);
+   const cell=ensureCell(d,row,col,item.row);
+   if(find(cell,'f'))throw Error('فاتورة '+item.number+': خلية ترحيل فيها معادلة.');
+   const previous=text(cell,pkg.shared);
+   if(previous&&!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(previous))
+    throw Error('فاتورة '+item.number+': بيانات غير رقمية في خانة '+columnName(col)+'.');
    const template=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row)||getCell(row,'D'+item.row);
    if(!cell.getAttribute('s')&&template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
-   editCell(d,cell,transferNo,pkg.shared);
-   original.add(transferNo);
+   if(previous){overwriteText(d,cell,previous+'، '+transfer.number);combinedTransfers=true;}
+   else editCell(d,cell,transfer.number,pkg.shared);
+   original.add(transfer.number);
   }
   const discrepancy=serialReviewNote(item);
   const transferWarning=missingTransfers.length?
@@ -574,6 +576,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   const cleanupNote=removed.length?'دُمج الصف '+removed.join('، ')+' في هذا الصف بموافقة المستخدم؛ رقم الفاتورة يظهر مرة واحدة':'';
   const note=[discrepancy,transferWarning,cleanupNote].filter(Boolean).join(' | ');
   const effectiveState=item.origin==='project'?'project_only':transferWarning?'review':item.state;
+  if(combinedTransfers&&Number(row.getAttribute('ht')||'0')<44){row.setAttribute('ht','44');row.setAttribute('customHeight','1');}
   if(note){
    const cell=ensureCell(d,row,notes.column,item.row);
    if(!cell.getAttribute('s')){
@@ -594,7 +597,8 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
     if(template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
    }
    const colored=styles.apply(cell.getAttribute('s'),effectiveState);
-   cell.setAttribute('s',col===notes.column&&note?wrapped(colored):colored);
+   const multiTransfer=col>=11&&col<=17&&text(cell,pkg.shared).includes('،');
+   cell.setAttribute('s',(col===notes.column&&note||multiTransfer)?wrapped(colored):colored);
   }
  }
  if(report.projectOnly?.length){
