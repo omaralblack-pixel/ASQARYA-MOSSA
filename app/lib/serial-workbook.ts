@@ -375,7 +375,13 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   // when the old record has no per-invoice page allocation. Place its shared transfer
   // numbers in Saja's transfer slots as GROUP associations (not claimed page ownership).
   const transfers=serialInvoiceColumns(item);
-  const original=new Set((item.originalTransfers||[]).filter(Boolean));
+  // Re-read the current worksheet after an approved merge so transferred
+  // numbers copied from the removed row cannot be inserted a second time.
+  const original=new Set([
+   ...(item.originalTransfers||[]),
+   ...Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+item.row),pkg.shared))
+     .flatMap(raw=>raw.match(/\d{4,20}/g)||[]),
+  ].filter(Boolean));
   const missingTransfers:string[]=[];
   // Fill ONLY empty slots in K:Q. Never replace an existing Saja transfer.
   // Historic shared group transfers are shown on every related invoice row, without
