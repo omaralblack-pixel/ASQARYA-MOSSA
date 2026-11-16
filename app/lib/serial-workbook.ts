@@ -593,7 +593,14 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   const cleanupNote=removed.length?'دُمج الصف '+removed.join('، ')+' في هذا الصف بموافقة المستخدم؛ رقم الفاتورة يظهر مرة واحدة':'';
   const note=[discrepancy,transferWarning,cleanupNote].filter(Boolean).join(' | ');
   const effectiveState=item.origin==='project'?'project_only':transferWarning?'review':item.state;
-  if(combinedTransfers&&Number(row.getAttribute('ht')||'0')<44){row.setAttribute('ht','44');row.setAttribute('customHeight','1');}
+  if(combinedTransfers){
+   const maximum=Math.max(1,...Array.from({length:7},(_,i)=>
+    (text(getCell(row,columnName(11+i)+item.row),pkg.shared).match(/\d{4,20}/g)||[]).length));
+   const required=Math.min(300,Math.max(44,Math.ceil(maximum/2)*18));
+   if(Number(row.getAttribute('ht')||'0')<required){
+    row.setAttribute('ht',String(required));row.setAttribute('customHeight','1');
+   }
+  }
   if(note){
    const cell=ensureCell(d,row,notes.column,item.row);
    if(!cell.getAttribute('s')){
