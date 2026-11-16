@@ -219,7 +219,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport):Blob
  const sourceRow=actual.rows.filter(item=>!discarded.has(item.row)).at(-1)?.row;
  const template=sourceRow===undefined?undefined:rowElements.get(sourceRow);
  let nextRow=Math.max(4,...actual.rows.map(row=>row.row))+1;
- let sequence=Math.max(0,...actual.rows.map(item=>Number(text(getCell(rowElements.get(item.row)!,'B'+item.row),pkg.shared))||0));
+ let sequence=Math.max(0,...actual.rows.filter(item=>rowElements.has(item.row)).map(item=>Number(text(getCell(rowElements.get(item.row)!,'B'+item.row),pkg.shared))||0));
  const safeBlank=(row:Element)=>children(row,'c').every(cell=>{
   if(find(cell,'f'))return false;
   const col=cellColumn(cell.getAttribute('r')||'');
