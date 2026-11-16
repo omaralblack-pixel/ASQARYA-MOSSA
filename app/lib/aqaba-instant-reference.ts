@@ -66,5 +66,13 @@ export function aqabaMatchReference(amman:Item[],saved:BlueLine[]):Item[]{
     warehouseUnit:match?.warehouseUnit||null,warehouseName:match?.warehouseName||null,
     cartonPieces:agreedNumber(matches,'cartonPieces'),kgPerPiece:agreedNumber(matches,'kgPerPiece')};
   });
- return [...priced,...unpriced].sort((a,b)=>a.sapCode.localeCompare(b.sapCode));
+ return [...priced,...unpriced].map(item=>{
+  const manual=source.get(item.sapCode)?.[0]?.aqabaPrices?.[item.sapCode];
+  if(!manual)return item;
+  if(!Number.isInteger(manual.price)||manual.price<0||manual.price>100000000)
+   throw Error('سعر العقبة المحفوظ غير صالح للصنف '+item.sapCode);
+  // An explicit operator price overrides imported defaults, without changing
+  // any original blue-invoice line, Amman price, quantity, or saved invoice.
+  return {...item,price:manual.price};
+ }).sort((a,b)=>a.sapCode.localeCompare(b.sapCode));
 }
