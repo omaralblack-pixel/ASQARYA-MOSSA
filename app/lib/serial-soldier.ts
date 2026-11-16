@@ -4,8 +4,44 @@ import {collectInvoicesByDate} from './invoice-collector';
 
 export const PROJECT_ONLY_NOTE='موجودة بالمشروع وغير موجودة بكشف سجى';
 export type SerialPeriod = {from:string;to:string};
-export type SerialInput = {row:number; number:string; amount:string; date:string; originalTransfers?:string[]; origin?:'project'};
+export type SerialInput = {row:number; number:string; amount:string; date:string; workbookBranch?:string; originalTransfers?:string[]; origin?:'project'};
 export type SerialState = 'received'|'received_difference'|'pending'|'missing'|'review';
+
+/** A merge is a proposed, per-file operation. No rows are changed until the user
+ * explicitly approves the invoice number. Material conflicts block merging.
+ */
+export type SerialMergeProposal = {
+ number:string;keepRow:number;removeRows:number[];allRows:number[];
+ canMerge:boolean;reason:string;amounts:string[];dates:string[];branches:string[];
+};
+export function serialMergeProposals(rows:SerialInput[]):SerialMergeProposal[]{
+ const groups=new Map<string,SerialInput[]>();
+ for(const row of rows){
+  const number=invoiceDocumentNo(row.number).replace(/[,٬]/g,'');
+  if(!/^\d{8,20}$/.test(number))continue;
+  groups.set(number,[...(groups.get(number)||[]),row]);
+ }
+ const proposals:SerialMergeProposal[]=[];
+ for(const [number,copies] of groups){
+  if(copies.length<2)continue;
+  const order=[...copies].sort((a,b)=>Number(a.origin==='project')-Number(b.origin==='project')||a.row-b.row);
+  const amounts=[...new Set(copies.map(row=>String(row.amount||'').trim()))];
+  const amountValues=copies.map(row=>fils(row.amount));
+  const dates=[...new Set(copies.map(row=>dateValue(row.date)||String(row.date||'').trim()).filter(Boolean))];
+  const branches=[...new Set(copies.map(row=>String(row.workbookBranch||'').trim()).filter(Boolean))];
+  const conflict=amountValues.some(value=>value===null)||new Set(amountValues).size>1||
+    dates.length>1||branches.length>1;
+  proposals.push({
+   number,keepRow:order[0].row,removeRows:order.slice(1).map(row=>row.row),
+   allRows:copies.map(row=>row.row).sort((a,b)=>a-b),canMerge:!conflict,
+   reason:conflict?'اختلاف في المبلغ أو التاريخ أو الفرع؛ راجع القيم قبل الدمج.':
+    'متطابقة في رقم الفاتورة والمبلغ والتاريخ والفرع؛ يلزم موافقتك على الدمج.',
+   amounts,dates,branches,
+  });
+ }
+ return proposals.sort((a,b)=>a.keepRow-b.keepRow);
+}
+
 /** Program-generated blue rows from older exports must never duplicate a Saja
  * row or another blue row. Map each removable row to its surviving source row.
  * Original Saja rows are ALWAYS retained for audit, even when Saja itself repeats.
