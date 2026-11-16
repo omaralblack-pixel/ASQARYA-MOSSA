@@ -63,5 +63,7 @@ jobs:
         run: node scripts/test-aqaba.mjs
       - name: TypeScript validation
         run: pnpm exec tsc --noEmit
+      - name: Appearance, print and login checks
+        run: node scripts/test-theme.mjs
       - name: Production build
         run: pnpm run build
