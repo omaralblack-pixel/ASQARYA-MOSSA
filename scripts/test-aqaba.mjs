@@ -93,7 +93,14 @@ assert.ok(aqabaRouteSource.includes('INSERT OR IGNORE INTO aqaba_blue'),
  'Auto-seeding must never overwrite manually corrected Aqaba prices');
 assert.ok(seedRows.length*5>100&&Math.ceil(seedRows.length/20)===3&&20*5<=100,
  '52 blue-invoice prices need three inserts with no more than 100 bound parameters per SQL');
+assert.ok(aqabaRouteSource.includes("pageSize=summary?3000:500") &&
+  aqabaRouteSource.includes("nextOffset:partial?offset+pageSize:null"),
+  'Aqaba API must paginate complete saved rows rather than silently cap at 3000');
 const aqabaScreenSource=fs.readFileSync(new URL('../app/reconciliation/AqabaWorkspace.tsx',import.meta.url),'utf8');
+assert.ok(aqabaScreenSource.includes('for(let page=0;page<200;page++)') &&
+  aqabaScreenSource.includes('if(!complete)throw Error'),
+  'Aqaba UI must load every page or refuse a partial reconciliation');
+
 assert.ok(aqabaScreenSource.includes('المحفوظ فعلًا بقاعدة بيانات العقبة'));
 assert.ok(aqabaScreenSource.includes('2650710369')&&aqabaScreenSource.includes('0.350'),
  'Use actual recorded Aqaba seed example rather than misleading placeholder price');

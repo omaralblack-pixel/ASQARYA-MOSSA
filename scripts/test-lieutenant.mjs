@@ -236,6 +236,14 @@ const erasedFromNew=await restoreLieutenantSource([
 assert.equal(erasedFromNew.key,'new','The latest file remains the primary source');
 assert.equal(erasedFromNew.scan.transfers.length,2,'The missing original is recovered without duplicating the correction');
 assert.match(erasedFromNew.name,/استكمال مستندات الإلغاء/);
+const recoveredFromShared=await restoreLieutenantSource([
+  {key:'new',name:'SAP_15.txt',kind:'transfers',created:'2026-11-15T10:00:00Z'},
+],[],async()=>erbidCorrection,async()=>({name:'current.json',text:erbidOriginal+'\n'+
+  ['2617009','12/11/2026','','','unrelated','CHS00009','Cheese','2','Piece','001','011'].join('\t')}));
+assert.equal(recoveredFromShared.scan.transfers.length,2,'Shared source restores only the explicitly referenced missing original');
+assert.ok(recoveredFromShared.scan.transfers.some(row=>row.transfer.number==='2616468'));
+assert.ok(!recoveredFromShared.scan.transfers.some(row=>row.transfer.number==='2617009'));
+assert.match(recoveredFromShared.name,/current.json/);
 const erbidMovements=analyzeLieutenantMovements(erasedFromNew.scan.transfers,'2026-11-15');
 assert.equal(erbidMovements.get('2616468').verifiedOffset,true,
   'An explicitly referenced signed correction must settle the entire original');

@@ -17,7 +17,7 @@ export type ReassuranceRow={code:string;name:string;unit:'Piece';invoices:number
   actual:number|null;difference:number|null;netTransfers:number|null;stockDifference:number|null;
   state:ReassuranceState;notes:string[];records:{id:string;numbers:string[];basis:'paper'|'approved'}[];evidence:ReassuranceEvidence[]};
 export type ReassuranceReport={rows:ReassuranceRow[];issues:string[];invoiceCount:number;approvedGroups:number;
-  pendingRecords:{id:string;numbers:string[];branch:string;note:string}[];sourceLastDate:string;state:ReassuranceState};
+  pendingRecords:{id:string;numbers:string[];branch:string;note:string}[];sourceLastDate:string;financialPending:number;paperGroups:number;state:ReassuranceState};
 const epsilon=0.000001;
 const round=(n:number)=>Number(n.toFixed(6));
 const unitName=(unit:string)=>({حبة:'Piece',كرتون:'Carton',كرتونة:'Carton',كغم:'KG'}[unit]||unit);
@@ -87,11 +87,16 @@ export function reassure(input:{data:ReassuranceData;transfers:LieutenantTransfe
   if(!transfers.length)issues.push('كشف ترحيلات SAP غير متاح.');
   else if(sourceLastDate<to)issues.push('آخر حركة في كشف SAP بتاريخ '+sourceLastDate+'؛ يلزم كشف يغطي الفحص حتى '+to+'.');
   if(sourceFirstDate>from)issues.push('كشف الترحيلات يبدأ بعد بداية الفترة '+from+'؛ تغطية الفترة غير مثبتة.');
+  if(opening?.date===from)issues.push(...opening.issues);
   if(!closing)issues.push('رصيد 011 الفعلي المؤرخ غير متاح؛ افتح الملازم أول واحفظ كشف الرصيد.');
   else{
     issues.push(...closing.issues);
     if(closing.date!==to)issues.push('رصيد 011 المحفوظ بتاريخ '+closing.date+'، وتاريخ الفحص '+to+'؛ يلزم رصيد لنفس التاريخ.');
   }
+  // Financial approval is independent of quantity evidence. Neither state
+  // may silently stand in for the other in the summary.
+  const financiallyUnapproved=new Set<string>();
+  let paperGroups=0;
   let approvedGroups=0;
   const approvedTransfers=new Set<string>();
   let quantitiesComplete=true;
@@ -104,6 +109,7 @@ export function reassure(input:{data:ReassuranceData;transfers:LieutenantTransfe
   for(const record of data.records){
     const ids=selected.get(record.id);
     if(!ids?.size)continue;
+    if(record.status!=='match')financiallyUnapproved.add(record.id);
     const draft=readReconciliationRecord(record.payload);
     if(!draft)continue;
     const invoices=draft.invoices.filter(invoice=>ids.has(invoice.id));
@@ -127,6 +133,7 @@ export function reassure(input:{data:ReassuranceData;transfers:LieutenantTransfe
         if(codes.length!==1){reason='ربط صنف المؤسسة '+institutionCode+' بكود SAP غير محسوم.';break;}
         staged.push({code:codes[0],name:candidates[0].name,quantity});
       }
+      if(!reason)paperGroups++;
       if(!reason)for(const row of staged)add(row.code,row.name,row.quantity,{id:record.id,numbers,basis:'paper'});
     }else if(record.status==='match'&&invoices.length===draft.invoices.length&&
       invoices.every(invoice=>invoiceDocumentNo(invoice.number)&&invoice.complete)){
@@ -199,5 +206,5 @@ export function reassure(input:{data:ReassuranceData;transfers:LieutenantTransfe
   const state:ReassuranceState=issues.length||rows.some(row=>row.state==='review')?'review':
     rows.some(row=>row.state==='transfer')?'transfer':rows.some(row=>row.state==='return')?'return':'match';
   return {rows,issues:[...new Set(issues)],invoiceCount:collected.rows.filter(row=>invoiceDocumentNo(row.number)).length,
-    approvedGroups,pendingRecords,sourceLastDate,state};
+    approvedGroups,paperGroups,financialPending:financiallyUnapproved.size,pendingRecords,sourceLastDate,state};
 }

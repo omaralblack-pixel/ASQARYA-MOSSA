@@ -5,6 +5,7 @@ import {resolve,dirname} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import ts from 'typescript';
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 const sqlite=new DatabaseSync(':memory:');
 let failImport=false,scans=0,writes=0,originalChecks=0;
 const wrap=(sql,args=[])=>({bind(...values){return wrap(sql,values)},async all(){if(failImport&&sql.startsWith('INSERT OR IGNORE INTO lieutenant_queue')){failImport=false;throw Error('injected failure')}if(sql.startsWith('INSERT OR IGNORE INTO lieutenant_queue'))writes++;if(sql.includes("FROM reconciliations r,"))scans++;return {results:sqlite.prepare(sql).all(...args)}},async first(){return sqlite.prepare(sql).get(...args)||null},async run(){const r=sqlite.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}}}});
@@ -13,17 +14,26 @@ const DB={prepare:sql=>wrap(sql),async batch(queries){
  sqlite.exec('BEGIN');try{const out=[];for(const q of queries)out.push(await q.run());sqlite.exec('COMMIT');return out;}catch(e){sqlite.exec('ROLLBACK');throw e;}
 }};
 const cache=new Map();
+const originalFiles=new Map();
+function archiveKey(kind,body,name,date=''){
+ const bytes=body instanceof Uint8Array?body:new TextEncoder().encode(body);
+ const hash=createHash('sha256').update(bytes).digest('hex').slice(0,32);
+ const key='lieutenant/'+kind+'__'+hash+'__'+(date?date+'__':'')+name;
+ originalFiles.set(key,bytes);return key;
+}
+function archivedResponse(url){originalChecks++;const key=new URL(url).searchParams.get('key');return originalFiles.has(key)?new Response(originalFiles.get(key)):new Response(null,{status:404});}
+
 function load(file,override){file=resolve(file);const cacheKey=file+(override?'#baseline':'');if(cache.has(cacheKey))return cache.get(cacheKey);const exports={};cache.set(cacheKey,exports);
  const source=override||fs.readFileSync(file,'utf8');const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
  new Function('exports','require','__ASQARYA_COMMIT__',js)(exports,name=>{
   if(name==='cloudflare:workers')return {env:{DB}};
-  if(name==='../../../worker/institution')return {lieutenantFiles:async()=>{originalChecks++;return new Response('original bytes');}};
+  if(name==='../../../worker/institution')return {lieutenantFiles:async req=>archivedResponse(req.url)};
   if(name.startsWith('.')&&!name.endsWith('.json'))return load(resolve(dirname(file),name+'.ts'));
   return createRequire(file)(name);
  },'test');return exports;
 }
 const originalFetch=globalThis.fetch;
-globalThis.fetch=async url=>{assert.ok(String(url).includes('/api/lieutenant-files?key='));originalChecks++;return new Response('original bytes');};
+globalThis.fetch=async url=>{assert.ok(String(url).includes('/api/lieutenant-files?key='));return archivedResponse(url);};
 const route=load('app/api/sap-processing/route.ts');
 const reconcile=load('app/api/reconcile/route.ts');
 const {buildSapPlan,classifySapFile}=load('app/lib/sap-processing.ts');
@@ -31,10 +41,17 @@ const header=['Document Number','Document Date','Branch Code','Branch Name','Rem
 const text=[header,...Array.from({length:867},(_,i)=>[String(2617000+i),'2026-11-14','21','السرو','','DAR00005','كريمة',1,'Piece','001','011'].join('\t'))].join('\n');
 const plan=buildSapPlan(text,JSON.parse(fs.readFileSync('app/branches.json','utf8')));
 assert.equal(plan.count,867);assert.equal(plan.kind,'transfers');assert.equal(plan.batches.length,18);assert.equal(plan.documents.filter(x=>x.state==='pending').length,867);
-const key='lieutenant/transfers__'+'a'.repeat(32)+'__fixture.txt';
+const key=archiveKey('transfers',text,'fixture.txt');
 const req=body=>new Request('https://example.test/api/sap-processing',{method:'POST',headers:{'Content-Type':'application/json','Origin':'https://example.test'},body:JSON.stringify(body)});
 async function call(body){const res=await route.POST(req(body));assert.equal(res.status,200,await res.clone().text());return (await res.json()).job;}
 async function read(file=key){return (await (await route.GET(new Request('https://example.test/api/sap-processing?key='+encodeURIComponent(file)))).json()).job;}
+// A caller may not substitute SAP content for another immutable archived file.
+const mismatched=await route.POST(req({action:'start',key,text:text+'\nchanged'}));
+assert.equal(mismatched.status,409,'different decoded content is rejected');
+const forged='lieutenant/transfers__'+'a'.repeat(32)+'__forged.txt';
+originalFiles.set(forged,new TextEncoder().encode(text));
+const forgedResponse=await route.POST(req({action:'start',key:forged,text}));
+assert.equal(forgedResponse.status,409,'archive digest mismatch is rejected');
 let job=await call({action:'start',key,text});assert.equal(job.total,18);assert.equal(job.status,'pending');assert.equal(job.done,0);
 const schema=JSON.parse(fs.readFileSync('app/lib/reconciliation-schema.json','utf8'));for(const sql of schema)sqlite.exec(sql);
 const invoice={transfers:[{number:'2999999'}],invoices:[{number:'2631000001',complete:true,amount:'123.000'}],notes:'keep'};
@@ -49,12 +66,12 @@ const checksBefore=originalChecks;job=await call({action:'start',key,text});asse
 for(const b of job.batches.filter(x=>x.state!=='complete'))job=await call({action:'batch',key,index:b.idx});
 assert.equal(job.done,18);assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n,867);
 const scansBefore=scans,writesBefore=writes;job=await call({action:'batch',key,index:0});assert.equal(scans,scansBefore);assert.equal(writes,writesBefore);assert.equal(job.done,18);
-const second='lieutenant/transfers__'+'b'.repeat(32)+'__renamed.txt';job=await call({action:'start',key:second,text});assert.equal(job.total,0);assert.equal(job.status,'complete');assert.equal(job.documents.filter(x=>x.state==='existing').length,867);
-const changed='lieutenant/transfers__'+'c'.repeat(32)+'__changed.txt';job=await call({action:'start',key:changed,text:text.replace('كريمة\t1','كريمة\t2')});assert.equal(job.total,1);assert.equal(job.documents.filter(x=>x.state==='pending').length,1);
+const second=archiveKey('transfers',text,'renamed.txt');job=await call({action:'start',key:second,text});assert.equal(job.total,0);assert.equal(job.status,'complete');assert.equal(job.documents.filter(x=>x.state==='existing').length,867);
+const changedText=text.replace('كريمة\t1','كريمة\t2');const changed=archiveKey('transfers',changedText,'changed.txt');job=await call({action:'start',key:changed,text:changedText});assert.equal(job.total,1);assert.equal(job.documents.filter(x=>x.state==='pending').length,1);
 job=await call({action:'batch',key:changed,index:0});assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n,867);
 // A deleted queue record must not be concealed by an old receipt in a new export.
 sqlite.prepare('DELETE FROM lieutenant_queue WHERE transfer_no=?').run('2617001');
-const repaired='lieutenant/transfers__'+'d'.repeat(32)+'__repair.txt';job=await call({action:'start',key:repaired,text});assert.ok(job.documents.some(x=>x.number==='2617001'&&x.state==='pending'));
+const repaired=archiveKey('transfers',text,'repair.txt');job=await call({action:'start',key:repaired,text});assert.ok(job.documents.some(x=>x.number==='2617001'&&x.state==='pending'));
 // Atomic leases: a second tab cannot claim an active batch; expired work resumes.
 sqlite.prepare("UPDATE sap_file_batches SET state='running',lease=?,token='other' WHERE file_key=? AND idx=0").run(Date.now()+10000,repaired);
 const activeRecheck=await route.POST(req({action:'start',key:repaired,text,recheck:true}));assert.equal(activeRecheck.status,409,'active processing cannot be reset by another tab');
@@ -66,15 +83,15 @@ assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM sap_batch_history WHERE f
 assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),before);assert.equal(sqlite.prepare('SELECT note FROM lieutenant_cancellation_decisions').get().note,'keep decision');
 const balance='رقم الصنف\tاسم الصنف\tالمستودع\tوحدة المخزون\tالرصيد الفعلي بنهاية التاريخ\nDAR00005\tكريمة\t011\tPiece\t5';
 assert.equal(classifySapFile(balance),'balance');assert.equal(classifySapFile(balance.replace('الرصيد الفعلي بنهاية التاريخ','الرصيد الافتتاحي')),'opening');
-for(const kind of ['balance','opening']){const k='lieutenant/'+kind+'__'+'e'.repeat(32)+'__2026-11-14__stock.txt';const stock=await call({action:'start',key:k,text:kind==='balance'?balance:balance.replace('الرصيد الفعلي بنهاية التاريخ','الرصيد الافتتاحي')});assert.equal(stock.total,0);assert.equal(stock.kind,kind);assert.equal(stock.count,1);}
+for(const kind of ['balance','opening']){const k=archiveKey(kind,kind==='balance'?balance:balance.replace('الرصيد الفعلي بنهاية التاريخ','الرصيد الافتتاحي'),'stock.txt','2026-11-14');const stock=await call({action:'start',key:k,text:kind==='balance'?balance:balance.replace('الرصيد الفعلي بنهاية التاريخ','الرصيد الافتتاحي')});assert.equal(stock.total,0);assert.equal(stock.kind,kind);assert.equal(stock.count,1);}
 const officialHeader=['نوع المستند','رقم الفاتورة','DocEntry','التاريخ','رقم الزبون','رقم السطر','المستودع','كود الصنف','اسم الصنف','الوحدة','الكمية','سعر الوحدة','القيمة قبل الضريبة','الضريبة','حالة الإلغاء'].join('\t');
 const official=officialHeader+'\n'+['IN','260063818','260063818','2026-11-03','C0006751',1,'011','CHS00561','جبنة','Piece',600,0.313,187.8,0,'N'].join('\t');
-const officialKey='lieutenant/other__'+'f'.repeat(32)+'__official.txt';job=await call({action:'start',key:officialKey,text:official});assert.equal(job.kind,'official');job=await call({action:'batch',key:officialKey,index:0});assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM aqaba_official').get().n,1);
+const officialKey=archiveKey('other',official,'official.txt');job=await call({action:'start',key:officialKey,text:official});assert.equal(job.kind,'official');job=await call({action:'batch',key:officialKey,index:0});assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM aqaba_official').get().n,1);
 const oinm='معرف حركة المخزون\tالتاريخ\tنوع حركة SAP\tDocEntry\tرقم المستند\tرقم السطر\tكود الصنف\tاسم الصنف\tالمستودع\tالوارد\tالصادر\tرقم الزبون\n12345\t2026-11-03\t67\t89101\t2615754\t0\tCHS00561\tجبنة\t011\t600\t0\t';
-const oinmKey='lieutenant/other__'+'9'.repeat(32)+'__oinm.txt';job=await call({action:'start',key:oinmKey,text:oinm});assert.equal(job.kind,'inventory');job=await call({action:'batch',key:oinmKey,index:0});assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM aqaba_oinm').get().n,1);
+const oinmKey=archiveKey('other',oinm,'oinm.txt');job=await call({action:'start',key:oinmKey,text:oinm});assert.equal(job.kind,'inventory');job=await call({action:'batch',key:oinmKey,index:0});assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM aqaba_oinm').get().n,1);
 const transferHeader='رقم الترحيل\tDocEntry\tالتاريخ\tRemarks\tحالة الإلغاء\tرقم السطر\tكود الصنف\tاسم الصنف\tالوحدة\tالكمية\tمن المستودع\tإلى المستودع';
 const aqabaTransfer=transferHeader+'\n2615754\t89101\t2026-11-03\tمؤسسة العقبة\tN\t1\tCHS00561\tجبنة\tPiece\t600\t001\t011';
-const aqabaKey='lieutenant/transfers__'+'8'.repeat(32)+'__aqaba.txt';job=await call({action:'start',key:aqabaKey,text:aqabaTransfer});for(const b of job.batches)job=await call({action:'batch',key:aqabaKey,index:b.idx});assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM aqaba_transfers').get().n,1);
+const aqabaKey=archiveKey('transfers',aqabaTransfer,'aqaba.txt');job=await call({action:'start',key:aqabaKey,text:aqabaTransfer});for(const b of job.batches)job=await call({action:'batch',key:aqabaKey,index:b.idx});assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM aqaba_transfers').get().n,1);
 assert.equal(classifySapFile('Document Number\tDocument Date\tBranch\n2617000\t2026-11-14\tالسرو'),'monthly');
 const all=await (await route.GET(new Request('https://example.test/api/sap-processing'))).json();assert.ok(all.jobs.length>=6);assert.ok(all.jobs.every(x=>Array.isArray(x.batches)));
 assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),before);
@@ -93,7 +110,7 @@ for(let pass=0;pass<3;pass++){
  for(let i=0;i<docs.length;i+=10){const response=await baseline.POST(new Request('https://example.test/api/reconcile',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://example.test'},body:JSON.stringify({action:'lieutenantImport',sourceFile:key,transfers:docs.slice(i,i+10)})}));assert.equal(response.status,200);await response.json();}
  const oldMs=performance.now()-start,oldScans=scans-beforeScans;
  sqlite.exec('DELETE FROM lieutenant_queue; DELETE FROM sap_document_receipts;');
- const newKey='lieutenant/transfers__'+String(pass+1).repeat(32)+'__bench.txt';
+ const newKey=archiveKey('transfers',text,'bench'+pass+'.txt');
  const newStart=performance.now(),newBeforeScans=scans;let state=await call({action:'start',key:newKey,text});for(const b of state.batches)state=await call({action:'batch',key:newKey,index:b.idx});
  assert.equal(state.status,'complete');const newMs=performance.now()-newStart;
  const repeatStart=performance.now();const repeatScans=scans;await call({action:'start',key:newKey,text});
