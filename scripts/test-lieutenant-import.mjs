@@ -39,7 +39,9 @@ const schema=JSON.parse(fs.readFileSync('app/lib/reconciliation-schema.json','ut
 for(const sql of schema)sqlite.exec(sql);
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const doc=(number,index)=>({number,date:'2026-11-14',paste:header+'\nDAR00005\tCream\t1\tPiece\t001\t011',branch:'1',remarks:'',reverse:false,cancellationState:'active',invoiceNumbers:[],issues:[],lineCount:1,...index});
-const documents=Array.from({length:787},(_,i)=>doc(String(2616000+i)));
+const documents=Array.from({length:787},(_,i)=>i===485
+  ?doc('2616485',{remarks:'Blue invoice 2623224070',invoiceNumbers:[]})
+  :doc(String(2616000+i)));
 const legacy={transfers:[{number:'2616000 + 2616001',paste:header}],invoices:[{number:'2631000001',amount:'123.000',complete:true}],pages:{'i:11371486':'1'}};
 sqlite.prepare('INSERT INTO reconciliations(id,transfer_no,revision_token,branch,driver,doc_date,status,payload,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)')
   .run('legacy','2616000 + 2616001','revision','1','','2026-11-01','match',JSON.stringify(legacy),'before','before');
@@ -67,6 +69,19 @@ for(let pass=0;pass<3;pass++){
 }
 assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n,784);
 assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),before);
+// Independent read-only lookup finds the exact blue invoice inside old SAP Remarks,
+// even if the client's current.json does not contain that transfer.
+const proof=await GET(new Request('https://example.test/api/reconcile?sapLookup=2623224070'));
+assert.equal(proof.status,200);
+const foundInvoice=await proof.json();
+assert.deepEqual(foundInvoice.hits.map(item=>item.transfer.number),['2616485']);
+assert.deepEqual(foundInvoice.hits[0].invoiceNumbers,['2623224070']);
+assert.equal(foundInvoice.hits[0].remarks,'Blue invoice 2623224070');
+const foundTransfer=await (await GET(new Request('https://example.test/api/reconcile?sapLookup=2616485'))).json();
+assert.deepEqual(foundTransfer.hits.map(item=>item.transfer.number),['2616485']);
+assert.equal((await (await GET(new Request('https://example.test/api/reconcile?sapLookup=4070'))).json()).hits[0].transfer.number,'2616485');
+assert.deepEqual((await (await GET(new Request('https://example.test/api/reconcile?sapLookup=2623224071'))).json()).hits,[]);
+assert.equal((await GET(new Request('https://example.test/api/reconcile?sapLookup=bad'))).status,400);
 const bad=await request([doc('2619999',{paste:header+'\nDAR00005\tCream\tBAD\tPiece\t001\t011'})]);
 assert.equal(bad.status,400);assert.match((await bad.json()).error,/2619999/);
 const plan=lieutenantImportPlan([
