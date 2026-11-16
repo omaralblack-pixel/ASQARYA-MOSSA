@@ -311,7 +311,7 @@ export default function InstantMatch({
       } else {
         setSources({});
         setDraft(fillSearchedAmount(fresh(searched),searched,searchKind));
-        setNotice('لم أجد دليلًا مباشرًا لهذا الرقم في السجل، أو ترحيلات SAP المستوردة، أو الأصول المؤرشفة القابلة للقراءة. هذه فاتورة جديدة غير محفوظة للمراجعة فقط؛ لا تحفظها قبل تأكيد رقم الترحيل لتجنب التكرار.');
+        setNotice('لم أجد دليلًا مباشرًا لهذا الرقم في السجل، أو ترحيلات SAP المستوردة، أو الأصول المؤرشفة القابلة للقراءة. فتحته كفاتورة جديدة غير محفوظة للمراجعة فقط؛ لا تحفظها قبل تأكيد رقم الترحيل لتجنب التكرار.');
       }
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر البحث عن المستند.')}
     finally {setBusy(false);}
