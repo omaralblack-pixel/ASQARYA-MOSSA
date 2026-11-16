@@ -1,6 +1,6 @@
 import {strFromU8,strToU8,unzipSync,zipSync} from 'fflate';
 import {digits,dateValue as invoiceDateValue,fils} from './reconcile';
-import {PROJECT_ONLY_NOTE,serialMergeProposals,serialInvoiceColumns,serialReviewNote,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
+import {PROJECT_ONLY_NOTE,serialMergeProposals,serialInvoiceColumns,serialReviewNote,serialWorkingDays,auditSerialExport,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
 
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -193,6 +193,120 @@ function writeNumber(doc:Document,cell:Element,value:number){
  const number=element(doc,'v');setText(doc,number,String(value));cell.appendChild(number);
 }
 // Generated blue rows retain their project origin when this workbook is uploaded again.
+
+/** A daily worksheet is an exact clone of the source formatting and headers.
+ * Invoices move as WHOLE rows, including K:Q and the remarks column.
+ */
+function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:SerialPeriod|null,lastColumn:number){
+ const days=serialWorkingDays(period,allRows.map(row=>row.date));
+ if(!days.length)throw Error('لا يوجد يوم عمل في فترة كشف سجى.');
+ const data=find(pkg.doc,'sheetData')!;
+ const source=new Map(children(data,'row').map(row=>[Number(row.getAttribute('r')),row]));
+ const grouped=new Map<string,typeof allRows>();
+ const audit=allRows.map(item=>{
+  const current=source.get(item.row);
+  if(!current)throw Error('صف الفاتورة '+item.number+' غير موجود.');
+  const transfers:string[]=[];
+  for(let col=11;col<=17;col++){
+   const raw=text(getCell(current,columnName(col)+item.row),pkg.shared);
+   if(raw&&!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(raw))
+    throw Error('فاتورة '+item.number+': خانة الترحيل '+columnName(col)+' غير صالحة.');
+   transfers.push(...(raw.match(/\d{4,20}/g)||[]));
+  }
+  const date=invoiceDateValue(item.date);
+  if(!date||!days.includes(date))throw Error('فاتورة '+item.number+': تاريخ خارج أيام العمل.');
+  grouped.set(date,[...(grouped.get(date)||[]),item]);
+  return {number:item.number,date:item.date,groupId:item.groupId,transfers,
+   confirmedTransfers:serialInvoiceColumns(item).filter(Boolean)};
+ });
+ auditSerialExport(audit);
+ const book=readXml(pkg.files['xl/workbook.xml']);
+ const sheet=Array.from(book.getElementsByTagNameNS(NS,'sheet')).find(el=>el.getAttribute('name')==='للطباعة');
+ if(!sheet)throw Error('شيت سجى الأصلي غير موجود.');
+ const rels=readXml(pkg.files['xl/_rels/workbook.xml.rels']);
+ const types=readXml(pkg.files['[Content_Types].xml']);
+ const relRoot=rels.documentElement,typeRoot=types.documentElement;
+ const sheetList=Array.from(book.getElementsByTagNameNS(NS,'sheet'));
+ let sheetId=Math.max(...sheetList.map(el=>Number(el.getAttribute('sheetId'))||0))+1;
+ const sheetIndex=sheetList.indexOf(sheet);
+ const knownNames=new Set(sheetList.map(el=>el.getAttribute('name')));
+ const knownIds=new Set(Array.from(relRoot.children).map(el=>el.getAttribute('Id')));
+ let previous=sheet;
+ for(const [i,day] of days.entries()){
+  const name=day.slice(8)+'-'+day.slice(5,7)+'-'+day.slice(0,4);
+  if(knownNames.has(name))throw Error('شيت يوم '+name+' موجود مسبقًا في الملف.');
+  knownNames.add(name);
+  const daily=pkg.doc.cloneNode(true) as Document,body=find(daily,'sheetData')!;
+  for(const row of children(body,'row'))if(Number(row.getAttribute('r'))>4)body.removeChild(row);
+  const list=grouped.get(day)||[];
+  for(const [j,item] of list.entries()){
+   const original=source.get(item.row)!;
+   if(original.getElementsByTagNameNS(NS,'f').length)
+    throw Error('فاتورة '+item.number+' فيها معادلات؛ ممنوع نقلها دون مراجعة.');
+   const copy=original.cloneNode(true) as Element,no=j+5;
+   copy.setAttribute('r',String(no));
+   for(const cell of children(copy,'c'))cell.setAttribute('r',columnName(cellColumn(cell.getAttribute('r')||''))+no);
+   writeNumber(daily,ensureCell(daily,copy,2,no),j+1);
+   body.appendChild(copy);
+  }
+  const heading=children(body,'row').find(row=>row.getAttribute('r')==='3');
+  if(heading)overwriteText(daily,ensureCell(daily,heading,2,3),
+   'استلامات المؤسسة الاستهلاكية العسكرية يوم '+name);
+  const summary=children(body,'row').find(row=>row.getAttribute('r')==='2');
+  const total=summary&&getCell(summary,'G2');
+  if(total&&find(total,'f')){
+   setText(daily,find(total,'f')!,'SUM(F5:F'+Math.max(5,4+list.length)+')');
+   const v=find(total,'v');if(v)total.removeChild(v);
+  }
+  // The original Excel table ends at I: sorting it detaches the K:Q transfers.
+  // Replace with a native whole-row autofilter through the last remarks column.
+  for(const child of Array.from(daily.documentElement.children))
+   if(child.namespaceURI===NS&&['tableParts','autoFilter'].includes(child.localName))
+    daily.documentElement.removeChild(child);
+  const filter=element(daily,'autoFilter');
+  filter.setAttribute('ref','B4:'+columnName(lastColumn)+Math.max(5,4+list.length));
+  const anchor=Array.from(daily.documentElement.children).find(el=>
+   ['mergeCells','conditionalFormatting','dataValidations','hyperlinks','printOptions','pageMargins','pageSetup','headerFooter'].includes(el.localName));
+  if(anchor)daily.documentElement.insertBefore(filter,anchor);else daily.documentElement.appendChild(filter);
+  const dimension=find(daily,'dimension');
+  if(dimension)dimension.setAttribute('ref','B1:'+columnName(lastColumn)+Math.max(5,4+list.length));
+  for(const view of Array.from(daily.getElementsByTagNameNS(NS,'sheetView'))){
+   if(i===0)view.setAttribute('tabSelected','1');else view.removeAttribute('tabSelected');
+  }
+  for(const kind of ['drawing','legacyDrawing','picture','oleObjects','pivotTableParts'])
+   if(daily.getElementsByTagNameNS(NS,kind).length)
+    throw Error('الشيت يحتوي عنصرًا مرتبطًا خارجيًا ('+kind+')؛ لا يجوز نسخه دون حماية التصميم.');
+  const bytes=strToU8(new XMLSerializer().serializeToString(daily));
+  if(i===0){sheet.setAttribute('name',name);pkg.files[pkg.name]=bytes;}
+  else{
+   const file='xl/worksheets/serial-day-'+day.replace(/-/g,'')+'.xml';
+   if(pkg.files[file])throw Error('اسم شيت مكرر داخل الأرشيف.');
+   pkg.files[file]=bytes;
+   const newSheet=sheet.cloneNode(true) as Element;
+   newSheet.setAttribute('name',name);newSheet.setAttribute('sheetId',String(sheetId++));
+   let id='rSerialDay'+i;while(knownIds.has(id))id+='x';
+   knownIds.add(id);newSheet.setAttributeNS(REL,'r:id',id);
+   const rel=rels.createElementNS(relRoot.namespaceURI,'Relationship');
+   rel.setAttribute('Id',id);
+   rel.setAttribute('Type','http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet');
+   rel.setAttribute('Target','/'+file);relRoot.appendChild(rel);
+   const override=types.createElementNS(typeRoot.namespaceURI,'Override');
+   override.setAttribute('PartName','/'+file);
+   override.setAttribute('ContentType','application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
+   typeRoot.appendChild(override);
+   sheet.parentNode!.insertBefore(newSheet,previous.nextSibling);previous=newSheet;
+  }
+ }
+ const view=book.getElementsByTagNameNS(NS,'workbookView')[0];
+ if(view)view.setAttribute('activeTab',String(sheetIndex));
+ const first=days[0].slice(8)+'-'+days[0].slice(5,7)+'-'+days[0].slice(0,4);
+ for(const named of Array.from(book.getElementsByTagNameNS(NS,'definedName')))
+  if(named.textContent?.includes('للطباعة'))named.textContent=named.textContent.replace(/للطباعة/g,first);
+ pkg.files['xl/workbook.xml']=strToU8(new XMLSerializer().serializeToString(book));
+ pkg.files['xl/_rels/workbook.xml.rels']=strToU8(new XMLSerializer().serializeToString(rels));
+ pkg.files['[Content_Types].xml']=strToU8(new XMLSerializer().serializeToString(types));
+}
+
 export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,approvedMergeNumbers:string[]=[]):Blob {
  const pkg=load(new Uint8Array(input));
  const actual=rowsFrom(pkg);
@@ -210,6 +324,8 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   if(!proposal||!proposal.canMerge)
    throw Error('لا يمكن دمج الفاتورة '+number+'؛ البيانات تغيّرت أو يوجد تعارض. أعد فحص الملف.');
  }
+ for(const proposal of proposals)if(!approved.has(proposal.number))
+  throw Error('رقم الفاتورة '+proposal.number+' مكرر؛ وافق على الدمج الآمن أو صحح التعارض قبل تنزيل الملف.');
  const discarded=new Map<number,number>();
  const removedNotes=new Map<number,number[]>();
  for(const proposal of proposals){
@@ -472,6 +588,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
  }
  pkg.files[pkg.name]=strToU8(new XMLSerializer().serializeToString(d));
  pkg.files['xl/styles.xml']=strToU8(new XMLSerializer().serializeToString(styles.doc));
+ splitIntoDailySheets(pkg,allRows,report.period,last);
  const output=zipSync(pkg.files,{level:6});
  return new Blob([new Uint8Array(output)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
 }
