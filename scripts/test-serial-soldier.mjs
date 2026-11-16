@@ -222,9 +222,13 @@ assert.equal(serialMergeProposals([
  {...row(497,'2621610051','177.000'),origin:'project',workbookBranch:'فرع أ'},
 ])[0].canMerge,false,'Conflicting amounts must not be merged with a single button');
 assert.equal(serialMergeProposals([
+ {...row(144,'2621610051','176.920'),workbookBranch:'مجمع الكرامة التجاري'},
+ {...row(497,'2621610051','176.920'),origin:'project',workbookBranch:'1 — الكرامة'},
+])[0].canMerge,true,'Different generated branch aliases may merge after approval and must be noted');
+assert.equal(serialMergeProposals([
  {...row(144,'2621610051','176.920'),workbookBranch:'فرع أ'},
- {...row(497,'2621610051','176.920'),origin:'project',workbookBranch:'فرع ب'},
-])[0].canMerge,false,'Different branches block approval');
+ {...row(497,'2621610051','176.920'),workbookBranch:'فرع ب'},
+])[0].canMerge,false,'Different ORIGINAL Saja branches block an automatic merge');
 assert.equal(serialMergeProposals([
  {...row(144,'2621610051','176.920'),date:'2026-11-07'},
  {...row(497,'2621610051','176.920'),date:'2026-11-08',origin:'project'},
