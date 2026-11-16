@@ -1,7 +1,7 @@
 'use client';
 import {useMemo,useState} from 'react';
 import {AlertTriangle,CheckCircle2,Download,FileSpreadsheet,RefreshCw,Upload} from 'lucide-react';
-import {duplicateGeneratedSerialRows,evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
+import {serialMergeProposals,evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
 
 const label={received:'واصل ومطابق',received_difference:'واصلة — فرق في الملاحظات',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
 const color={received:'light-dark(#d8f3dc, var(--theme-success-surface))',received_difference:'light-dark(#fff0bf, var(--theme-warning-surface))',pending:'light-dark(#fad5e5, var(--theme-pink-surface))',missing:'light-dark(#fad5e5, var(--theme-pink-surface))',review:'light-dark(#fff0bf, var(--theme-warning-surface))'};
@@ -20,29 +20,32 @@ export default function SerialSoldier(){
  const [error,setError]=useState('');
  const [day,setDay]=useState('');
  const [updated,setUpdated]=useState('');
+ const [approvedMerges,setApprovedMerges]=useState<string[]>([]);
+ const mergeProposals=useMemo(()=>serialMergeProposals(report?.rows||[]),[report]);
+ const duplicateRows=new Set(mergeProposals.flatMap(proposal=>proposal.removeRows));
  const allRows=useMemo(()=>{
    if(!report)return [];
-   const skipped=duplicateGeneratedSerialRows(report.rows);
-   const rows=[...report.rows.filter(row=>!skipped.has(row.row)),...report.projectOnly];
+   const rows=[...report.rows,...report.projectOnly];
    return [...rows.filter(row=>row.origin==='project'),...rows.filter(row=>row.origin!=='project')];
  },[report]);
- const projectOnlyCount=allRows.filter(row=>row.origin==='project').length;
+ const projectOnlyCount=allRows.filter(row=>row.origin==='project'&&!duplicateRows.has(row.row)).length;
  const daily=useMemo(()=>{
    const map=new Map<string,{total:number;received:number;differences:number;pending:number;missing:number;review:number;projectOnly:number}>();
    for(const row of allRows){
      const date=row.date||'تاريخ غير معروف';
      const result=map.get(date)||{total:0,received:0,differences:0,pending:0,missing:0,review:0,projectOnly:0};
      result.total++;
-     if(row.origin==='project')result.projectOnly++;
+     if(duplicateRows.has(row.row))result.review++;
+     else if(row.origin==='project')result.projectOnly++;
      else if(row.state==='received_difference'){result.received++;result.differences++;}
      else result[row.state]++;
      map.set(date,result);
    }
    return [...map].sort(([a],[b])=>a.localeCompare(b));
- },[allRows]);
+ },[allRows,report]);
  const filtered=allRows.filter(row=>!day||row.date===day);
  async function checkExcel(nextFile:File){
-   setFile(nextFile);setReport(null);setBuffer(null);setIssues([]);setError('');setDay('');setBusy(true);
+   setFile(nextFile);setReport(null);setBuffer(null);setIssues([]);setError('');setDay('');setApprovedMerges([]);setBusy(true);
    try{
      if(!/\.xlsx$/i.test(nextFile.name))throw Error('ارفع ملف Excel بصيغة XLSX فقط.');
      const content=await nextFile.arrayBuffer();
@@ -75,7 +78,7 @@ export default function SerialSoldier(){
    }catch(e){setError(e instanceof Error?e.message:'تعذر تنزيل فواتير المشروع.');}
    finally{setBusy(false);}
  }
- async function download(){
+ async function download(approveNumber?:string){
    if(!buffer||!file||!report||busy)return;
    setBusy(true);setError('');
    try{
@@ -86,13 +89,15 @@ export default function SerialSoldier(){
      const fresh=evaluateSerial(parsed.rows,saved,parsed.period);
      fresh.blockers=[...new Set([...parsed.errors,...fresh.blockers])];
      setReport(fresh);
-     // A review copy is always available for a readable XLSX; validation issues stay visible.
-     const blob=createSerialWorkbook(buffer,fresh);
+     const allowed=approveNumber?[...new Set([...approvedMerges,approveNumber])]:approvedMerges;
+     // Download a review copy as-is unless the user explicitly approved a merge.
+     const blob=createSerialWorkbook(buffer,fresh,allowed);
      const url=URL.createObjectURL(blob),a=document.createElement('a');
      a.href=url;
      a.download=file.name.replace(/\.xlsx$/i,'')+'-جندي-السيريل.xlsx';
      a.click();
      setTimeout(()=>URL.revokeObjectURL(url),1200);
+     setApprovedMerges(allowed);
      setUpdated(new Date().toLocaleString('ar-JO'));
    }catch(e){setError(e instanceof Error?e.message:'تعذر إنشاء Excel.');}
    finally{setBusy(false);}
@@ -115,13 +120,26 @@ export default function SerialSoldier(){
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
        <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
      </div>
-     <p className="hint">عند إعادة رفع كشف قديم، تُزال الصفوف الزرقاء المكررة التي أضافها تصدير سابق، مع الاحتفاظ بصف سجى الأصلي وإضافة ملاحظة عن الصف المستبعد. الصفوف الأصلية المتكررة داخل سجى لا تُحذف تلقائيًا.</p>
+     <p className="hint">عند العثور على رقم فاتورة مكرر، نسألك هل توافق على دمج الصفوف. لا يُدمج أو يُحذف أي صف تلقائيًا، ولا تتغير قاعدة المشروع. عند الموافقة يُنشأ كشف جديد بالدمج وتبقى النسخة الأصلية كما هي.</p>
      <p className="hint">كشف جميع فواتير المشروع مستقل عن ملف سجى ويشمل كل التواريخ المحفوظة، حتى الفواتير التي لم يُثبت تاريخها. يظهر رقم الفاتورة مرة واحدة، وتُبيَّن السجلات المتعارضة دون حذف أي بيانات.</p>
      <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. المجموعات متعددة الفواتير تُعرض ترحيلاتها المشتركة على مستوى المجموعة بدون افتراض تبعية الترحيل لفاتورة بعينها.</p>
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
      {error&&<p role="alert" className="red"><AlertTriangle size={16} style={{verticalAlign:'middle'}}/> {error}</p>}
      {issues.length>0&&<div role="alert" className="review-list"><strong>سطور Excel غير سليمة:</strong>{issues.map((issue,i)=><p key={i}>{issue}</p>)}</div>}
    </section>
+   {report&&mergeProposals.length>0&&<section className="panel no-print" aria-label="موافقات دمج الفواتير المكررة">
+     <h2><AlertTriangle size={19} style={{verticalAlign:'middle',marginLeft:8}}/>فواتير مكررة — هل توافق على دمجها؟</h2>
+     <p className="hint">نعرض كل رقم فاتورة مكرر وصفوفه، ونحتفظ بالصف الأصلي كما هو. لا يتم الدمج إلا بعد الضغط على الموافقة الصريحة. اختلاف المبلغ أو التاريخ أو الفرع يوقف الدمج لحين تصحيح التعارض.</p>
+     {mergeProposals.map(proposal=><div key={proposal.number} className="review-list" style={{marginTop:10,padding:12}}>
+       <strong dir="ltr">{proposal.number}</strong>
+       <p>الصفوف: {proposal.allRows.join('، ')} · الصف المعتمد بعد الدمج: {proposal.keepRow}</p>
+       <p>المبالغ: {proposal.amounts.join(' / ')||'—'} · التواريخ: {proposal.dates.join(' / ')||'—'} · الفروع: {proposal.branches.join(' / ')||'—'}</p>
+       <p>{proposal.reason}</p>
+       {approvedMerges.includes(proposal.number)?<p className="hint">تمت موافقتك على هذا الدمج في نسخة التنزيل الحالية.</p>:
+        <button type="button" className="button secondary" disabled={busy||!proposal.canMerge}
+          onClick={()=>void download(proposal.number)}>أوافق على دمج الفاتورة وتنزيل النسخة المصححة</button>}
+     </div>)}
+   </section>}
    {report&&<>
      <section className="panel">
        <div className="section-title"><CheckCircle2 size={20}/><div><h2>نتيجة الفحص</h2><p>التصنيف يفصل وصول الورق عن اختلاف الرقم أو المبلغ؛ تُسجل الفروقات بالملاحظات وتُحسب الفواتير المؤكد وصولها ضمن الواصلة. تؤخذ الترحيلات من حركات المستودعات الفعلية.</p></div></div>
@@ -157,8 +175,8 @@ export default function SerialSoldier(){
          const associated=[...item.transfers,...item.unassignedTransfers];
          const cols=associated.filter(x=>x.kind==='main'||x.kind==='dry');
          const adjustments=associated.filter(x=>x.kind==='adjustment');
-         return <tr key={item.row} style={{backgroundColor:item.origin==='project'?'light-dark(#cce5ff, var(--theme-info-surface))':color[item.state]}}>
-           <td>{item.row<0?'يُضاف للكشف':item.row}</td><td dir="ltr">{item.number||'—'}</td><td dir="ltr">{item.amount||'—'}</td><td>{item.origin==='project'?'بالمشروع فقط — غير موجودة بكشف سجى':label[item.state]}</td>
+         return <tr key={item.row} style={{backgroundColor:duplicateRows.has(item.row)?color.review:item.origin==='project'?'light-dark(#cce5ff, var(--theme-info-surface))':color[item.state]}}>
+           <td>{item.row<0?'يُضاف للكشف':item.row}</td><td dir="ltr">{item.number||'—'}</td><td dir="ltr">{item.amount||'—'}</td><td>{duplicateRows.has(item.row)?'مكرر — بانتظار موافقة الدمج':item.origin==='project'?'بالمشروع فقط — غير موجودة بكشف سجى':label[item.state]}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='main').map(t=>t.number).join('، ')||'—'}</td>
            <td dir="ltr">{cols.filter(t=>t.kind==='dry').map(t=>t.number).join('، ')||'—'}</td>
            <td dir="ltr">{adjustments.map(t=>t.number).join('، ')||'—'}</td><td>{serialReviewNote(item)||'—'}</td>
