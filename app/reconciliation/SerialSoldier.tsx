@@ -1,7 +1,7 @@
 'use client';
 import {useMemo,useState} from 'react';
 import {AlertTriangle,CheckCircle2,Download,FileSpreadsheet,RefreshCw,Upload} from 'lucide-react';
-import {evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
+import {duplicateGeneratedSerialRows,evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
 
 const label={received:'واصل ومطابق',received_difference:'واصلة — فرق في الملاحظات',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
 const color={received:'light-dark(#d8f3dc, var(--theme-success-surface))',received_difference:'light-dark(#fff0bf, var(--theme-warning-surface))',pending:'light-dark(#fad5e5, var(--theme-pink-surface))',missing:'light-dark(#fad5e5, var(--theme-pink-surface))',review:'light-dark(#fff0bf, var(--theme-warning-surface))'};
@@ -21,7 +21,9 @@ export default function SerialSoldier(){
  const [day,setDay]=useState('');
  const [updated,setUpdated]=useState('');
  const allRows=useMemo(()=>{
-   const rows=report?[...report.rows,...report.projectOnly]:[];
+   if(!report)return [];
+   const skipped=duplicateGeneratedSerialRows(report.rows);
+   const rows=[...report.rows.filter(row=>!skipped.has(row.row)),...report.projectOnly];
    return [...rows.filter(row=>row.origin==='project'),...rows.filter(row=>row.origin!=='project')];
  },[report]);
  const projectOnlyCount=allRows.filter(row=>row.origin==='project').length;
@@ -113,6 +115,7 @@ export default function SerialSoldier(){
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
        <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
      </div>
+     <p className="hint">عند إعادة رفع كشف قديم، تُزال الصفوف الزرقاء المكررة التي أضافها تصدير سابق، مع الاحتفاظ بصف سجى الأصلي وإضافة ملاحظة عن الصف المستبعد. الصفوف الأصلية المتكررة داخل سجى لا تُحذف تلقائيًا.</p>
      <p className="hint">كشف جميع فواتير المشروع مستقل عن ملف سجى ويشمل كل التواريخ المحفوظة، حتى الفواتير التي لم يُثبت تاريخها. يظهر رقم الفاتورة مرة واحدة، وتُبيَّن السجلات المتعارضة دون حذف أي بيانات.</p>
      <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. المجموعات متعددة الفواتير تُعرض ترحيلاتها المشتركة على مستوى المجموعة بدون افتراض تبعية الترحيل لفاتورة بعينها.</p>
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
