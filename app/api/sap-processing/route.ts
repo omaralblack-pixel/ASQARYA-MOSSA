@@ -3,6 +3,7 @@ import {env} from 'cloudflare:workers';
 import branches from '../../branches.json';
 import {lieutenantFiles} from '../../../worker/institution';
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
+import {decodeArchivedSapSource} from '../../lib/sap-source-integrity';
 import {buildSapPlan,buildSapBatches,sapProcessorVersion,type SapJob,type SapPlan,type SapBatch} from '../../lib/sap-processing';
 import {POST as importTransfers} from '../reconcile/route';
 import {POST as importAqaba} from '../aqaba/route';
@@ -57,11 +58,20 @@ export async function POST(req:Request){try{
   const existing=await readJob(key);
   if(existing&&body.recheck!==true)return json({job:existing,reused:true});
   if(typeof body.text!=='string'||!body.text.trim()||new TextEncoder().encode(body.text).length>25*1024*1024)return json({error:'نص الملف غير صالح.'},400);
-  // Confirm the immutable original exists. Do not create jobs for arbitrary keys.
+  // Independently re-read the immutable original. Browser-supplied decoded
+  // content is not trusted until it matches a fresh server-side readback.
   const original=await lieutenantFiles(new Request(new URL('/api/lieutenant-files?key='+encodeURIComponent(key),req.url)),env);
   if(!original.ok){await original.body?.cancel();return json({error:'تعذّر التحقق من الملف الأصلي المحفوظ.'},400);}
-  await original.body?.cancel();
-  const plan=buildSapPlan(body.text,branches);
+  const bytes=new Uint8Array(await original.arrayBuffer());
+  const hash=createHash('sha256').update(bytes).digest('hex').slice(0,32);
+  const storedHash=key.match(/^lieutenant\/(?:transfers|opening|balance|other)__([a-f0-9]{32})__/)?.[1];
+  if(hash!==storedHash)return json({error:'بصمة أصل ملف SAP لا تطابق أرشيفه. لم تُعالج أي بيانات.'},409);
+  const filename=key.split('__').at(-1)||'';
+  let decoded:string;
+  try{decoded=decodeArchivedSapSource(bytes,filename)}
+  catch{return json({error:'تعذّر التحقق المستقل من محتوى ملف SAP الأصلي. لم تُعالج أي بيانات.'},422);}
+  if(decoded!==body.text)return json({error:'نص SAP لا يطابق الملف الأصلي المحفوظ. أعد فتح الأصل من «ملفات SAP» قبل المعالجة.'},409);
+  const plan=buildSapPlan(decoded,branches);
   // Reuse only exact document fingerprints with a live queue/invoice key.
   // If an operator removed a record, its old receipt cannot hide missing data.
   if(plan.kind==='transfers'){
