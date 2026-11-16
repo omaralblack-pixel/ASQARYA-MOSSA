@@ -112,20 +112,25 @@ export async function GET(req:Request){
   const filtered=!!from||!!to;
   if(filtered&&(!date(from)||!date(to)||from>to))
     return json({error:'فترة العقبة غير صالحة.'},400);
+  const page=Number(u.searchParams.get('offset')||'0');
+  if(!Number.isSafeInteger(page)||page<0||page>10000000)
+    return json({error:'صفحة بيانات العقبة غير صالحة.'},400);
+  const pageSize=summary?3000:500;
+  const offset=summary?0:page;
   const readTable=(table:string)=>{
     const statement=db().prepare('SELECT payload FROM '+table+
-      (filtered?' WHERE doc_date BETWEEN ? AND ?':'')+' ORDER BY doc_date DESC,doc_no LIMIT 3001');
-    return (filtered?statement.bind(from,to):statement).all<{payload:string}>();
+      (filtered?' WHERE doc_date BETWEEN ? AND ?':'')+' ORDER BY doc_date DESC,doc_no,id LIMIT ? OFFSET ?');
+    return (filtered?statement.bind(from,to,pageSize+1,offset):statement.bind(pageSize+1,offset)).all<{payload:string}>();
   };
   const [official,blue,transfers,journal]=await Promise.all([
     readTable('aqaba_official'),readTable('aqaba_blue'),
     readTable('aqaba_transfers'),readTable('aqaba_oinm'),
   ]);
-  const partial=[official,blue,transfers,journal].some(rows=>rows.results.length>3000);
-  const officialLines=official.results.slice(0,3000).map(x=>JSON.parse(x.payload) as AqabaLine);
-  const blueLines=blue.results.slice(0,3000).map(x=>JSON.parse(x.payload) as BlueLine);
-  const transferLines=transfers.results.slice(0,3000).map(x=>JSON.parse(x.payload) as AqabaTransfer);
-  const journalLines=journal.results.slice(0,3000).map(x=>JSON.parse(x.payload) as AqabaMovement);
+  const partial=[official,blue,transfers,journal].some(rows=>rows.results.length>pageSize);
+  const officialLines=official.results.slice(0,pageSize).map(x=>JSON.parse(x.payload) as AqabaLine);
+  const blueLines=blue.results.slice(0,pageSize).map(x=>JSON.parse(x.payload) as BlueLine);
+  const transferLines=transfers.results.slice(0,pageSize).map(x=>JSON.parse(x.payload) as AqabaTransfer);
+  const journalLines=journal.results.slice(0,pageSize).map(x=>JSON.parse(x.payload) as AqabaMovement);
   if(summary){
    const officialNos=new Set(officialLines.filter(x=>x.kind==='IN').map(x=>x.document));
    const blueNos=new Set(blueLines.map(x=>x.invoice));
@@ -137,7 +142,7 @@ export async function GET(req:Request){
      transferDocuments:new Set(transferLines.map(x=>x.document)).size,
      journalMovements:journalLines.length,partial});
   }
-  return json({official:officialLines,blue:blueLines,transfers:transferLines,journal:journalLines,partial});
+  return json({official:officialLines,blue:blueLines,transfers:transferLines,journal:journalLines,partial,nextOffset:partial?offset+pageSize:null});
  }catch{return json({error:'تعذّر قراءة سجل العقبة.'},500)}
 }
 export async function POST(req:Request){
