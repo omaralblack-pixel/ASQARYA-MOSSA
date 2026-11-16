@@ -31,7 +31,7 @@ function ensureSchema(){return schemaReady??=db().batch(schemaStatements.map(sql
 export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);
 if(u.searchParams.has('aqabaPricing')){
  const reference=await aqabaRefs(await refs());
- return json({reference,priceCount:reference.length,branch:'84 — العقبة',currencyUnit:'fils'});
+ return json({reference,priceCount:reference.filter(item=>item.price!==null).length,branch:'84 — العقبة',currencyUnit:'fils'});
 }
 if(u.searchParams.has('sapLookup')){
  // Read-only search in D1, independent of the replaceable current.json preview.
