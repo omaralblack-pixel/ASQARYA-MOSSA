@@ -6,6 +6,7 @@ import GroupLookup from './GroupLookup';
 import {isAqabaBranch} from '../lib/aqaba-instant-reference';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
+import {groupSapEvidence,searchArchivedSapEvidence,type SapEvidence} from '../lib/sap-document-lookup';
 import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editGroupInvoiceDate, addTransferToDraft, withSapInvoiceNumbers, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
 type Summary = {id:string; branch:string; version:number; payload:string};
@@ -49,7 +50,7 @@ function matchesRecord(row:Summary, number:string, kind:SearchKind) {
     ? (saved.invoices || []).some(item=>invoiceDocumentNo(item.number)===number)
     : (saved.transfers || []).some(item=>transferNumbers(item.number).includes(number));
 }
-function matchingDocuments(rows:Summary[], groups:SapImportGroup[], query:string, filter:SearchFilter):DocumentHit[] {
+function matchingDocuments(rows:Summary[], groups:SapImportGroup[], query:string, filter:SearchFilter, extra:SapEvidence[]=[]):DocumentHit[] {
   const searched = digits(query).trim();
   if (!/^\d{4,20}$/.test(searched)) return [];
   const matches = new Map<string,DocumentHit>();
@@ -71,6 +72,10 @@ function matchingDocuments(rows:Summary[], groups:SapImportGroup[], query:string
       for (const number of member.invoices) add(number,'invoice',member.branch||group.draft.branch,'sap');
       add(member.transfer.number,'transfer',member.branch||group.draft.branch,'sap');
     }
+  for(const item of extra){
+    for(const invoice of item.invoiceNumbers)add(invoice,'invoice',item.branch,'sap');
+    add(item.transfer.number,'transfer',item.branch,'sap');
+  }
   return [...matches.values()].sort((a,b)=>
     (a.number===searched?-1:0)-(b.number===searched?-1:0) ||
     a.kind.localeCompare(b.kind) ||
@@ -99,6 +104,8 @@ export default function InstantMatch({
 }) {
   const [records, setRecords] = useState<Summary[]>([]);
   const [imports, setImports] = useState<SapImportGroup[]>([]);
+  const [queueMatches,setQueueMatches]=useState<SapEvidence[]>([]);
+  const [suggestionStatus,setSuggestionStatus]=useState<'idle'|'loading'|'error'>('idle');
   const [fileWarning, setFileWarning] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -117,7 +124,28 @@ export default function InstantMatch({
   const [aqabaPricingLoading,setAqabaPricingLoading] = useState(false);
   const isAqaba=!!draft&&isAqabaBranch(draft.branch);
 
-  const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind),[records,imports,number,kind]);
+  const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind,queueMatches),[records,imports,number,kind,queueMatches]);
+
+  async function searchImportedSap(number:string){
+    const data=await getJson<{hits:SapEvidence[];partial:boolean}>('/api/reconcile?sapLookup='+encodeURIComponent(number));
+    if(data.partial)throw Error('نتائج الترحيلات المستوردة كثيرة وغير مكتملة. ابحث برقم المستند كاملًا.');
+    return data.hits;
+  }
+
+  // Suggestion lookup is debounced and read-only; D1 queue is consulted even
+  // when current.json does not contain the requested transfer/invoice.
+  useEffect(()=>{
+    const searched=digits(number).trim();
+    if(!/^\d{4,20}$/.test(searched)){setSuggestionStatus('idle');return}
+    let active=true;
+    setSuggestionStatus('loading');
+    const timer=setTimeout(()=>{
+      searchImportedSap(searched).then(hits=>{
+        if(active){setQueueMatches(hits);setSuggestionStatus('idle')}
+      }).catch(()=>{if(active)setSuggestionStatus('error')});
+    },350);
+    return ()=>{active=false;clearTimeout(timer)};
+  },[number]);
 
   async function refreshRecords() {
     const data = await getJson<{records:Summary[]}>('/api/reconcile?records=1');
@@ -200,7 +228,9 @@ export default function InstantMatch({
       setError('');
       try {
         const latestRecords = await refreshRecords();
-        const latest = matchingDocuments(latestRecords,imports,searched,selectedKind);
+        const queued=await searchImportedSap(searched);
+        setQueueMatches(queued);
+        const latest = matchingDocuments(latestRecords,imports,searched,selectedKind,queued);
         setSuggestionsOpen(true);
         setError(latest.length
           ?'اختر رقم المستند الكامل من الاقتراحات بعد تحديث السجل.'
@@ -216,15 +246,35 @@ export default function InstantMatch({
     }
     setBusy(true);setSuggestionsOpen(false);setError('');setNotice('');setShowItems(false);
     try {
-      const rows = await refreshRecords();
+      const [rows,queued]=await Promise.all([refreshRecords(),searchImportedSap(searched)]);
+      setQueueMatches(queued);
       const found = rows.filter(row=>matchesRecord(row,searched,searchKind));
       if (found.length>1) throw Error('رقم المستند مكرر في السجل؛ يلزم مراجعة المطابقة الأساسية.');
       if (found.length===1) { await loadRecord(found[0],searched,searchKind);return; }
 
-      const candidate = imports.find(group=>group.members.some(member=>
+      let candidate = imports.find(group=>group.members.some(member=>
         searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
+      if(!candidate)candidate=groupSapEvidence(queued,searched,searchKind)||undefined;
+      // Imported records may hold old Remarks; only inspect full immutable SAP
+      // originals after an explicit user search, never on each keystroke.
+      if(!candidate || (searchKind==='transfer'&&candidate.members.every(member=>!member.invoices.length))){
+        let archived;
+        try{archived=await searchArchivedSapEvidence(searched,searchKind,branches)}
+        catch(e){
+          if(!candidate)throw Error('تعذّر فحص أرشيف ملفات SAP: '+(e instanceof Error?e.message:String(e)));
+          setFileWarning('تعذّر فحص الملفات المؤرشفة؛ الرابط المعروض من البيانات المستوردة فقط.');
+        }
+        if(archived){
+          const proposal=groupSapEvidence(archived.hits,searched,searchKind);
+          if(proposal)candidate=proposal;
+          if(archived.unreadable>0){
+            setFileWarning('تعذّر قراءة '+archived.unreadable+' ملف SAP مؤرشف؛ النتائج قد تكون ناقصة، ولا يُعتبر غياب الرقم إثباتًا لعدم وجود الفاتورة.');
+            if(!candidate)throw Error('الفحص غير مكتمل: لم تُقرأ بعض ملفات SAP المؤرشفة. لا تنشئ فاتورة مكررة قبل مراجعة الأصول.');
+          }
+        }
+      }
       if (candidate) {
-        if (candidate.reversal || candidate.members.some(member=>member.reversal || member.issues.length)) {
+        if (candidate.issues.length || candidate.reversal || candidate.members.some(member=>member.reversal || member.issues.length)) {
           throw Error('أحد ترحيلات هذا المستند ملغى أو فيه مشكلة قراءة من SAP. افتح المطابقة الأساسية لمراجعته قبل اعتماد أي مبلغ.');
         }
         const proposed = fillSearchedAmount(fromSap(candidate,searched,searchKind),searched,searchKind);
@@ -273,11 +323,11 @@ export default function InstantMatch({
         }
         setSources({});
         setDraft({...fresh(),transfers:[{id:uuid(),number:searched,date:localDate(),paste:''}]});
-        setNotice('الترحيل مش موجود بكشف SAP المحفوظ. ألصق جدوله يدويًا، واكتب رقم فاتورته الزرقاء.');
+        setNotice('الترحيل غير مثبت في المصادر المحمّلة أو المؤرشفة التي أمكن قراءتها. ألصق جدول SAP الأصلي للتحقق، ولا تعتبره مفقودًا تلقائيًا.');
       } else {
         setSources({});
         setDraft(fillSearchedAmount(fresh(searched),searched,searchKind));
-        setNotice('لم أجد هذا الرقم في سجلات المطابقة المحفوظة أو ملف SAP الحالي. فتحته كفاتورة جديدة غير محفوظة؛ لا يعني ذلك أن ورقها غير واصل. راجع الترحيلات أو أرشيف SAP قبل إنشاء سجل جديد.');
+        setNotice('لم أجد دليلًا مباشرًا لهذا الرقم في السجل، أو ترحيلات SAP المستوردة، أو الأصول المؤرشفة القابلة للقراءة. فتحته كفاتورة جديدة غير محفوظة للمراجعة فقط؛ لا تحفظها قبل تأكيد رقم الترحيل لتجنب التكرار.');
       }
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر البحث عن المستند.')}
     finally {setBusy(false);}
@@ -301,7 +351,19 @@ export default function InstantMatch({
         throw Error('الترحيل '+searched+' يحمل فاتورة زرقاء رقم '+stored.invoiceNumbers.join('، ')+'، ولا يمكن إضافته كترحيل ثانٍ.');
       }
       if (stored && stored.recordId===draft.id) throw Error('الترحيل موجود مسبقًا في السجل الحالي.');
-      const member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
+      let member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
+      if(!member){
+        let linked=groupSapEvidence(await searchImportedSap(searched),searched,'transfer');
+        if(!linked || linked.members.every(item=>!item.invoices.length)){
+          const archived=await searchArchivedSapEvidence(searched,'transfer',branches);
+          const found=groupSapEvidence(archived.hits,searched,'transfer');
+          if(found)linked=found;
+          if(archived.unreadable>0&&!linked)
+            throw Error('لم تكتمل قراءة الأصول المؤرشفة للتحقق من رقم الترحيل '+searched+'.');
+        }
+        member=linked?.members.find(item=>item.transfer.number===searched);
+        if(linked?.issues.length)throw Error(linked.issues.join(' · '));
+      }
       if (member && (member.reversal || member.issues.length)) {
         throw Error('الترحيل '+searched+' ملغى أو فيه ملاحظات قراءة من SAP. راجعه في شاشة المطابقة الأساسية قبل إضافته.');
       }
@@ -386,7 +448,7 @@ export default function InstantMatch({
         <div className="instant-document-search">
           <label htmlFor="instant-document-number">ابحث برقم الفاتورة الزرقاء أو الترحيل
             <input id="instant-document-number" dir="ltr" inputMode="numeric" autoComplete="off"
-              value={number} onChange={e=>{setNumber(e.target.value);setSuggestionsOpen(true);setError('')}}
+              value={number} onChange={e=>{setNumber(e.target.value);setQueueMatches([]);setSuggestionsOpen(true);setError('')}}
               onFocus={()=>setSuggestionsOpen(true)}
               onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();void lookup()}}}
               aria-expanded={suggestionsOpen&&/^\d{4,20}$/.test(digits(number).trim())}
@@ -402,7 +464,9 @@ export default function InstantMatch({
                   <span>{item.kind==='invoice'?'فاتورة زرقاء':'ترحيل SAP'}</span>
                   <small>{item.branch||'الفرع غير معروف'} · {item.origin==='saved'?'محفوظ بالسجل':'ملف SAP'}</small>
                 </button>)}</>:
-                <p className="instant-results-heading">لا تظهر اقتراحات بهذا الرقم في البيانات المحمّلة حاليًا. هذا بحث مبدئي، وليس إثباتًا أن الفاتورة غير مسجلة أو أن الورق غير واصل. اضغط «بحث وسحب الترحيلات» للتحقق من السجل المحدث، أو أدخل الرقم كاملًا.</p>}
+                <p className="instant-results-heading">{suggestionStatus==='loading'?'جارٍ البحث في الترحيلات المستوردة داخل قاعدة البيانات…':
+                   suggestionStatus==='error'?'تعذّر البحث التلقائي في الترحيلات المستوردة؛ اضغط «بحث وسحب الترحيلات» لإعادة التحقق.':
+                   'لا تظهر اقتراحات بهذا الرقم في البيانات المحمّلة حاليًا. هذا بحث مبدئي، وليس إثباتًا أن الفاتورة غير مسجلة أو أن الورق غير واصل. اضغط «بحث وسحب الترحيلات» للتحقق من السجل المحدث والأرشيف، أو أدخل الرقم كاملًا.'}</p>}
             </div>}
         </div>
         {kind!=='transfer'&&<label>مبلغ الفاتورة الزرقاء (د.أ) — يُستخدم عند اختيار فاتورة
