@@ -144,6 +144,60 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
     }
   }
 
+  async function openPaperInvoice(){
+    const invoice=invoiceDocumentNo(paperInvoice||query);
+    const transferNo=digits(paperTransfer||(/^-?\\d{4,20}$/.test(search)?search:'')).trim();
+    setPaperError('');
+    if(!/^\\d{10}$/.test(invoice)||!/^\\d{4,20}$/.test(transferNo)){
+      setPaperError('اكتب رقم الفاتورة الورقية (10 خانات) ورقم ترحيل SAP الصحيح من الورقة.');
+      return;
+    }
+    setPaperBusy(true);
+    try{
+      // Check the current D1 reconciliation register before creating any draft.
+      // Existing owner records must be opened in place, never duplicated.
+      const latest=await readRecords();
+      const recordsWithDraft=latest.map(row=>({row,draft:readReconciliationRecord(row.payload)}));
+      const invoiceOwner=recordsWithDraft.find(({draft})=>
+        draft?.invoices.some(item=>invoiceDocumentNo(item.number)===invoice));
+      const transferOwner=recordsWithDraft.find(({draft})=>
+        draft?.transfers.some(item=>transferNumbers(item.number).includes(transferNo)));
+      if(invoiceOwner){
+        setPaperError('الفاتورة '+invoice+' محفوظة بالفعل في السجل. تم فتح سجلها الأصلي؛ راجع ربط الترحيل '+transferNo+' قبل أي تعديل.');
+        openSaved(invoiceOwner.row.id);
+        return;
+      }
+      if(transferOwner){
+        setPaperError('الترحيل '+transferNo+' محفوظ بالفعل بدون هذه الفاتورة. تم فتح كشفه الأصلي؛ اكتب رقم الفاتورة الورقية فيه ثم راجع واحفظ. لا ننشئ نسخة ثانية.');
+        openSaved(transferOwner.row.id);
+        return;
+      }
+      let member=groups.flatMap(group=>group.members).find(item=>item.transfer.number===transferNo);
+      if(!member){
+        const response=await fetch('/api/reconcile?sapLookup='+encodeURIComponent(transferNo),{cache:'no-store'});
+        const result=await response.json() as {hits?:SapEvidence[];partial?:boolean;error?:string};
+        if(!response.ok)throw Error(result.error||'تعذّر فحص ترحيلات SAP المستوردة.');
+        if(result.partial)throw Error('فحص ترحيلات SAP غير مكتمل؛ استخدم رقم الترحيل الكامل.');
+        member=groupSapEvidence(result.hits||[],transferNo,'transfer')?.members
+          .find(item=>item.transfer.number===transferNo);
+      }
+      if(!member){
+        const archived=await searchArchivedSapEvidence(transferNo,'transfer',branches);
+        if(archived.unreadable)throw Error('هناك ملفات SAP مؤرشفة لم تُقرأ؛ يلزم مراجعتها قبل الربط.');
+        member=groupSapEvidence(archived.hits,transferNo,'transfer')?.members
+          .find(item=>item.transfer.number===transferNo);
+      }
+      if(!member)throw Error('الترحيل '+transferNo+' غير موجود في كشوف SAP المتاحة. ارفع كشف الترحيلات الأصلي من «ملفات SAP» أولًا.');
+      const proposal=draftFromPaperInvoice(member,invoice);
+      openDraft(proposal);
+      setMessage('تم فتح الترحيل '+transferNo+' للربط اليدوي بالفاتورة الورقية '+invoice+'. لم تُحفظ أي مطابقة بعد.');
+    }catch(error){
+      setPaperError(error instanceof Error?error.message:'تعذّر التحقق من الربط الورقي.');
+    }finally{
+      setPaperBusy(false);
+    }
+  }
+
   async function saveSelected(){
     setBusy(true);
     setMessage('');
