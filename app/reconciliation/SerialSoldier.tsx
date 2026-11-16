@@ -103,11 +103,13 @@ export default function SerialSoldier(){
      <h2><FileSpreadsheet size={21} style={{verticalAlign:'middle',marginLeft:8}}/>كشف سجى الأصلي</h2>
      <p className="hint">المصدر المعتمد: الشيت «للطباعة»؛ رقم الفاتورة D، المبلغ F، ترحيلات رئيسي K ونواشف L، والتعديلات M وما بعدها. تبقى أرقام سجى ومبالغها الأصلية كما هي. عند وجود اختلاف فقط، يظهر رقمك أو مبلغك الصحيح في ملاحظة بجانب الصف المعني، دون تعديل قاعدة المشروع.</p>
      <p className="hint">الفواتير المسجلة بالمشروع والناقصة من كشف سجى تُضاف في نفس الشيت بالأزرق، مع رقمها وتاريخها وفرعها ومبلغها وترحيلاتها، وملاحظة «موجودة بالمشروع وغير موجودة بكشف سجى». تشمل المقارنة فترة الكشف المكتوبة في عنوان ملف سجى.</p>
-     <label style={{display:'block',marginBottom:14}}>اختيار Excel سجى (.xlsx)
-       <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={e=>{const f=e.target.files?.[0];if(f)void checkExcel(f);e.target.value='';}}/>
-     </label>
-     <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+     <div style={{display:'flex',alignItems:'end',gap:12,flexWrap:'wrap',marginBottom:14}}>
+       <label style={{flex:'1 1 280px'}}>اختيار Excel سجى (.xlsx)
+         <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={e=>{const f=e.target.files?.[0];if(f)void checkExcel(f);e.target.value='';}}/>
+       </label>
        <button type="button" className="button secondary" onClick={()=>void downloadProjectInvoices()} disabled={busy}><Download size={17}/>تنزيل كشف جميع فواتير المشروع</button>
+     </div>
+     <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
        <button type="button" className="button secondary" onClick={()=>void refresh()} disabled={!file||busy}><RefreshCw size={16}/>إعادة الفحص من السجل الحالي</button>
        <button type="button" className="button primary" onClick={()=>void download()} disabled={!buffer||!report||busy}><Download size={17}/>تنزيل ملف سجى ملوّنًا مع أرقام الترحيلات</button>
      </div>
