@@ -81,6 +81,25 @@ export async function restoreLieutenantSource(
   }
   if(restored){
     if(supplements)restored.name+=' + '+supplements+' ملف SAP أقدم (لاستكمال مستندات الإلغاء)';
+    // The shared legacy export is a supplemental evidence source even when a
+    // newer immutable archive exists. Copy only specifically referenced missing
+    // originals: never overwrite new documents or import unrelated old rows.
+    const missingInArchive=new Set(missingCancellationOriginals(restored.scan));
+    if(missingInArchive.size){
+      try{
+        const shared=await readShared();
+        const scan=shared?parse(shared.text):null;
+        if(scan){
+          const recovered=scan.transfers.filter(row=>missingInArchive.has(row.transfer.number));
+          if(recovered.length){
+            restored.scan=mergeLieutenantScans(restored.scan,{...scan,transfers:recovered,issues:[]});
+            restored.name+=' + '+shared!.name+' (أصول إلغاء مفقودة فقط)';
+          }
+        }
+      }catch{
+        restored.scan.issues.push('تعذّرت قراءة كشف SAP المشترك لاستكمال أصول الإلغاء؛ يلزم تحديث المصدر.');
+      }
+    }
     const missing=missingCancellationOriginals(restored.scan);
     if(missing.length)restored.scan.issues.push('أصول إلغاء غير موجودة في الملفات المقروءة: '+
       missing.slice(0,12).join('، ')+(missing.length>12?' وغيرها':'')+
