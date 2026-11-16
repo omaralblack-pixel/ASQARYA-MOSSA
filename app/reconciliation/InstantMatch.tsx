@@ -334,7 +334,19 @@ export default function InstantMatch({
         throw Error('الترحيل '+searched+' يحمل فاتورة زرقاء رقم '+stored.invoiceNumbers.join('، ')+'، ولا يمكن إضافته كترحيل ثانٍ.');
       }
       if (stored && stored.recordId===draft.id) throw Error('الترحيل موجود مسبقًا في السجل الحالي.');
-      const member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
+      let member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
+      if(!member){
+        let linked=groupSapEvidence(await searchImportedSap(searched),searched,'transfer');
+        if(!linked || linked.members.every(item=>!item.invoices.length)){
+          const archived=await searchArchivedSapEvidence(searched,'transfer',branches);
+          const found=groupSapEvidence(archived.hits,searched,'transfer');
+          if(found)linked=found;
+          if(archived.unreadable>0&&!linked)
+            throw Error('لم تكتمل قراءة الأصول المؤرشفة للتحقق من رقم الترحيل '+searched+'.');
+        }
+        member=linked?.members.find(item=>item.transfer.number===searched);
+        if(linked?.issues.length)throw Error(linked.issues.join(' · '));
+      }
       if (member && (member.reversal || member.issues.length)) {
         throw Error('الترحيل '+searched+' ملغى أو فيه ملاحظات قراءة من SAP. راجعه في شاشة المطابقة الأساسية قبل إضافته.');
       }
