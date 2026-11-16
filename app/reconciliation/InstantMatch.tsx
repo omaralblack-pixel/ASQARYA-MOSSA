@@ -211,8 +211,9 @@ export default function InstantMatch({
       setBusy(true);
       setError('');
       try {
-        const latestRecords = await refreshRecords();
-        const latest = matchingDocuments(latestRecords,imports,searched,selectedKind);
+        const [latestRecords,queued]=await Promise.all([refreshRecords(),searchImportedSap(searched)]);
+        setQueueMatches(queued);
+        const latest = matchingDocuments(latestRecords,imports,searched,selectedKind,queued);
         setSuggestionsOpen(true);
         setError(latest.length
           ?'اختر رقم المستند الكامل من الاقتراحات بعد تحديث السجل.'
@@ -228,15 +229,35 @@ export default function InstantMatch({
     }
     setBusy(true);setSuggestionsOpen(false);setError('');setNotice('');setShowItems(false);
     try {
-      const rows = await refreshRecords();
+      const [rows,queued]=await Promise.all([refreshRecords(),searchImportedSap(searched)]);
+      setQueueMatches(queued);
       const found = rows.filter(row=>matchesRecord(row,searched,searchKind));
       if (found.length>1) throw Error('رقم المستند مكرر في السجل؛ يلزم مراجعة المطابقة الأساسية.');
       if (found.length===1) { await loadRecord(found[0],searched,searchKind);return; }
 
-      const candidate = imports.find(group=>group.members.some(member=>
+      let candidate = imports.find(group=>group.members.some(member=>
         searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
+      if(!candidate)candidate=groupSapEvidence(queued,searched,searchKind)||undefined;
+      // Imported records may hold old Remarks; only inspect full immutable SAP
+      // originals after an explicit user search, never on each keystroke.
+      if(!candidate || (searchKind==='transfer'&&candidate.members.every(member=>!member.invoices.length))){
+        let archived;
+        try{archived=await searchArchivedSapEvidence(searched,searchKind,branches)}
+        catch(e){
+          if(!candidate)throw Error('تعذّر فحص أرشيف ملفات SAP: '+(e instanceof Error?e.message:String(e)));
+          setFileWarning('تعذّر فحص الملفات المؤرشفة؛ الرابط المعروض من البيانات المستوردة فقط.');
+        }
+        if(archived){
+          const proposal=groupSapEvidence(archived.hits,searched,searchKind);
+          if(proposal)candidate=proposal;
+          if(archived.unreadable>0){
+            setFileWarning('تعذّر قراءة '+archived.unreadable+' ملف SAP مؤرشف؛ النتائج قد تكون ناقصة، ولا يُعتبر غياب الرقم إثباتًا لعدم وجود الفاتورة.');
+            if(!candidate)throw Error('الفحص غير مكتمل: لم تُقرأ بعض ملفات SAP المؤرشفة. لا تنشئ فاتورة مكررة قبل مراجعة الأصول.');
+          }
+        }
+      }
       if (candidate) {
-        if (candidate.reversal || candidate.members.some(member=>member.reversal || member.issues.length)) {
+        if (candidate.issues.length || candidate.reversal || candidate.members.some(member=>member.reversal || member.issues.length)) {
           throw Error('أحد ترحيلات هذا المستند ملغى أو فيه مشكلة قراءة من SAP. افتح المطابقة الأساسية لمراجعته قبل اعتماد أي مبلغ.');
         }
         const proposed = fillSearchedAmount(fromSap(candidate,searched,searchKind),searched,searchKind);
@@ -285,11 +306,11 @@ export default function InstantMatch({
         }
         setSources({});
         setDraft({...fresh(),transfers:[{id:uuid(),number:searched,date:localDate(),paste:''}]});
-        setNotice('الترحيل مش موجود بكشف SAP المحفوظ. ألصق جدوله يدويًا، واكتب رقم فاتورته الزرقاء.');
+        setNotice('الترحيل غير مثبت في المصادر المحمّلة أو المؤرشفة التي أمكن قراءتها. ألصق جدول SAP الأصلي للتحقق، ولا تعتبره مفقودًا تلقائيًا.');
       } else {
         setSources({});
         setDraft(fillSearchedAmount(fresh(searched),searched,searchKind));
-        setNotice('لم أجد هذا الرقم في سجلات المطابقة المحفوظة أو ملف SAP الحالي. فتحته كفاتورة جديدة غير محفوظة؛ لا يعني ذلك أن ورقها غير واصل. راجع الترحيلات أو أرشيف SAP قبل إنشاء سجل جديد.');
+        setNotice('لم أجد دليلًا مباشرًا لهذا الرقم في السجل، أو ترحيلات SAP المستوردة، أو الأصول المؤرشفة القابلة للقراءة. هذه فاتورة جديدة غير محفوظة للمراجعة فقط؛ لا تحفظها قبل تأكيد رقم الترحيل لتجنب التكرار.');
       }
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر البحث عن المستند.')}
     finally {setBusy(false);}
