@@ -176,7 +176,7 @@ assert.equal(duplicateResult.projectOnly.length,1,'Each project-only invoice num
 assert.equal(duplicateResult.projectOnly[0].number,'2629999988');
 assert.ok(serialReviewNote(duplicateResult.projectOnly[0]).includes('مكرر في سجلات المشروع'));
 assert.deepEqual(serialInvoiceColumns(duplicateResult.projectOnly[0]),
- ['2619091','2619092','2619093','2619095'],'Every conflicting source transfer stays visible on the single invoice row');
+ ['2619091','2619092','2619095','2619093'],'Every conflicting source transfer stays visible, sorted by main/dry/adjustment columns');
 assert.ok(duplicateResult.blockers.some(message=>message.includes('2629999988')&&message.includes('مكرر')));
 const disagreement=record('duplicate-amount',[dated('2629999988','13.200')],[transfer('2619096','DAR00001','001','011')]);
 const conflicting=evaluateSerial([row(5,'2624002303','186.400')],[correct,projectOnly,disagreement]);
