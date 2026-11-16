@@ -105,6 +105,7 @@ export default function InstantMatch({
   const [records, setRecords] = useState<Summary[]>([]);
   const [imports, setImports] = useState<SapImportGroup[]>([]);
   const [queueMatches,setQueueMatches]=useState<SapEvidence[]>([]);
+  const [suggestionStatus,setSuggestionStatus]=useState<'idle'|'loading'|'error'>('idle');
   const [fileWarning, setFileWarning] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -130,6 +131,21 @@ export default function InstantMatch({
     if(data.partial)throw Error('نتائج الترحيلات المستوردة كثيرة وغير مكتملة. ابحث برقم المستند كاملًا.');
     return data.hits;
   }
+
+  // Suggestion lookup is debounced and read-only; D1 queue is consulted even
+  // when current.json does not contain the requested transfer/invoice.
+  useEffect(()=>{
+    const searched=digits(number).trim();
+    if(!/^\d{4,20}$/.test(searched)){setSuggestionStatus('idle');return}
+    let active=true;
+    setSuggestionStatus('loading');
+    const timer=setTimeout(()=>{
+      searchImportedSap(searched).then(hits=>{
+        if(active){setQueueMatches(hits);setSuggestionStatus('idle')}
+      }).catch(()=>{if(active)setSuggestionStatus('error')});
+    },350);
+    return ()=>{active=false;clearTimeout(timer)};
+  },[number]);
 
   async function refreshRecords() {
     const data = await getJson<{records:Summary[]}>('/api/reconcile?records=1');
@@ -448,7 +464,9 @@ export default function InstantMatch({
                   <span>{item.kind==='invoice'?'فاتورة زرقاء':'ترحيل SAP'}</span>
                   <small>{item.branch||'الفرع غير معروف'} · {item.origin==='saved'?'محفوظ بالسجل':'ملف SAP'}</small>
                 </button>)}</>:
-                <p className="instant-results-heading">لا تظهر اقتراحات بهذا الرقم في البيانات المحمّلة حاليًا. هذا بحث مبدئي، وليس إثباتًا أن الفاتورة غير مسجلة أو أن الورق غير واصل. اضغط «بحث وسحب الترحيلات» للتحقق من السجل المحدث، أو أدخل الرقم كاملًا.</p>}
+                <p className="instant-results-heading">{suggestionStatus==='loading'?'جارٍ البحث في الترحيلات المستوردة داخل قاعدة البيانات…':
+                   suggestionStatus==='error'?'تعذّر البحث التلقائي في الترحيلات المستوردة؛ اضغط «بحث وسحب الترحيلات» لإعادة التحقق.':
+                   'لا تظهر اقتراحات بهذا الرقم في البيانات المحمّلة حاليًا. هذا بحث مبدئي، وليس إثباتًا أن الفاتورة غير مسجلة أو أن الورق غير واصل. اضغط «بحث وسحب الترحيلات» للتحقق من السجل المحدث والأرشيف، أو أدخل الرقم كاملًا.'}</p>}
             </div>}
         </div>
         {kind!=='transfer'&&<label>مبلغ الفاتورة الزرقاء (د.أ) — يُستخدم عند اختيار فاتورة
