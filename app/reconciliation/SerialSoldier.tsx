@@ -21,6 +21,7 @@ export default function SerialSoldier(){
  const [day,setDay]=useState('');
  const [updated,setUpdated]=useState('');
  const [approvedMerges,setApprovedMerges]=useState<string[]>([]);
+ const [mergeNotice,setMergeNotice]=useState('');
  const mergeProposals=useMemo(()=>serialMergeProposals(report?.rows||[]),[report]);
  const duplicateRows=new Set(mergeProposals.flatMap(proposal=>proposal.removeRows));
  const allRows=useMemo(()=>{
@@ -45,7 +46,7 @@ export default function SerialSoldier(){
  },[allRows,report]);
  const filtered=allRows.filter(row=>!day||row.date===day);
  async function checkExcel(nextFile:File){
-   setFile(nextFile);setReport(null);setBuffer(null);setIssues([]);setError('');setDay('');setApprovedMerges([]);setBusy(true);
+   setFile(nextFile);setReport(null);setBuffer(null);setIssues([]);setError('');setDay('');setApprovedMerges([]);setMergeNotice('');setBusy(true);
    try{
      if(!/\.xlsx$/i.test(nextFile.name))throw Error('ارفع ملف Excel بصيغة XLSX فقط.');
      const content=await nextFile.arrayBuffer();
@@ -92,12 +93,26 @@ export default function SerialSoldier(){
      const allowed=approveNumber?[...new Set([...approvedMerges,approveNumber])]:approvedMerges;
      // Download a review copy as-is unless the user explicitly approved a merge.
      const blob=createSerialWorkbook(buffer,fresh,allowed);
+     const name=file.name.replace(/\.xlsx$/i,'')+'-جندي-السيريل.xlsx';
+     // Re-open the generated workbook before presenting a successful merge.
+     // This also clears the stale duplicate error from the screen immediately.
+     if(allowed.length){
+       const mergedBuffer=await blob.arrayBuffer();
+       const checked=readSerialWorkbook(mergedBuffer);
+       const checkedReport=evaluateSerial(checked.rows,saved,checked.period);
+       checkedReport.blockers=[...new Set([...checked.errors,...checkedReport.blockers])];
+       for(const number of allowed)if(serialMergeProposals(checked.rows).some(p=>p.number===number))
+         throw Error('رقم الفاتورة '+number+' ما زال مكررًا بعد إنشاء الملف؛ تم إيقاف تنزيل النسخة.');
+       setReport(checkedReport);setIssues(checked.errors);setBuffer(mergedBuffer);
+       setFile(new File([blob],name,{type:blob.type}));
+       setApprovedMerges([]);
+       setMergeNotice('تم تجهيز نسخة مصححة ودمج الفاتورة '+allowed.join('، ')+' بعد موافقتك. لا تغيير على ملف سجى الأصلي أو قاعدة البيانات.');
+     }
      const url=URL.createObjectURL(blob),a=document.createElement('a');
      a.href=url;
-     a.download=file.name.replace(/\.xlsx$/i,'')+'-جندي-السيريل.xlsx';
+     a.download=name;
      a.click();
      setTimeout(()=>URL.revokeObjectURL(url),1200);
-     setApprovedMerges(allowed);
      setUpdated(new Date().toLocaleString('ar-JO'));
    }catch(e){setError(e instanceof Error?e.message:'تعذر إنشاء Excel.');}
    finally{setBusy(false);}
@@ -123,6 +138,7 @@ export default function SerialSoldier(){
      <p className="hint">عند العثور على رقم فاتورة مكرر، نسألك هل توافق على دمج الصفوف. لا يُدمج أو يُحذف أي صف تلقائيًا، ولا تتغير قاعدة المشروع. عند الموافقة يُنشأ كشف جديد بالدمج وتبقى النسخة الأصلية كما هي.</p>
      <p className="hint">كشف جميع فواتير المشروع مستقل عن ملف سجى ويشمل كل التواريخ المحفوظة، حتى الفواتير التي لم يُثبت تاريخها. يظهر رقم الفاتورة مرة واحدة، وتُبيَّن السجلات المتعارضة دون حذف أي بيانات.</p>
      <p className="hint">التنزيل متاح حتى بوجود أخطاء مطابقة؛ النسخة للمراجعة وليست اعتمادًا نهائيًا. المجموعات متعددة الفواتير تُعرض ترحيلاتها المشتركة على مستوى المجموعة بدون افتراض تبعية الترحيل لفاتورة بعينها.</p>
+     {mergeNotice&&<p role="status" className="hint">{mergeNotice}</p>}
      {file&&<p className="hint">الملف: <b>{file.name}</b> {updated?'· آخر مطابقة: '+updated:''}{busy?' · جارٍ التحقق…':''}</p>}
      {error&&<p role="alert" className="red"><AlertTriangle size={16} style={{verticalAlign:'middle'}}/> {error}</p>}
      {issues.length>0&&<div role="alert" className="review-list"><strong>سطور Excel غير سليمة:</strong>{issues.map((issue,i)=><p key={i}>{issue}</p>)}</div>}
