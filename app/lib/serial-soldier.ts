@@ -27,10 +27,13 @@ export function serialMergeProposals(rows:SerialInput[]):SerialMergeProposal[]{
   const order=[...copies].sort((a,b)=>Number(a.origin==='project')-Number(b.origin==='project')||a.row-b.row);
   const amounts=[...new Set(copies.map(row=>String(row.amount||'').trim()))];
   const amountValues=copies.map(row=>fils(row.amount));
-  const dates=[...new Set(copies.map(row=>dateValue(row.date)||String(row.date||'').trim()).filter(Boolean))];
-  const branches=[...new Set(copies.map(row=>String(row.workbookBranch||'').trim()).filter(Boolean))];
+  const parsedDates=copies.map(row=>dateValue(row.date)||'');
+  const dates=[...new Set(parsedDates.filter(Boolean))];
+  const rawBranches=copies.map(row=>String(row.workbookBranch||'').trim());
+  const branches=[...new Set(rawBranches.filter(Boolean))];
   const conflict=amountValues.some(value=>value===null)||new Set(amountValues).size>1||
-    dates.length>1||branches.length>1;
+    parsedDates.some(date=>!date)||new Set(parsedDates).size>1||
+    new Set(rawBranches).size>1;
   proposals.push({
    number,keepRow:order[0].row,removeRows:order.slice(1).map(row=>row.row),
    allRows:copies.map(row=>row.row).sort((a,b)=>a-b),canMerge:!conflict,
