@@ -27,7 +27,7 @@ export function collectedInvoiceCounts(report:Pick<CollectedInvoiceResult,'rows'
  * original system default (outgoing SAP posting date minus one day) ONLY when
  * one unambiguous posting date can be established. Historical records never change.
  */
-function invoiceDate(
+export function invoiceDate(
   invoice:Draft['invoices'][number],transfers:Draft['transfers'],
 ):{date:string|null;source:'manual'|'invoice'|'transfer';reason:string}{
   const saved=dateValue(invoice.date||'');
