@@ -243,8 +243,9 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
    // Prevent difference in the source company's branch or invoice amount.
    const kBranch=text(getCell(keeper,'E'+proposal.keepRow),pkg.shared);
    const sBranch=text(getCell(row,'E'+rowNo),pkg.shared);
-   if(kBranch&&sBranch&&kBranch!==sBranch)
-    throw Error('فرع الفاتورة مختلف بين صفّي '+proposal.keepRow+' و'+rowNo+'.');
+   const branchAlias=kBranch!==sBranch;
+   if(branchAlias&&actual.rows.find(item=>item.row===rowNo)?.origin!=='project')
+    throw Error('فرع الفاتورة مختلف بين صفّي '+proposal.keepRow+' و'+rowNo+'؛ لا يجوز دمج صفّي سجى مختلفين.');
    const already=new Set<string>();
    for(let col=11;col<=17;col++)
     for(const value of (text(getCell(keeper,columnName(col)+proposal.keepRow),pkg.shared).match(/\d{4,20}/g)||[]))
@@ -271,6 +272,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
     .split(' | ').filter(part=>part.trim()&&part.trim()!==PROJECT_ONLY_NOTE).join(' | ');
    const existing=text(noteCell,pkg.shared);
    const additional=['دمج مع الصف '+rowNo+' بموافقة المستخدم',
+    branchAlias?'اسم الفرع في صف '+rowNo+': '+(sBranch||'غير مسجل')+'؛ فرع سجى المحتفظ به: '+(kBranch||'غير مسجل'):'',
     sourceNote&&!existing.includes(sourceNote)?sourceNote:'',
     overflow.length?'ترحيلات لم تتسع لها الخانات: '+overflow.join('، '):''].filter(Boolean);
    overwriteText(d,noteCell,[existing,...additional].filter(Boolean).join(' | '));
