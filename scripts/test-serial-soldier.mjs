@@ -8,7 +8,7 @@ const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
 const collector=url(compile(fs.readFileSync('app/lib/invoice-collector.ts','utf8').replace("'./reconcile'","'"+rec+"'")));
 const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'")
  .replace("'./invoice-collector'","'"+collector+"'");
-const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns}=await import(url(compile(source)));
+const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,duplicateGeneratedSerialRows}=await import(url(compile(source)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from,to)=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
 const invoice=(number,amount,complete=true)=>({number,amount,complete});
@@ -189,6 +189,24 @@ const onSaja=evaluateSerial([row(5,'2629999988','12.345')],[projectOnly,disagree
 assert.equal(onSaja.projectOnly.length,0,'A number found in Saja must never be re-appended in blue');
 assert.equal(onSaja.rows[0].state,'review','A stored duplicate found in Saja requires review');
 assert.ok(onSaja.rows[0].reason.includes('13.200'),'Saja reviewer sees the saved conflict');
+// A prior export may already contain an incorrectly appended blue copy of a
+// real Saja invoice. Retain the original Saja row, discard only generated copies.
+const oldExportRows=[
+ row(136,'2621610051','176.920'),
+ {...row(493,'2621610051','176.920'),origin:'project'},
+ {...row(494,'2621610052','20.000'),origin:'project'},
+ {...row(495,'2621610052','20.000'),origin:'project'},
+ row(496,'2621610053','30.000'),
+ row(497,'2621610053','30.000'),
+];
+assert.deepEqual([...duplicateGeneratedSerialRows(oldExportRows)],
+ [[493,136],[495,494]],
+ 'Remove only duplicate previously generated blue rows; never remove genuine repeated Saja originals');
+assert.equal(duplicateGeneratedSerialRows([row(136,'2621610051','176.920')]).size,0);
+assert.equal(duplicateGeneratedSerialRows([{...row(493,'2621610051','176.920'),origin:'project'}]).size,0);
+assert.equal(duplicateGeneratedSerialRows([
+ {...row(493,'2621610051','176.920'),origin:'project'},row(136,'2621610051','176.920')
+]).get(493),136,'Real Saja row always wins, regardless of source order');
 console.log('PASS: only exception rows receive concise Omar-vs-Saja notes, including three-decimal amounts');
 console.log('PASS: confirmed arrival is counted despite amount/number differences while uncertain links remain unresolved');
 console.log('PASS: serial soldier ignores ALL personal pages for both historical and new groups while retaining true validation errors');
