@@ -355,7 +355,7 @@ export function auditSerialExport(rows:SerialExportAuditRow[]):void{
  * moved to Thursday or Saturday.
  */
 export function serialWorkingDays(period:SerialPeriod|null,invoiceDates:string[]):string[]{
- const valid=invoiceDates.map(dateValue);
+ const valid=invoiceDates.map(value=>dateValue(value));
  if(valid.some(date=>!date))throw Error('هناك فاتورة بدون تاريخ صحيح؛ لا يمكن وضعها في شيت يوم دون تخمين.');
  const sorted=(valid as string[]).sort();
  const from=period?.from||sorted[0],to=period?.to||sorted[sorted.length-1];
