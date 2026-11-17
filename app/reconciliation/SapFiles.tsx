@@ -100,8 +100,8 @@ export default function SapFiles(){
     action:'start',key:file.key,text:source,recheck:mayRecheck,
    })).job;
   }
-  const archiveKind=['transfers','balance','opening'].includes(state.kind)?state.kind:'other';
-  if(file.kind!==archiveKind){
+  const archiveKind=['transfers','balance','opening','unified'].includes(state.kind)?state.kind:'other';
+  if(file.kind!==archiveKind&&!(file.kind==='other'&&state.kind==='unified')){
    const raw=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key));
    if(!raw.ok)throw Error('تعذّر فتح الأصل لتصحيح تصنيفه.');
    const copied=await fetch('/api/lieutenant-files',{method:'POST',headers:{'X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind},body:await raw.arrayBuffer()});
@@ -140,12 +140,30 @@ export default function SapFiles(){
    try{text=decodeLieutenantFile(bytes,file.name);detected=classifySapFile(text);}catch(e){issue=e instanceof Error?e.message:'تعذّر قراءة الملف.';}
    const needsDate=detected==='balance'||detected==='opening';
    if(needsDate&&(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>today()||new Date(date+'T00:00:00Z').toISOString().slice(0,10)!==date))throw Error('اختر تاريخ الرصيد الفعلي الصحيح قبل الرفع.');
-   const archiveKind=['transfers','balance','opening'].includes(detected)?detected:'other';
+   const archiveKind=['transfers','balance','opening','unified'].includes(detected)?detected:'other';
    const res=await fetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream','X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind,'X-Snapshot-Date':needsDate?date:''},body:bytes});
    const saved=await readSapJson<{key:string}>(res,'حفظ الملف الأصلي في أرشيف SAP');
    if(!saved.key)throw Error('لم يؤكد الخادم حفظ الملف الأصلي.');
    // Save, verify and display the archive before any CPU-heavy processing.
    await verifyArchivedSource(saved.key,bytes);
+   // Filename equality is NOT source equality. Do not spawn a new D1 import
+   // when a same-name but different-hash source is partially processed.
+   const otherPartial=Object.values(jobs).find(row=>
+    row.done<row.total&&row.key!==saved.key&&row.key.split('__').at(-1)===file.name);
+   const sameSource=!!otherPartial&&otherPartial.key.split('__')[1]===saved.key.split('__')[1];
+   if(otherPartial){
+    const checked:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
+     created:new Date().toISOString(),size:file.size};
+    F(prev=>[checked,...prev.filter(entry=>entry.key!==checked.key)]);
+    OPEN({file:checked,text});
+    K(detected);
+    E('الملف الحالي محفوظ ومؤكد، لكن يوجد سجل معالجة غير مكتمل لنفس الاسم ('+
+      otherPartial.done+'/'+otherPartial.total+' دفعات). '+
+      (sameSource?'محتواه مطابق لكن نوع الأرشفة/مفتاح الحفظ مختلف. ':
+       'محتواه مختلف حسب بصمة SHA-256. ')+
+      'لن أبدأ معالجة ثانية تلقائيًا؛ تحقق من أصل السجل السابق قبل الاستكمال.');
+    return;
+   }
    const stored:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
     created:new Date().toISOString(),snapshotDate:needsDate?date:'',size:file.size};
    F(prev=>[stored,...prev.filter(item=>item.key!==stored.key)]);
@@ -182,7 +200,7 @@ export default function SapFiles(){
   });
  }
  async function verifyUnlistedOriginal(source:SapJob){
-  const match=source.key.match(/^lieutenant\/(transfers|opening|balance|other)__([a-f0-9]{32})__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
+  const match=source.key.match(/^lieutenant\/(transfers|opening|balance|unified|other)__([a-f0-9]{32})__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
   if(!match)throw Error('مفتاح سجل المعالجة غير صالح.');
   const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(source.key),{cache:'no-store'});
   if(response.status===404)throw Error('يوجد سجل معالجة في D1 ('+source.done+'/'+source.total+
@@ -197,6 +215,8 @@ export default function SapFiles(){
   M('تم التحقق من وجود ملف SAP وسلامة بصمته في Supabase: '+restored.name+'. يمكن فتحه واستكمال دفعاته.');
  }
  const archiveUnlistedJobs=Object.values(jobs).filter(row=>!files.some(file=>file.key===row.key));
+ const orphanActive=archiveUnlistedJobs.filter(row=>row.done<row.total);
+ const orphanHistory=archiveUnlistedJobs.filter(row=>row.done>=row.total);
  const visible=files.filter(file=>{
   const actual=jobs[file.key]?.kind||file.kind,uploaded=uploadDay(file.created),snapshot=file.snapshotDate||'';
   return (!query||(file.name+' '+sapKinds[actual as SapKind]).toLowerCase().includes(query.trim().toLowerCase()))&&
@@ -238,7 +258,8 @@ export default function SapFiles(){
    <label>تاريخ الرفع من<input type="date" value={uploadFrom} onChange={e=>UF(e.target.value)}/></label><label>تاريخ الرفع إلى<input type="date" value={uploadTo} onChange={e=>UT(e.target.value)}/></label>
   </div><p className="hint">{visible.length} من {files.length} ملفًا ظاهرًا في فهرس Supabase. سجلات معالجة D1 مستقلة عن الملفات الأصلية.</p>
   <div className="table-scroll"><table><thead><tr><th>الملف</th><th>النوع</th><th>تاريخ الرصيد</th><th>تاريخ الرفع</th><th>حالة المعالجة</th><th>الإجراءات</th></tr></thead><tbody>{visible.map(file=>{
-   const state=jobs[file.key];return <tr key={file.key}><td dir="auto">{file.name}</td><td>{sapKinds[(state?.kind||file.kind) as SapKind]||file.kind}</td><td dir="ltr">{file.snapshotDate||'—'}</td><td dir="ltr">{uploadTime(file.created)}</td><td>{state?statusNames[state.status]+' ('+state.done+'/'+state.total+')':'لم تُسجّل معالجة'}{state?.failed?` · ${state.failed} فاشلة`:''}</td><td><div className="row-actions">
+   const state=jobs[file.key];return <tr key={file.key}><td dir="auto">{file.name}</td><td>{file.kind==='other'&&opened?.file.key===file.key&&isUnifiedSapSource(opened.text)?
+     'الكويري الشامل — نسخة مؤرشفة قديمة':sapKinds[(state?.kind||file.kind) as SapKind]||file.kind}</td><td dir="ltr">{file.snapshotDate||'—'}</td><td dir="ltr">{uploadTime(file.created)}</td><td>{state?statusNames[state.status]+' ('+state.done+'/'+state.total+')':'لم تُسجّل معالجة'}{state?.failed?` · ${state.failed} فاشلة`:''}</td><td><div className="row-actions">
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(async()=>{OPEN({file,text:await readSapArchive(file)});const result=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));SJ(result.job);})}>فتح</button>
     <a className="button secondary small" href={'/api/lieutenant-files?key='+encodeURIComponent(file.key)} download={file.name}><Download size={14}/>تنزيل</a>
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(()=>processFile(file))}>{state?.status==='complete'?'تحقق من المعالجة':'حالة / استكمال'}</button>
@@ -248,13 +269,17 @@ export default function SapFiles(){
    </div></td></tr>;
   })}</tbody></table></div>{!loading&&!visible.length&&<p>لا توجد ملفات ظاهرة ضمن التصفية. افحص سجلات المعالجة أدناه قبل إعادة الرفع.</p>}
    {archiveUnlistedJobs.length>0&&<div className="banner warn" role="status"><AlertTriangle size={17}/><div>
-    <strong>{archiveUnlistedJobs.length} سجل معالجة في D1 بدون أصل ظاهر بقائمة Supabase</strong>
-    <p>سجل معالجة SAP لا يثبت وحده حفظ الملف الأصلي. تحقق من وجود الأصل، دون إعادة المعالجة أو حذف الدفعات.</p>
-    {archiveUnlistedJobs.slice(0,20).map(row=><p key={row.key}>
-     <b dir="auto">{row.key.split('__').at(-1)}</b> — {row.done} من {row.total} دفعة
+    <strong>{orphanActive.length} معالجة غير مكتملة بلا أصل ظاهر في Supabase؛ {orphanHistory.length} سجل تاريخي مكتمل أو بلا دفعات</strong>
+    <p>الملفات ذات المعالجة غير المكتملة هي أولوية الاسترجاع. سجل D1 ليس إثباتًا أن الأصل محفوظ، ولا نربط الملفات بالاسم وحده.</p>
+    {orphanActive.slice(0,20).map(row=><p key={row.key}>
+     <b dir="auto">{row.key.split('__').at(-1)}</b> <small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done} من {row.total} دفعة
      {' '}<button type="button" className="button secondary small" disabled={busy}
        onClick={()=>void exclusive(()=>verifyUnlistedOriginal(row))}>تحقق من الأصل</button>
     </p>)}
+    {orphanHistory.length>0&&<details><summary>{orphanHistory.length} سجلات معالجة تاريخية — للعرض فقط</summary>
+     {orphanHistory.map(row=><p key={row.key}><span dir="auto">{row.key.split('__').at(-1)}</span>
+       {' '}<small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done}/{row.total}</p>)}
+    </details>}
    </div></div>}
   </section>
   {opened&&<section className="panel"><h2>الملف المفتوح: <b dir="auto">{opened.file.name}</b></h2><p>معاينة أول 100 ألف حرف؛ التنزيل يسترجع الملف الأصلي كاملًا.</p><textarea readOnly dir="ltr" rows={12} style={{width:'100%'}} value={opened.text.slice(0,100000)}/></section>}

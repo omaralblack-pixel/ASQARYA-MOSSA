@@ -19,7 +19,7 @@ export function ensureSapProcessing(){return ready??=db().batch([
  db().prepare("CREATE TABLE IF NOT EXISTS sap_file_batches (file_key TEXT NOT NULL, idx INTEGER NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', token TEXT NOT NULL DEFAULT '', lease INTEGER NOT NULL DEFAULT 0, result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', duration INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(file_key,idx))"),
 ]).catch(e=>{ready=undefined;throw e;});}
 const fingerprint=(item:unknown)=>createHash('sha256').update(JSON.stringify(item)).digest('hex');
-const validKey=(key:unknown):key is string=>typeof key==='string'&&/^lieutenant\/(?:transfers|opening|balance|other)__[a-f0-9]{32}__(?:\d{4}-\d{2}-\d{2}__)?[^/\\]{1,120}$/.test(key);
+const validKey=(key:unknown):key is string=>typeof key==='string'&&/^lieutenant\/(?:transfers|opening|balance|unified|other)__[a-f0-9]{32}__(?:\d{4}-\d{2}-\d{2}__)?[^/\\]{1,120}$/.test(key);
 async function readJob(key:string,details=true):Promise<SapJob|null>{
  const job=await db().prepare('SELECT * FROM sap_file_jobs WHERE key=?').bind(key).first<{key:string;kind:SapJob['kind'];plan:string;total:number;updated:string}>();
  if(!job)return null;
@@ -70,7 +70,7 @@ export async function POST(req:Request){try{
   if(!original.ok){await original.body?.cancel();return json({error:'تعذّر التحقق من الملف الأصلي المحفوظ.'},400);}
   const bytes=new Uint8Array(await original.arrayBuffer());
   const hash=createHash('sha256').update(bytes).digest('hex').slice(0,32);
-  const storedHash=key.match(/^lieutenant\/(?:transfers|opening|balance|other)__([a-f0-9]{32})__/)?.[1];
+  const storedHash=key.match(/^lieutenant\/(?:transfers|opening|balance|unified|other)__([a-f0-9]{32})__/)?.[1];
   if(hash!==storedHash)return json({error:'بصمة أصل ملف SAP لا تطابق أرشيفه. لم تُعالج أي بيانات.'},409);
   const filename=key.split('__').at(-1)||'';
   let decoded:string;

@@ -42,6 +42,10 @@ const text=[header,...Array.from({length:867},(_,i)=>[String(2617000+i),'2026-11
 const plan=buildSapPlan(text,JSON.parse(fs.readFileSync('app/branches.json','utf8')));
 assert.equal(plan.count,867);assert.equal(plan.kind,'transfers');assert.equal(plan.batches.length,18);assert.equal(plan.documents.filter(x=>x.state==='pending').length,867);
 const key=archiveKey('transfers',text,'fixture.txt');
+const unifiedKey='lieutenant/unified__'+'a'.repeat(32)+'__new-sap.txt';
+const validUnifiedRead=await route.GET(new Request('https://example.test/api/sap-processing?key='+encodeURIComponent(unifiedKey)));
+assert.equal(validUnifiedRead.status,200,'Unified source keys must pass the processing API validator');
+assert.equal((await validUnifiedRead.json()).job,null,'Unknown unified keys return null, not invalid-key errors');
 const req=body=>new Request('https://example.test/api/sap-processing',{method:'POST',headers:{'Content-Type':'application/json','Origin':'https://example.test'},body:JSON.stringify(body)});
 async function call(body){const res=await route.POST(req(body));assert.equal(res.status,200,await res.clone().text());return (await res.json()).job;}
 async function read(file=key){return (await (await route.GET(new Request('https://example.test/api/sap-processing?key='+encodeURIComponent(file)))).json()).job;}
