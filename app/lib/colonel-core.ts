@@ -103,9 +103,11 @@ export function buildColonelReport(
   const noInvoice=!project||project.invoices.size===0;
   const uncertain=source.issues.length>0||correction(kind)&&!m?.verifiedOffset||
     kind==='cashvan-pending'||(source.cancellationMentioned&&!matching&&kind==='normal');
-  const needsAction=source.issues.length>0||days.size>1||uncertain||
+  const administrativeIgnore=decision?.decision==='ignore'&&!!decision.note.trim();
+  const needsAction=source.issues.length>0||days.size>1||
+    (!administrativeIgnore&&(uncertain||
     (!matching&&!cash&&!source.reverse&&!source.signedAdjustment&&noInvoice)||
-    (!matching&&cash);
+    (!matching&&cash)));
   const note=[
    ...(source.issues.length?source.issues:[]),
    m?.note||'',
@@ -142,7 +144,7 @@ export function buildColonelReport(
   const duplicate=invoices.some(x=>invoiceGroups.get(x.number)?.size!==1);
   const inferred=invoices.some(x=>x.dateSource==='transfer');
   const openCount=linked.filter(x=>x.needsAction).length+
-   invoices.filter(x=>!x.complete||!x.number||x.number==='بدون رقم').length+
+   invoices.filter(x=>!x.complete||!invoiceDocumentNo(x.number)).length+
    (duplicate?1:0);
   const state=states.get(cursor);
   // An inferred date is not a confirmed paper date; closing requires manual
@@ -161,6 +163,16 @@ export function buildColonelReport(
   cursor=next.toISOString().slice(0,10);
  }
  const unassigned=transfers.filter(x=>!x.invoiceDay||x.invoiceDay<month+'-01'||x.invoiceDay>end);
+ const unassignedOpen=unassigned.filter(x=>x.needsAction).length;
+ // Unknown-day SAP postings might belong to any blue-invoice day. Until they
+ // receive a documented attribution or an administrative/physical resolution,
+ // never claim that a day's transfer coverage is complete.
+ if(unassignedOpen>0)for(const day of days){
+  if(day.invoicesComplete){
+   day.ready=false;
+   day.reason+='؛ يوجد '+unassignedOpen+' ترحيلًا مفتوحًا بلا يوم فاتورة مثبت على مستوى الشهر';
+  }
+ }
  const undated=allInvoices.filter(x=>!x.date);
  const open=days.reduce((sum,d)=>sum+d.openCount,0)+unassigned.filter(x=>x.needsAction).length;
  return {days,unassigned,undated,warnings:unique(warnings),
