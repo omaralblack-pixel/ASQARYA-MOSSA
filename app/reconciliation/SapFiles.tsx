@@ -1,21 +1,52 @@
 'use client';
 import {useEffect,useRef,useState,type ChangeEvent} from 'react';
-import {FileUp,RefreshCw,FileArchive,Download,Trash2,AlertTriangle} from 'lucide-react';
+import {FileUp,RefreshCw,FileArchive,Download,Trash2,AlertTriangle,Copy} from 'lucide-react';
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {classifySapFile,sapKinds,type SapKind,type SapJob} from '../lib/sap-processing';
 import {maxSapFileBytes,readSavedSapImport,saveSapImport} from '../lib/saved-sap-import';
 import {listSapFiles,readSapArchive,sapRequest,type SapArchiveFile} from '../lib/sap-files-client';
 import {parseLieutenantTransfers} from '../lib/lieutenant';
+import {isUnifiedSapSource,splitUnifiedSapSource,unifiedSapQuery} from '../lib/unified-sap-query';
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const uploadDay=(date:string)=>date&&Number.isFinite(Date.parse(date))?new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)):'';
 const uploadTime=(date:string)=>date&&Number.isFinite(Date.parse(date))?uploadDay(date)+' '+new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(date)):'';
 const statusNames={complete:'مكتمل',review:'اكتملت الدفعات — بحاجة مراجعة',archived:'محفوظ — نوع غير معروف',pending:'بانتظار المعالجة',running:'قيد المعالجة',failed:'دفعات فاشلة — يمكن استكمالها'};
 export default function SapFiles(){
  const [files,F]=useState<SapArchiveFile[]>([]),[jobs,J]=useState<Record<string,SapJob>>({}),[job,SJ]=useState<SapJob|null>(null);
- const [kind,K]=useState<SapKind>('transfers'),[date,D]=useState(today()),[busy,B]=useState(false),[loading,L]=useState(true),[error,E]=useState(''),[message,M]=useState('');
+ const [kind,K]=useState<SapKind>('unified'),[date,D]=useState(today()),[busy,B]=useState(false),[loading,L]=useState(true),[error,E]=useState(''),[message,M]=useState('');
  const [query,Q]=useState(''),[filter,FL]=useState('all'),[balanceFrom,BF]=useState(''),[balanceTo,BT]=useState(''),[uploadFrom,UF]=useState(''),[uploadTo,UT]=useState('');
  const [opened,OPEN]=useState<{file:SapArchiveFile;text:string}|null>(null);
+ const [fromDate,FROM]=useState(()=>today().slice(0,8)+'01'),[toDate,TO]=useState(today());
+ const queryRef=useRef<HTMLTextAreaElement>(null);
  const lock=useRef(false),mounted=useRef(true);
+ let unifiedSql='',queryError='';
+ try{unifiedSql=unifiedSapQuery(fromDate,toDate);}catch(e){queryError=e instanceof Error?e.message:'فترة غير صالحة.';}
+ async function copyUnifiedSql(){
+  if(!unifiedSql)return;
+  try{await navigator.clipboard.writeText(unifiedSql);M('تم نسخ كويري SAP الشامل. شغّله في SAP وصدّر النتيجة إلى ملف واحد.');}
+  catch{queryRef.current?.focus();queryRef.current?.select();M('المتصفح منع النسخ التلقائي؛ تم تحديد الكويري. اضغط Ctrl+C.');}
+ }
+ async function archiveUnifiedParts(file:SapArchiveFile,text:string){
+  if(!isUnifiedSapSource(text))return;
+  const sections=splitUnifiedSapSource(text);
+  const parts=[
+   {kind:'transfers',body:sections.transfers,date:'',count:sections.counts.TRANSFER},
+   {kind:'opening',body:sections.opening,date:sections.from,count:sections.counts.OPENING},
+   {kind:'balance',body:sections.closing,date:sections.to,count:sections.counts.CLOSING},
+  ] as const;
+  for(const part of parts){
+   if(!part.count)continue;
+   const name=file.name.replace(/\.[^.]+$/,'')+'-'+part.kind+'-'+(part.date||sections.from+'-'+sections.to)+'.txt';
+   const res=await fetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':'text/plain',
+    'X-File-Name':encodeURIComponent(name),'X-File-Kind':part.kind,'X-Snapshot-Date':part.date},
+    body:new TextEncoder().encode(part.body)});
+   if(!res.ok){
+    const result=await res.json().catch(()=>({error:''})) as {error?:string};
+    throw Error(result.error||'تعذّر أرشفة جزء '+part.kind+' من الملف الموحد؛ الأصل محفوظ.');
+   }
+  }
+ }
+
  const remember=(value:SapJob)=>{if(!mounted.current)return;SJ(value);J(old=>({...old,[value.key]:value}));};
  async function refresh(){
   const [archive,processing]=await Promise.allSettled([listSapFiles(),sapRequest<{jobs:SapJob[]}>('/api/sap-processing')]);
@@ -36,13 +67,16 @@ export default function SapFiles(){
   finally{lock.current=false;if(mounted.current)B(false);}
  }
  async function publishShared(file:SapArchiveFile,text:string){
-  if(classifySapFile(text)!=='transfers')return;
+  const sourceKind=classifySapFile(text);
+  if(sourceKind!=='transfers'&&sourceKind!=='unified')return;
+  const sharedText=sourceKind==='unified'?splitUnifiedSapSource(text).transfers:text;
+  if(!parseLieutenantTransfers(sharedText,[]).transfers.length)return;
   const previous=await readSavedSapImport();
-  if(previous?.text===text)return;
+  if(previous?.text===sharedText)return;
   const last=(source:string)=>parseLieutenantTransfers(source,[]).transfers.reduce((max,x)=>x.transfer.date>max?x.transfer.date:max,'');
   // An old export can be archived/processed without replacing a newer shared view.
-  if(previous&&last(previous.text)>last(text))return;
-  await saveSapImport({name:file.name,text});
+  if(previous&&last(previous.text)>last(sharedText))return;
+  await saveSapImport({name:file.name,text:sharedText});
  }
  async function processFile(file:SapArchiveFile,text?:string,recheck=false):Promise<void>{
   const current=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));
@@ -62,6 +96,9 @@ export default function SapFiles(){
    return processFile({...file,key:result.key,kind:archiveKind,snapshotDate:''},text);
   }
   remember(state);
+  if(state.kind==='unified')await archiveUnifiedParts(file,text??await readSapArchive(file));
+  // Unified imports are already preserved as immutable, dated archives and D1 receipts.
+  // Never replace the legacy shared full export with a shorter date-window subset.
   if(state.kind==='transfers')await publishShared(file,text??await readSapArchive(file));
   // Only unfinished batches are requested. Finished batches survive reloads and
   // independent tabs; the server lease serializes claims for the same batch.
@@ -121,9 +158,19 @@ export default function SapFiles(){
   <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع الكشف مرة واحدة. تبقى النسخة الأصلية محفوظة وتستخدم الشاشات المرتبطة البيانات المشتركة.</p></div><FileArchive size={32}/></div>
   <section className="panel"><h2>رفع ملف SAP جديد</h2><div className="table-controls">
    <label>نوع الملف المتوقع (يُصحّح تلقائيًا)<select value={kind} disabled={busy} onChange={e=>K(e.target.value as SapKind)}>{Object.entries(sapKinds).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></label>
-   <label>تاريخ الرصيد الفعلي<input type="date" max={today()} value={date} disabled={busy} onChange={e=>D(e.target.value)}/></label>
-   <label className="button primary sap-file-picker"><FileUp size={16}/>إرفاق وحفظ في قاعدة البيانات<input type="file" accept=".txt,.tsv,.csv,.xlsx" aria-label="رفع ملف SAP جديد" disabled={busy} onChange={upload}/></label>
-  </div><p className="hint">التاريخ مطلوب لكشوف الرصيد فقط: الختامي بنهاية اليوم، والافتتاحي قبل أول حركة في اليوم. تاريخ الرفع مستقل ولا يُستخدم بدل تاريخ الرصيد. التصنيف يعتمد الأعمدة الفعلية.</p>
+   {kind!=='unified'&&<><label>تاريخ الرصيد الفعلي<input type="date" max={today()} value={date} disabled={busy} onChange={e=>D(e.target.value)}/></label>
+   <label className="button primary sap-file-picker"><FileUp size={16}/>إرفاق وحفظ في قاعدة البيانات<input type="file" accept=".txt,.tsv,.csv,.xlsx" aria-label="رفع ملف SAP جديد" disabled={busy} onChange={upload}/></label></>}
+  </div>{kind==='unified'&&<div className="sap-unified-query" aria-label="الكويري الشامل — SAP 011">
+   <div className="sap-unified-query-top"><div><h3>الكويري الشامل — SAP 011</h3><p>استخرج الترحيلات والأرصدة والحركات ومستندات العقبة مرة واحدة.</p></div>
+    <label>من تاريخ<input type="date" value={fromDate} max={today()} onChange={e=>FROM(e.target.value)}/></label>
+    <label>إلى تاريخ<input type="date" value={toDate} max={today()} onChange={e=>TO(e.target.value)}/></label>
+    <button type="button" className="button secondary" disabled={!unifiedSql} onClick={()=>void copyUnifiedSql()}><Copy size={15}/>نسخ الكويري</button>
+    <label className="button primary sap-file-picker"><FileUp size={15}/>رفع الملف الموحد<input type="file" accept=".txt,.tsv,.csv,.xlsx" aria-label="رفع الملف الموحد SAP" disabled={busy} onChange={upload}/></label>
+   </div>
+   <textarea ref={queryRef} aria-label="كويري SAP الشامل" dir="ltr" readOnly rows={4} value={unifiedSql} />
+   {queryError&&<p className="red" role="alert">{queryError}</p>}
+   <p className="hint">شغّل الكويري في SAP، وصدّر النتائج إلى Excel أو TXT، ثم اضغط «رفع الملف الموحد». يحفظ النظام الملف الأصلي ويجهّز النسخ المقروءة للشاشات القديمة دون حذفها.</p>
+  </div>}<p className="hint">التاريخ مطلوب لكشوف الرصيد فقط: الختامي بنهاية اليوم، والافتتاحي قبل أول حركة في اليوم. تاريخ الرفع مستقل ولا يُستخدم بدل تاريخ الرصيد. التصنيف يعتمد الأعمدة الفعلية.</p>
   <details><summary>لصق كشف SAP بدل إرفاق ملف</summary><SapPaste disabled={busy} onFile={file=>{void upload({currentTarget:{files:[file],value:''}} as unknown as ChangeEvent<HTMLInputElement>);}}/></details>
   </section>
   <section className="panel" aria-label="حالة معالجة ملفات SAP"><div className="section-title"><h2>حالة التحديث والمعالجة</h2><button className="button secondary" disabled={busy||loading} onClick={()=>void exclusive(refresh)}><RefreshCw size={16}/>تحديث الحالة والأرشيف</button></div>

@@ -151,6 +151,21 @@ const sourceCode=compile('app/lib/lieutenant-source.ts')
   .replace(/from ['"]\.\/lieutenant['"]/, 'from "'+lieutenantUrl+'"');
 const {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey}=await import('data:text/javascript;base64,'+Buffer.from(sourceCode).toString('base64'));
 const savedText=en+'\n'+normal;
+
+// Transfer-only policy: the existence of an OWTR/OINM movement cannot create a
+// blue-invoice group, even for normal inward transfers or legacy blank records.
+const lieutenantUi=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
+assert.match(lieutenantUi,/unlinked:'ترحيل فقط — سجل بلا فاتورة زرقاء'/);
+assert.match(lieutenantUi,/missing:'ترحيل SAP غير منسوب — لدى الملازم أول'/);
+assert.match(lieutenantUi,/queued:'ترحيل SAP مستقل — لدى الملازم أول'/);
+assert.match(lieutenantUi,/const assigned=new Set<string>\(\);/);
+assert.match(lieutenantUi,/draft\.invoices\.some\(invoice=>!!invoiceDocumentNo\(invoice\.number\)\)/);
+assert.match(lieutenantUi,/assigned\.has\(row\.transfer\.number\)/);
+assert.match(lieutenantUi,/completeStatuses=new Set<ReviewStatus>\(\['approved','linked','paper'/);
+assert.doesNotMatch(lieutenantUi,/soldierEligible/, 'No automatic soldier handoff for an unlinked SAP transfer');
+assert.doesNotMatch(lieutenantUi,/إرسال للجندي/, 'Never advertise invoice creation for a transfer-only record');
+console.log('PASS: invoice-less SAP movements remain lieutenant-only; linked blue invoices close the missing-invoice question.');
+
 let archiveReads=0,sharedReads=0;
 const fallback=await restoreLieutenantSource([{key:'legacy',name:'011.txt',kind:'transfers'}],['21 — السرو'],
   async()=>{archiveReads++;return balanceText},async()=>{sharedReads++;return {name:'November.txt',text:savedText}});
@@ -163,6 +178,23 @@ assert.equal(noArchive.key,sharedLieutenantKey,'An empty archive still restores 
 const archivePreferred=await restoreLieutenantSource([{key:'valid',name:'new.txt',kind:'transfers'}],[],
   async()=>savedText,async()=>{throw Error('must not read shared file when an archived transfer is valid')});
 assert.equal(archivePreferred.key,'valid');
+
+const dateScopedNew=en+'\n'+
+  ['2618002','2026-11-17','21','السرو','2623111111','FVL00016','جزر حديث','6','Piece','001','011'].join('\t');
+const dateScopedOld=en+'\n'+normal+'\n'+
+  ['2618002','2026-11-16','21','السرو','2623111111','FVL00016','جزر قديم','4','Piece','001','011'].join('\t');
+const mergedHistorical=await restoreLieutenantSource([
+  {key:'new-window',name:'unified-transfers-2026-11-17.txt',kind:'transfers',created:'2026-11-17T10:00:00Z'},
+  {key:'old-full',name:'011.txt',kind:'transfers',created:'2026-11-16T10:00:00Z'},
+],[],async file=>file.key==='new-window'?dateScopedNew:dateScopedOld,
+ async()=>{throw Error('Restoration must not overwrite legacy shared SAP source')});
+assert.equal(mergedHistorical.scan.transfers.length,2,
+  'A date-scoped unified upload must not hide non-canceled historical transfers');
+assert.equal(mergedHistorical.scan.transfers.find(x=>x.transfer.number==='2618002').transfer.date,
+  '2026-11-17','Newest source must win when document numbers overlap');
+assert.ok(mergedHistorical.scan.transfers.some(x=>x.transfer.number==='2617005'),
+  'Historical evidence must remain available to the lieutenant');
+
 const archiveOffline=await restoreLieutenantSource([{key:'offline',name:'old.txt',kind:'transfers'}],[],
   async()=>{throw Error('offline')},async()=>({name:'shared.txt',text:savedText}));
 assert.equal(archiveOffline.key,sharedLieutenantKey);
@@ -235,7 +267,7 @@ const erasedFromNew=await restoreLieutenantSource([
   async()=>{throw Error('A valid latest SAP archive must not use shared fallback')});
 assert.equal(erasedFromNew.key,'new','The latest file remains the primary source');
 assert.equal(erasedFromNew.scan.transfers.length,2,'The missing original is recovered without duplicating the correction');
-assert.match(erasedFromNew.name,/استكمال مستندات الإلغاء/);
+assert.match(erasedFromNew.name,/استكمال السجلات التاريخية المفقودة/);
 const recoveredFromShared=await restoreLieutenantSource([
   {key:'new',name:'SAP_15.txt',kind:'transfers',created:'2026-11-15T10:00:00Z'},
 ],[],async()=>erbidCorrection,async()=>({name:'current.json',text:erbidOriginal+'\n'+
@@ -337,7 +369,8 @@ console.log('PASS: Signed SAP cancellation quantities, stock effects in both dir
 const screen=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
 assert.ok(screen.includes("response.headers.get('content-type')"),'HTML responses need a friendly diagnostic');
 assert.ok(screen.includes("movements.get(row.transfer.number)?.kind==='normal'"),'Auto-import must skip reversals and Cash Van');
-assert.ok(screen.includes("soldierEligible(row.status)"),'Settled Cash Van should not be sent to soldier');
+assert.ok(screen.includes('للملازم أول — ترحيل فقط'),
+  'All invoice-less SAP transfers stay with First Lieutenant instead of automatic invoice routing');
 console.log('PASS: Lieutenant Cash Van matching, period cutoff, uniqueness, SAP cancellation, import exclusion and HTML-response diagnosis.');
 
 

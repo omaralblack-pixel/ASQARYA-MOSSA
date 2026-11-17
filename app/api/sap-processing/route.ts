@@ -74,7 +74,7 @@ export async function POST(req:Request){try{
   const plan=buildSapPlan(decoded,branches);
   // Reuse only exact document fingerprints with a live queue/invoice key.
   // If an operator removed a record, its old receipt cannot hide missing data.
-  if(plan.kind==='transfers'){
+  if(plan.kind==='transfers'||plan.kind==='unified'){
    const schema=(await import('../../lib/reconciliation-schema.json')).default;
    await db().batch(schema.map(sql=>db().prepare(sql)));
    const receipts=await db().prepare(`SELECT r.number,r.fingerprint FROM sap_document_receipts r WHERE r.number IN (SELECT value FROM json_each(?)) AND (
