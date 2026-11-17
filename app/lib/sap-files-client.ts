@@ -14,8 +14,9 @@ export async function readSapJson<T>(res:Response,operation:string):Promise<T>{
  const body=await res.text().catch(()=> '');
  const type=(res.headers.get('content-type')||'').toLowerCase();
  let data:unknown;
- if(!type.includes('json')&&!/^\\s*[\\[{]/.test(body)){
-  const kind=/^\\s*<(?:!doctype|html|head|body|title)/i.test(body)?'صفحة HTML':'نصًا غير متوقع';
+ const preview=body.trimStart();
+ if(!type.includes('json')&&!preview.startsWith('{')&&!preview.startsWith('[')){
+  const kind=preview.startsWith('<')?'صفحة HTML':'نصًا غير متوقع';
   throw Error('تعذّر '+operation+': HTTP '+res.status+'؛ الخادم أعاد '+kind+' بدل JSON. '+(res.status===503?'تحقّق من خدمة Cloudflare Worker وربط D1/Supabase. ':'')+'الدفعات المكتملة لا تحتاج إعادة رفع.');
  }
  try{data=JSON.parse(body)}
@@ -30,7 +31,8 @@ export async function readSapJson<T>(res:Response,operation:string):Promise<T>{
 export async function sapRequest<T>(url:string,body?:unknown):Promise<T>{
  const res=await fetch(url,{cache:'no-store',...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});
  const task=url.startsWith('/api/sap-processing')?
-  (body&&typeof body==='object'&&'action' in body?String((body as {action:unknown}).action):'قراءة حالة معالجة SAP'):
+  (body&&typeof body==='object'&&'action' in body?
+    (String((body as {action:unknown}).action)==='batch'?'استكمال دفعة SAP رقم '+(Number((body as {index?:number}).index)+1):'بدء أو إعادة فحص معالجة SAP'):'قراءة حالة معالجة SAP') :
   'قراءة أرشيف SAP';
  return readSapJson<T>(res,task);
 }
