@@ -13,6 +13,9 @@ const source=fs.readFileSync('app/lib/colonel-core.ts','utf8')
  .replace("'./invoice-collector'","'"+invoice+"'")
  .replace("'./lieutenant-counterparts'","'"+movements+"'");
 const {buildColonelReport}=await import(url(compile(source)));
+const noteSource=fs.readFileSync('app/lib/colonel-serial-notes.ts','utf8')
+ .replace("'./lieutenant-counterparts'","'"+movements+"'");
+const {colonelSerialNotes}=await import(url(compile(noteSource)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from='001',to='011')=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
 const invoiceRow=(number,date)=>({number,date,amount:'250.000',complete:true});
@@ -67,5 +70,21 @@ const inferred=buildColonelReport('2026-11',[missingDate],[sapRow('2616666','202
 assert.ok(inferred.days.find(x=>x.day==='2026-11-04').invoices.some(x=>x.dateSource==='transfer'));
 assert.equal(inferred.days.find(x=>x.day==='2026-11-04').ready,false,
  'Inferred invoice date cannot be treated as confirmed paper date');
+
+const manualBypass=[{transfer_no:'2618888',decision:'ignore',related_type:'',
+ related_number:'',note:'تمت مراجعة هذا الترحيل وتجاوزه إداريًا',revision:2,updated_at:'2026-11-17'}];
+result=buildColonelReport('2026-11',saved,sap,manualBypass,[],day,true);
+assert.ok(result.unassigned.some(x=>x.number==='2618888'&&!x.needsAction));
+assert.ok(!result.unassigned.find(x=>x.number==='2618888').note.includes('ملغى رسميًا'),
+ 'Operator exception must never masquerade as SAP cancellation');
+const notes=colonelSerialNotes([
+ sapRow('2617777','2026-11-03',{cancellationState:'canceled'}),
+ sapRow('2618888','2026-11-03'),
+ ],manualBypass,'2026-11-17');
+assert.match(notes.get('2617777'),/ملغى رسميًا على SAP/);
+assert.match(notes.get('2618888'),/تجاوز إداري فقط/);
+assert.doesNotMatch(notes.get('2618888'),/ملغى رسميًا/);
+const archivedDecision=colonelSerialNotes([],manualBypass,'2026-11-17');
+assert.match(archivedDecision.get('2618888'),/حالة SAP غير مثبتة/);
 assert.throws(()=>buildColonelReport('2026-13',[],[]),/شهر/);
 console.log('PASS: Colonel uses blue-invoice date, preserves SAP posting, flags mismatches and does not assert fake cancellations.');
