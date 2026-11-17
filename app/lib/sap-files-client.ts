@@ -1,10 +1,38 @@
 import {decodeLieutenantFile} from './lieutenant-file';
 export type SapArchiveFile={key:string;name:string;kind:string;created:string;snapshotDate?:string;size?:number};
+/**
+ * The Cloudflare edge may return an HTML error page (often HTTP 503) instead of
+ * a JSON API response. Parse the body once and report the operation and HTTP
+ * status; never leak HTML into JSON.parse or mistake an edge failure for loss of
+ * previously completed SAP batches.
+ */
+export async function readSapJson<T>(res:Response,operation:string):Promise<T>{
+ if(res.status===401){
+  if(typeof window!=='undefined')window.location.assign('/login');
+  throw Error('انتهت جلسة الدخول. سجّل الدخول مرة أخرى ثم افتح الملف من الأرشيف؛ الدفعات المكتملة محفوظة.');
+ }
+ const body=await res.text().catch(()=> '');
+ const type=(res.headers.get('content-type')||'').toLowerCase();
+ let data:unknown;
+ if(!type.includes('json')&&!/^\\s*[\\[{]/.test(body)){
+  const kind=/^\\s*<(?:!doctype|html|head|body|title)/i.test(body)?'صفحة HTML':'نصًا غير متوقع';
+  throw Error('تعذّر '+operation+': HTTP '+res.status+'؛ الخادم أعاد '+kind+' بدل JSON. '+(res.status===503?'تحقّق من خدمة Cloudflare Worker وربط D1/Supabase. ':'')+'الدفعات المكتملة لا تحتاج إعادة رفع.');
+ }
+ try{data=JSON.parse(body)}
+ catch{throw Error('تعذّر '+operation+': HTTP '+res.status+'؛ رد الخادم ليس JSON صالحًا. لا تعِد رفع الملف؛ استكمل من الأرشيف بعد معالجة عطل الخادم.')}
+ if(!data||typeof data!=='object'){
+  throw Error('تعذّر '+operation+': HTTP '+res.status+'؛ بنية استجابة الخادم غير صالحة.');
+ }
+ const apiError=(data as {error?:unknown}).error;
+ if(!res.ok)throw Error('تعذّر '+operation+': HTTP '+res.status+'؛ '+(typeof apiError==='string'&&apiError?apiError:'الخدمة غير متاحة حاليًا. الدفعات المكتملة محفوظة.'));
+ return data as T;
+}
 export async function sapRequest<T>(url:string,body?:unknown):Promise<T>{
  const res=await fetch(url,{cache:'no-store',...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});
- if(res.status===401){window.location.assign('/login');throw Error('انتهت جلسة الدخول.');}
- if(!(res.headers.get('content-type')||'').includes('json'))throw Error('الخادم أعاد استجابة غير صالحة: HTTP '+res.status);
- const data=await res.json() as T&{error?:string};if(!res.ok)throw Error(data.error||'تعذّر الاتصال: HTTP '+res.status);return data;
+ const task=url.startsWith('/api/sap-processing')?
+  (body&&typeof body==='object'&&'action' in body?String((body as {action:unknown}).action):'قراءة حالة معالجة SAP'):
+  'قراءة أرشيف SAP';
+ return readSapJson<T>(res,task);
 }
 export async function listSapFiles():Promise<SapArchiveFile[]>{
  const files:SapArchiveFile[]=[];let page:number|null=0;
