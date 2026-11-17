@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {createHash,createHmac} from 'node:crypto';
 import {env} from 'cloudflare:workers';
 import branches from '../../branches.json';
 import {lieutenantFiles} from '../../../worker/institution';
@@ -64,6 +64,20 @@ export async function POST(req:Request){try{
   if(existing&&(body.recheck!==true||existing.done<existing.total))
    return json({job:existing,reused:true,resumeOnly:existing.done<existing.total});
   if(typeof body.text!=='string'||!body.text.trim()||new TextEncoder().encode(body.text).length>25*1024*1024)return json({error:'نص الملف غير صالح.'},400);
+  let plan:SapPlan;
+  if(env.SUPABASE_URL&&env.SUPABASE_STORAGE_SECRET){
+   // Parse beside Storage, outside the Cloudflare Free 10ms CPU budget.
+   // The service independently verifies the immutable original and text hash.
+   const payload=JSON.stringify({key,textHash:createHash('sha256').update(body.text).digest('hex')});
+   const timestamp=String(Date.now());
+   const signature=createHmac('sha256',env.SUPABASE_STORAGE_SECRET).update(timestamp+'\n'+payload).digest('hex');
+   const response=await fetch(new URL('/functions/v1/sap-plan',env.SUPABASE_URL),{
+    method:'POST',headers:{'Content-Type':'application/json','x-sap-time':timestamp,'x-sap-signature':signature},body:payload,
+   });
+   const result=await response.json() as {plan?:SapPlan;error?:string};
+   if(!response.ok||!result.plan)return json({error:result.error||'تعذّر تحليل أصل SAP المحفوظ.'},response.ok?502:response.status);
+   plan=result.plan;
+  }else{
   // Independently re-read the immutable original. Browser-supplied decoded
   // content is not trusted until it matches a fresh server-side readback.
   const original=await lieutenantFiles(new Request(new URL('/api/lieutenant-files?key='+encodeURIComponent(key),req.url)),env);
@@ -77,7 +91,8 @@ export async function POST(req:Request){try{
   try{decoded=decodeArchivedSapSource(bytes,filename)}
   catch{return json({error:'تعذّر التحقق المستقل من محتوى ملف SAP الأصلي. لم تُعالج أي بيانات.'},422);}
   if(decoded!==body.text)return json({error:'نص SAP لا يطابق الملف الأصلي المحفوظ. أعد فتح الأصل من «ملفات SAP» قبل المعالجة.'},409);
-  const plan=buildSapPlan(decoded,branches);
+  plan=buildSapPlan(decoded,branches);
+  }
   // Reuse only exact document fingerprints with a live queue/invoice key.
   // If an operator removed a record, its old receipt cannot hide missing data.
   if(plan.kind==='transfers'||plan.kind==='unified'){
@@ -148,3 +163,4 @@ export async function POST(req:Request){try{
  }
  return json({job:await readJob(key)});
 }catch(e){return json({error:e instanceof Error?e.message:'تعذّرت معالجة الملف.'},e instanceof JsonRequestError?e.status:500);}}
+
