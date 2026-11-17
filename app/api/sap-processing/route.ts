@@ -56,7 +56,13 @@ export async function POST(req:Request){try{
  if(!validKey(key))return json({error:'معرّف ملف غير صالح.'},400);
  if(body.action==='start'){
   const existing=await readJob(key);
-  if(existing&&body.recheck!==true)return json({job:existing,reused:true});
+  // CPU protection: a Free-tier Worker must not recompute a large source plan
+  // while a durable partial import already exists. A requested "recheck"
+  // on 1/3 complete is a RESUME, not a plan reset.
+  if(existing&&body.recheck===true&&existing.running>0)
+   return json({error:'هناك دفعة قيد التنفيذ. حدّث الحالة واستكمل بعد اكتمالها دون إعادة الفحص.'},409);
+  if(existing&&(body.recheck!==true||existing.done<existing.total))
+   return json({job:existing,reused:true,resumeOnly:existing.done<existing.total});
   if(typeof body.text!=='string'||!body.text.trim()||new TextEncoder().encode(body.text).length>25*1024*1024)return json({error:'نص الملف غير صالح.'},400);
   // Independently re-read the immutable original. Browser-supplied decoded
   // content is not trusted until it matches a fresh server-side readback.
