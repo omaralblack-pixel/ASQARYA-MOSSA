@@ -4,7 +4,7 @@ import {FileUp,RefreshCw,FileArchive,Download,Trash2,AlertTriangle,Copy} from 'l
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {classifySapFile,sapKinds,type SapKind,type SapJob} from '../lib/sap-processing';
 import {maxSapFileBytes,readSavedSapImport,saveSapImport} from '../lib/saved-sap-import';
-import {listSapFiles,readSapArchive,sapRequest,type SapArchiveFile} from '../lib/sap-files-client';
+import {listSapFiles,readSapArchive,readSapJson,sapRequest,type SapArchiveFile} from '../lib/sap-files-client';
 import {parseLieutenantTransfers} from '../lib/lieutenant';
 import {isUnifiedSapSource,splitUnifiedSapSource,unifiedSapQuery} from '../lib/unified-sap-query';
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -40,10 +40,8 @@ export default function SapFiles(){
    const res=await fetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':'text/plain',
     'X-File-Name':encodeURIComponent(name),'X-File-Kind':part.kind,'X-Snapshot-Date':part.date},
     body:new TextEncoder().encode(part.body)});
-   if(!res.ok){
-    const result=await res.json().catch(()=>({error:''})) as {error?:string};
-    throw Error(result.error||'تعذّر أرشفة جزء '+part.kind+' من الملف الموحد؛ الأصل محفوظ.');
-   }
+   const stored=await readSapJson<{key:string}>(res,'أرشفة جزء '+part.kind+' من ملف SAP الموحد');
+   if(!stored.key)throw Error('خادم الأرشيف لم يؤكد حفظ جزء '+part.kind+'؛ الملف الأصلي محفوظ.');
   }
  }
 
@@ -90,14 +88,13 @@ export default function SapFiles(){
    const raw=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key));
    if(!raw.ok)throw Error('تعذّر فتح الأصل لتصحيح تصنيفه.');
    const copied=await fetch('/api/lieutenant-files',{method:'POST',headers:{'X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind},body:await raw.arrayBuffer()});
-   const result=await copied.json() as {key:string;error?:string};
-   if(!copied.ok)throw Error(result.error||'تعذّر حفظ النسخة المصنّفة.');
+   const result=await readSapJson<{key:string}>(copied,'تصنيف ملف SAP المحفوظ');
+   if(!result.key)throw Error('لم يؤكد الخادم حفظ النسخة المصنفة.');
    await refresh();
    return processFile({...file,key:result.key,kind:archiveKind,snapshotDate:''},text);
   }
   remember(state);
-  if(state.kind==='unified')await archiveUnifiedParts(file,text??await readSapArchive(file));
-  // Unified imports are already preserved as immutable, dated archives and D1 receipts.
+  // Unified imports are already preserved as immutable originals and D1 receipts.
   // Never replace the legacy shared full export with a shorter date-window subset.
   if(state.kind==='transfers')await publishShared(file,text??await readSapArchive(file));
   // Only unfinished batches are requested. Finished batches survive reloads and
@@ -109,7 +106,14 @@ export default function SapFiles(){
    if(result.busy){M('هناك طلب يعالج هذه الدفعة. حدّث الحالة أو استكمل بعد انتهاء الطلب؛ لن تتكرر المستندات.');return;}
    if(state.batches.find(x=>x.idx===batch.idx)?.state==='failed'){E('توقفت المعالجة عند دفعة فاشلة. الدفعات الناجحة محفوظة؛ اضغط «استكمال / إعادة محاولة» بعد مراجعة الخطأ.');return;}
   }
-  M(state.total===state.done?'انتهت جميع الدفعات المطلوبة. '+(state.issues.length?'توجد ملاحظات قراءة تحتاج مراجعة.':'البيانات متاحة للشاشات المرتبطة.'):'المعالجة غير مكتملة.');
+  // A temporary Supabase 503 must not prevent already-archived SAP batches
+  // from being processed or resumed. Preserve derived-snapshot warnings separately.
+  let archiveWarning='';
+  if(state.kind==='unified'){
+   try{await archiveUnifiedParts(file,text??await readSapArchive(file))}
+   catch(e){archiveWarning=' تعذّر أرشفة أحد الأجزاء المشتقة: '+(e instanceof Error?e.message:'خطأ غير معروف')+'؛ يبقى الملف الأصلي محفوظًا.';}
+  }
+  M((state.total===state.done?'انتهت جميع الدفعات المطلوبة. '+(state.issues.length?'توجد ملاحظات قراءة تحتاج مراجعة.':'البيانات متاحة للشاشات المرتبطة.'):'المعالجة غير مكتملة.')+archiveWarning);
  }
  async function upload(event:ChangeEvent<HTMLInputElement>){
   const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(!file)return;
@@ -121,12 +125,15 @@ export default function SapFiles(){
    if(needsDate&&(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>today()||new Date(date+'T00:00:00Z').toISOString().slice(0,10)!==date))throw Error('اختر تاريخ الرصيد الفعلي الصحيح قبل الرفع.');
    const archiveKind=['transfers','balance','opening'].includes(detected)?detected:'other';
    const res=await fetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream','X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind,'X-Snapshot-Date':needsDate?date:''},body:bytes});
-   const saved=await res.json() as {key:string;error?:string};if(!res.ok)throw Error(saved.error||'تعذّر حفظ الملف الأصلي.');
-   K(detected);await refresh();
-   if(!text){M('حُفظ الملف الأصلي؛ '+issue);return;}
+   const saved=await readSapJson<{key:string}>(res,'حفظ الملف الأصلي في أرشيف SAP');
+   if(!saved.key)throw Error('لم يؤكد الخادم حفظ الملف الأصلي.');
+   K(detected);
+   if(!text){M('حُفظ الملف الأصلي؛ '+issue);await refresh().catch(e=>E(e instanceof Error?e.message:'تعذّر تحديث الأرشيف.'));return;}
    const stored={key:saved.key,name:file.name,kind:archiveKind,created:'',snapshotDate:needsDate?date:''};
    OPEN({file:stored,text});
-   await processFile(stored,text);await refresh();
+   await processFile(stored,text);
+   // Archival listing is advisory: a transient 503 cannot undo an import.
+   await refresh().catch(e=>E(e instanceof Error?e.message:'تعذّر تحديث قائمة الأرشيف.'));
   });
  }
  async function stamp(file:SapArchiveFile){
@@ -137,7 +144,8 @@ export default function SapFiles(){
    if(!confirm('هل هذا الكشف يمثل '+(actual==='opening'?'الرصيد قبل أول حركة بتاريخ ':'الرصيد بنهاية يوم ')+date+'؟ ستُحفظ نسخة مؤرخة ويبقى الأصل.'))return;
    const raw=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key));if(!raw.ok)throw Error('تعذّر قراءة الأصل.');
    const saved=await fetch('/api/lieutenant-files',{method:'POST',headers:{'X-File-Name':encodeURIComponent(file.name),'X-File-Kind':actual,'X-Snapshot-Date':date},body:await raw.arrayBuffer()});
-   const out=await saved.json() as {key:string;error?:string};if(!saved.ok)throw Error(out.error||'تعذّر تثبيت التاريخ.');
+   const out=await readSapJson<{key:string}>(saved,'تثبيت تاريخ رصيد 011');
+   if(!out.key)throw Error('لم يؤكد الخادم تاريخ الرصيد.');
    await processFile({...file,key:out.key,snapshotDate:date},text);await refresh();
   });
  }
@@ -145,7 +153,8 @@ export default function SapFiles(){
   if(!confirm('حذف الملف الأصلي «'+file.name+'» من الأرشيف نهائيًا؟ لن تُحذف المطابقات أو قرارات الإلغاء أو المستندات المعالجة.'))return;
   await exclusive(async()=>{
    const res=await fetch('/api/lieutenant-files',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:file.key})});
-   const out=await res.json() as {deleted?:boolean;error?:string};if(!res.ok||!out.deleted)throw Error(out.error||'لم يؤكد الخادم الحذف.');
+   const out=await readSapJson<{deleted?:boolean}>(res,'حذف الملف المحدد من أرشيف SAP');
+   if(!out.deleted)throw Error('لم يؤكد الخادم الحذف.');
    if(opened?.file.key===file.key)OPEN(null);await refresh();M('حُذف الملف المحدد من الأرشيف.');
   });
  }
