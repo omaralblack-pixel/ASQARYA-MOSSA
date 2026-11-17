@@ -163,6 +163,23 @@ assert.equal(noArchive.key,sharedLieutenantKey,'An empty archive still restores 
 const archivePreferred=await restoreLieutenantSource([{key:'valid',name:'new.txt',kind:'transfers'}],[],
   async()=>savedText,async()=>{throw Error('must not read shared file when an archived transfer is valid')});
 assert.equal(archivePreferred.key,'valid');
+
+const dateScopedNew=en+'\n'+
+  ['2618002','2026-11-17','21','السرو','2623111111','FVL00016','جزر حديث','6','Piece','001','011'].join('\t');
+const dateScopedOld=en+'\n'+normal+'\n'+
+  ['2618002','2026-11-16','21','السرو','2623111111','FVL00016','جزر قديم','4','Piece','001','011'].join('\t');
+const mergedHistorical=await restoreLieutenantSource([
+  {key:'new-window',name:'unified-transfers-2026-11-17.txt',kind:'transfers',created:'2026-11-17T10:00:00Z'},
+  {key:'old-full',name:'011.txt',kind:'transfers',created:'2026-11-16T10:00:00Z'},
+],[],async file=>file.key==='new-window'?dateScopedNew:dateScopedOld,
+ async()=>{throw Error('Restoration must not overwrite legacy shared SAP source')});
+assert.equal(mergedHistorical.scan.transfers.length,2,
+  'A date-scoped unified upload must not hide non-canceled historical transfers');
+assert.equal(mergedHistorical.scan.transfers.find(x=>x.transfer.number==='2618002').transfer.date,
+  '2026-11-17','Newest source must win when document numbers overlap');
+assert.ok(mergedHistorical.scan.transfers.some(x=>x.transfer.number==='2617005'),
+  'Historical evidence must remain available to the lieutenant');
+
 const archiveOffline=await restoreLieutenantSource([{key:'offline',name:'old.txt',kind:'transfers'}],[],
   async()=>{throw Error('offline')},async()=>({name:'shared.txt',text:savedText}));
 assert.equal(archiveOffline.key,sharedLieutenantKey);
@@ -235,7 +252,7 @@ const erasedFromNew=await restoreLieutenantSource([
   async()=>{throw Error('A valid latest SAP archive must not use shared fallback')});
 assert.equal(erasedFromNew.key,'new','The latest file remains the primary source');
 assert.equal(erasedFromNew.scan.transfers.length,2,'The missing original is recovered without duplicating the correction');
-assert.match(erasedFromNew.name,/استكمال مستندات الإلغاء/);
+assert.match(erasedFromNew.name,/استكمال السجلات التاريخية المفقودة/);
 const recoveredFromShared=await restoreLieutenantSource([
   {key:'new',name:'SAP_15.txt',kind:'transfers',created:'2026-11-15T10:00:00Z'},
 ],[],async()=>erbidCorrection,async()=>({name:'current.json',text:erbidOriginal+'\n'+
