@@ -79,7 +79,7 @@ assert.equal(projectWins.rows[1].groupId,'saved-karama-group');
 assert.equal(projectWins.blockers.length,0);
 auditSerialExport(projectWins.rows.map(r=>({
  number:r.number,date:r.date,groupId:r.groupId,
- transfers:projectSerialTransferCells(r).flatMap(value=>value.match(/\\d{4,20}/g)||[]),
+ transfers:projectSerialTransferCells(r).flatMap(value=>value.match(/\d{4,20}/g)||[]),
  confirmedTransfers:serialInvoiceColumns(r).filter(Boolean)
 })));
 const withoutPersonalPages={...JSON.parse(group.payload),pages:{'s:DAR00001':'99','s:DAR00002':'0'},
