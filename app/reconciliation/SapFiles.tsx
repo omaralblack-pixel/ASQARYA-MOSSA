@@ -100,8 +100,8 @@ export default function SapFiles(){
     action:'start',key:file.key,text:source,recheck:mayRecheck,
    })).job;
   }
-  const archiveKind=['transfers','balance','opening'].includes(state.kind)?state.kind:'other';
-  if(file.kind!==archiveKind){
+  const archiveKind=['transfers','balance','opening','unified'].includes(state.kind)?state.kind:'other';
+  if(file.kind!==archiveKind&&!(file.kind==='other'&&state.kind==='unified')){
    const raw=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key));
    if(!raw.ok)throw Error('تعذّر فتح الأصل لتصحيح تصنيفه.');
    const copied=await fetch('/api/lieutenant-files',{method:'POST',headers:{'X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind},body:await raw.arrayBuffer()});
@@ -140,12 +140,26 @@ export default function SapFiles(){
    try{text=decodeLieutenantFile(bytes,file.name);detected=classifySapFile(text);}catch(e){issue=e instanceof Error?e.message:'تعذّر قراءة الملف.';}
    const needsDate=detected==='balance'||detected==='opening';
    if(needsDate&&(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>today()||new Date(date+'T00:00:00Z').toISOString().slice(0,10)!==date))throw Error('اختر تاريخ الرصيد الفعلي الصحيح قبل الرفع.');
-   const archiveKind=['transfers','balance','opening'].includes(detected)?detected:'other';
+   const archiveKind=['transfers','balance','opening','unified'].includes(detected)?detected:'other';
    const res=await fetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream','X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind,'X-Snapshot-Date':needsDate?date:''},body:bytes});
    const saved=await readSapJson<{key:string}>(res,'حفظ الملف الأصلي في أرشيف SAP');
    if(!saved.key)throw Error('لم يؤكد الخادم حفظ الملف الأصلي.');
    // Save, verify and display the archive before any CPU-heavy processing.
    await verifyArchivedSource(saved.key,bytes);
+   // Filename equality is NOT source equality. Do not spawn a new D1 import
+   // when a same-name but different-hash source is partially processed.
+   const otherPartial=Object.values(jobs).find(row=>
+    row.done<row.total&&row.key!==saved.key&&row.key.split('__').at(-1)===file.name);
+   if(otherPartial){
+    const checked:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
+     created:new Date().toISOString(),size:file.size};
+    F(prev=>[checked,...prev.filter(entry=>entry.key!==checked.key)]);
+    OPEN({file:checked,text});
+    K(detected);
+    E('الملف الحالي محفوظ ومؤكد، لكن يوجد سجل معالجة قديم لنفس الاسم ('+
+      otherPartial.done+'/'+otherPartial.total+' دفعات) وبصمة رقمية مختلفة. لن أبدأ معالجة ثانية تلقائيًا؛ استعد أصل السجل القديم المطابق أو راجعه.');
+    return;
+   }
    const stored:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
     created:new Date().toISOString(),snapshotDate:needsDate?date:'',size:file.size};
    F(prev=>[stored,...prev.filter(item=>item.key!==stored.key)]);
@@ -251,7 +265,7 @@ export default function SapFiles(){
     <strong>{archiveUnlistedJobs.length} سجل معالجة في D1 بدون أصل ظاهر بقائمة Supabase</strong>
     <p>سجل معالجة SAP لا يثبت وحده حفظ الملف الأصلي. تحقق من وجود الأصل، دون إعادة المعالجة أو حذف الدفعات.</p>
     {archiveUnlistedJobs.slice(0,20).map(row=><p key={row.key}>
-     <b dir="auto">{row.key.split('__').at(-1)}</b> — {row.done} من {row.total} دفعة
+     <b dir="auto">{row.key.split('__').at(-1)}</b> <small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done} من {row.total} دفعة
      {' '}<button type="button" className="button secondary small" disabled={busy}
        onClick={()=>void exclusive(()=>verifyUnlistedOriginal(row))}>تحقق من الأصل</button>
     </p>)}
