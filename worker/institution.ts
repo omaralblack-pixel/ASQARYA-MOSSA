@@ -259,7 +259,7 @@ export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
       if (!Array.isArray(objects)) return reply(502, "البيانات المسترجعة من الأرشيف غير صالحة.");
       return Response.json({
         files: objects.filter(item => !!item.name && !item.name.endsWith("/")).map(item => {
-          const parsed = item.name.match(/^(transfers|opening|balance|other)__[a-f0-9]{32}__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
+          const parsed = item.name.match(/^(transfers|opening|balance|unified|other)__[a-f0-9]{32}__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
           return {
             key: "lieutenant/" + item.name,
             name: parsed?.[3] || item.name,
@@ -277,7 +277,7 @@ export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
     const snapshotDate = request.headers.get("X-Snapshot-Date") || "";
     const rawName = decodeURIComponent(request.headers.get("X-File-Name") || "");
     const filename = rawName.replace(/[\\/?%*:|"<>]/g, "_").trim().slice(-120);
-    if (!["transfers", "opening", "balance", "other"].includes(kind) ||
+    if (!["transfers", "opening", "balance", "unified", "other"].includes(kind) ||
       !filename || filename.length > 120) return reply(400, "نوع الملف أو اسمه غير صالح.");
     if (snapshotDate && (
       !["opening", "balance"].includes(kind) ||
