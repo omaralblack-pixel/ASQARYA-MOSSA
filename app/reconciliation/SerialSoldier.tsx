@@ -36,7 +36,7 @@ async function getSaved():Promise<SerialRecord[]> {
  }
  throw Error('سجل المشروع تجاوز حد صفحات التصدير المسموح؛ لا يجوز تسليم كشف غير مكتمل.');
 }
-export default function SerialSoldier(){
+export default function SerialSoldier({branches}:{branches:string[]}){
  const [file,setFile]=useState<File|null>(null);
  const [buffer,setBuffer]=useState<ArrayBuffer|null>(null);
  const [report,setReport]=useState<SerialReport|null>(null);
@@ -101,7 +101,10 @@ export default function SerialSoldier(){
    try{
      const saved=await getSaved();
      const {createProjectInvoicesWorkbook}=await import('../lib/project-invoice-export');
-     const blob=createProjectInvoicesWorkbook(saved);
+     const {readColonelNotesForExport}=await import('../lib/colonel-notes-client');
+     const colonel=await readColonelNotesForExport(branches,saved);
+     const blob=createProjectInvoicesWorkbook(saved,colonel.notes);
+     if(colonel.warning)setMergeNotice('تنبيه العقيد: '+colonel.warning);
      const url=URL.createObjectURL(blob),a=document.createElement('a');
      a.href=url;
      a.download='جميع-فواتير-المشروع-'+new Date().toISOString().slice(0,10)+'.xlsx';
@@ -122,9 +125,12 @@ export default function SerialSoldier(){
      fresh.blockers=[...new Set([...parsed.errors,...fresh.blockers])];
      setReport(fresh);
      // Safe final download only: validation rejects duplicates and lost transfers.
-     const blob=createSerialWorkbook(buffer,fresh,approvedMerges);
+     const {readColonelNotesForExport}=await import('../lib/colonel-notes-client');
+     const colonel=await readColonelNotesForExport(branches,saved);
+     const blob=createSerialWorkbook(buffer,fresh,approvedMerges,colonel.notes);
      const name=file.name.replace(/\.xlsx$/i,'')+'-جندي-السيريل.xlsx';
-     setMergeNotice('تم تدقيق عدم التكرار وتجهيز شيت مستقل لكل يوم عمل باستثناء الجمعة.');
+     setMergeNotice('تم تدقيق عدم التكرار وتجهيز شيت مستقل لكل يوم عمل باستثناء الجمعة.'+
+       (colonel.warning?' تنبيه العقيد: '+colonel.warning:''));
      const url=URL.createObjectURL(blob),a=document.createElement('a');
      a.href=url;
      a.download=name;
@@ -142,6 +148,7 @@ export default function SerialSoldier(){
      <h2><FileSpreadsheet size={21} style={{verticalAlign:'middle',marginLeft:8}}/>كشف سجى الأصلي</h2>
      <p className="hint">المرجع المعتمد هو سجلات مشروع إدارة المؤسسة؛ ملف سجى للمقارنة فقط. يطابق الجندي أرقام الفواتير أولًا، ثم يصحح في النسخة الناتجة الرقم والتاريخ والفرع والمبلغ وأعمدة الترحيلات وفق المشروع، ويسجل قيم Excel القديمة والاختلافات في الملاحظات دون تعديل قاعدة المشروع أو حذف ملفات المصدر. الترحيلات المشتركة مسموحة فقط إذا ثبتت ضمن المجموعة نفسها في المشروع.</p>
      <p className="hint">الفواتير المسجلة بالمشروع والناقصة من كشف سجى تُضاف في نفس الشيت بالأزرق، مع رقمها وتاريخها وفرعها ومبلغها وترحيلاتها، وملاحظة «موجودة بالمشروع وغير موجودة بكشف سجى». تشمل المقارنة فترة الكشف المكتوبة في عنوان ملف سجى.</p>
+     <p className="hint">العقيد يضيف إلى ملاحظات Excel حالة الإلغاء المثبتة في SAP، أو العكسي المطابق ورقمه، أو الكاش فان الذي ما زال يحتاج إجراء. قرارات التجاوز والربط الإداري تظهر بصفتها قرارات، ولا تتحول تلقائيًا إلى إثبات إلغاء. إذا تعذّر قراءة SAP يُكتب تحذير واضح داخل الكشف.</p>
      <div style={{display:'flex',alignItems:'end',gap:12,flexWrap:'wrap',marginBottom:14}}>
        <label style={{flex:'1 1 280px'}}>اختيار Excel سجى (.xlsx)
          <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={e=>{const f=e.target.files?.[0];if(f)void checkExcel(f);e.target.value='';}}/>
