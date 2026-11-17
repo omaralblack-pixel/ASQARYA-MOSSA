@@ -28,7 +28,24 @@ async function aqabaRefs(base:Item[]):Promise<Item[]>{
 // Initialize only missing tables on standalone Cloudflare deployments.
 let schemaReady:Promise<unknown>|undefined;
 function ensureSchema(){return schemaReady??=db().batch(schemaStatements.map(sql=>db().prepare(sql))).catch(error=>{schemaReady=undefined;throw error})}
-export async function GET(req:Request){try{await ensureSchema();const u=new URL(req.url);
+// Branch approvals use only their own table; a cold Workers Free request must not
+// wait on creation/checks for every unrelated reconciliation table.
+let branchExceptionSchemaReady:Promise<unknown>|undefined;
+function ensureBranchExceptionSchema(){
+ const statement=schemaStatements.find(sql=>sql.startsWith('CREATE TABLE IF NOT EXISTS reconciliation_branch_exceptions '));
+ if(!statement)throw Error('جدول مراجعة استثناءات الفروع غير معرّف.');
+ return branchExceptionSchemaReady??=db().prepare(statement).run().catch(error=>{branchExceptionSchemaReady=undefined;throw error});
+}
+export async function GET(req:Request){try{const u=new URL(req.url);
+if(u.searchParams.has('branchExceptions')){
+ await ensureBranchExceptionSchema();
+ const transferNo=digits(u.searchParams.get('branchExceptions')||'').trim();
+ if(!/^\d{4,20}$/.test(transferNo))return json({error:'رقم الترحيل غير صالح.'},400);
+ const rows=await db().prepare("SELECT transfer_no AS transferNo,source_branch AS sourceBranch,target_branch AS targetBranch,reason,approved_at AS approvedAt FROM reconciliation_branch_exceptions WHERE transfer_no=? ORDER BY approved_at")
+  .bind(transferNo).all<BranchException>();
+ return json({exceptions:rows.results});
+}
+await ensureSchema();
 if(u.searchParams.has('aqabaPricing')){
  const reference=await aqabaRefs(await refs());
  return json({reference,priceCount:reference.filter(item=>item.price!==null).length,branch:'84 — العقبة',currencyUnit:'fils'});
@@ -64,13 +81,6 @@ if(u.searchParams.has('sapLookup')){
  return json({hits,partial:rows.results.length>400,source:'سجل ترحيلات SAP المستوردة'});
 }
 if(u.searchParams.has('version'))return json({commit:typeof __ASQARYA_COMMIT__==='string'?__ASQARYA_COMMIT__:'unknown',workerVersion:env.CF_VERSION_METADATA?.id||null});
-if(u.searchParams.has('branchExceptions')){
- const transferNo=digits(u.searchParams.get('branchExceptions')||'').trim();
- if(!/^\d{4,20}$/.test(transferNo))return json({error:'رقم الترحيل غير صالح.'},400);
- const rows=await db().prepare("SELECT transfer_no AS transferNo,source_branch AS sourceBranch,target_branch AS targetBranch,reason,approved_at AS approvedAt FROM reconciliation_branch_exceptions WHERE transfer_no=? ORDER BY approved_at")
-  .bind(transferNo).all<BranchException>();
- return json({exceptions:rows.results});
-}
 if(u.searchParams.has('lieutenantCancellationDecisions')){
  const rows=await db().prepare(
    'SELECT transfer_no,decision,related_type,related_number,note,revision,updated_at FROM lieutenant_cancellation_decisions ORDER BY transfer_no'
@@ -437,8 +447,9 @@ async function saveReconciliation(d: Draft, requestedSources: unknown = []) {
   return json({id,version,referenceSnapshot:reference,summary,pages:prepared.draft.pages});
 }
 
-export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);const b=await readJsonRequest(req);await ensureSchema();
+export async function POST(req:Request){try{if(req.headers.get('origin')!==new URL(req.url).origin)return json({error:'طلب غير مسموح'},403);const b=await readJsonRequest(req);
 if(b.action==='approveBranchException'){
+ await ensureBranchExceptionSchema();
  const transferNo=digits(String(b.transferNo||'')).trim();
  const targetBranch=String(b.targetBranch||'').trim();
  const reason=String(b.reason||'').trim();
@@ -448,7 +459,7 @@ if(b.action==='approveBranchException'){
  if(!/^\d{4,20}$/.test(transferNo)||!allowedBranches.includes(targetBranch)||
     sourceBranches.length<1||sourceBranches.length>3||new Set(sourceBranches).size!==sourceBranches.length||
     sourceBranches.some((source:unknown)=>typeof source!=='string'||!allowedBranches.includes(source)||source===targetBranch)||
-    reason.length<8||reason.length>500)
+    reason.length<8||reason.length>500||/^\d+$/.test(reason))
    return json({error:'أدخل رقم الترحيل والفرع الصحيح وسبب استثناء واضحًا (8 إلى 500 حرف).'},400);
  const approvedAt=new Date().toISOString();
  await db().batch(sourceBranches.map((source:string)=>db().prepare(
@@ -456,8 +467,12 @@ if(b.action==='approveBranchException'){
  ).bind(transferNo,source,targetBranch,reason,approvedAt)));
  const rows=await db().prepare("SELECT transfer_no AS transferNo,source_branch AS sourceBranch,target_branch AS targetBranch,reason,approved_at AS approvedAt FROM reconciliation_branch_exceptions WHERE transfer_no=? AND target_branch=?")
   .bind(transferNo,targetBranch).all<BranchException>();
+ const approvedSources=new Set(rows.results.filter(row=>row.reason.trim()).map(row=>row.sourceBranch));
+ if(sourceBranches.some((source:string)=>!approvedSources.has(source)))
+  return json({error:'لم يؤكد خادم المطابقة حفظ جميع استثناءات هذا الترحيل. تحقق من السجل قبل إعادة المحاولة.'},503);
  return json({exceptions:rows.results});
 }
+await ensureSchema();
 if(b.action==='lieutenantCancellationDecision'){
  // Optimistic locking prevents another device from silently overwriting a review.
  const expected=Number(b.expectedRevision);
