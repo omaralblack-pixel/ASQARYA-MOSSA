@@ -326,8 +326,8 @@ assert.equal((await approveException({reason:'2616606'})).status,400,'Number alo
 assert.equal((await approveException({sourceBranches:['فرع غير معروف']})).status,400,'Unknown source cannot be approved');
 assert.equal((await approveException({targetBranch:branch99})).status,400,'Same source and target must be rejected');
 const approvedResponse=await approveException();
-assert.equal(approvedResponse.status,200,JSON.stringify(await approvedResponse.json()));
 const approvedBody=await approvedResponse.json();
+assert.equal(approvedResponse.status,200,JSON.stringify(approvedBody));
 assert.equal(approvedBody.exceptions.length,1);
 assert.deepEqual([approvedBody.exceptions[0].transferNo,approvedBody.exceptions[0].sourceBranch,approvedBody.exceptions[0].targetBranch],
  ['2616606',branch99,branch5]);
