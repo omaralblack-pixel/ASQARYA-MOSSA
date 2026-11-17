@@ -36,9 +36,9 @@ const statusText:Record<ReviewStatus,string>={
   approved:'مطابق ومعتمد',
   paper:'الفاتورة مرتبطة، والورق غير مؤكد',
   linked:'مرتبط بفاتورة، المطابقة غير مكتملة',
-  unlinked:'ترحيل محفوظ بلا رقم فاتورة زرقاء',
-  queued:'مستورد تلقائيًا — بانتظار الجندي',
-  missing:'غير مستورد — يحتاج معالجة',
+  unlinked:'ترحيل فقط — سجل بلا فاتورة زرقاء',
+  queued:'ترحيل SAP مستقل — لدى الملازم أول',
+  missing:'ترحيل SAP غير منسوب — لدى الملازم أول',
   review:'يحتاج مراجعة بيانات SAP',
   reversed:'تمت التسوية بعكسي مطابق',
   reverse:'ترحيل عكسي — بلا فاتورة مستقلة',
@@ -153,8 +153,9 @@ async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
   return data;
 }
 
-const completeStatuses=new Set<ReviewStatus>(['approved','reversed','reverse','sap-canceled','sap-cancel-doc']);
-const soldierEligible=(status:ReviewStatus)=>['missing','queued','unlinked','linked','paper'].includes(status);
+const completeStatuses=new Set<ReviewStatus>(['approved','linked','paper','reversed','reverse','sap-canceled','sap-cancel-doc']);
+// Any unassigned transfer remains with First Lieutenant. Never open an invoice
+// group merely because SAP contains a movement with no blue invoice.
 function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodEnd:string,approvals:ReturnType<typeof lieutenantApprovals>):ReviewRow[]{
   const movements=analyzeLieutenantMovements(transfers,periodEnd);
   const saved=new Map<string,{id:string;status:ReviewStatus;note:string}>();
@@ -166,7 +167,7 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodE
     const matched=record.status==='match'&&hasPaper;
     const status:ReviewStatus=matched?'approved':numbers.length?
       hasPaper?'linked':'paper':'unlinked';
-    const note=numbers.length?'الفواتير: '+numbers.join('، '):'لم يُحدد رقم فاتورة زرقاء.';
+    const note=numbers.length?'منسوب لفاتورة زرقاء: '+numbers.join('، ')+'؛ لا تطلب فاتورة جديدة.':'ترحيل بلا فاتورة زرقاء؛ ليس مجموعة، وتبقى متابعة SAP عند الملازم أول.';
     for(const transfer of draft.transfers||[])
       for(const number of transferNumbers(transfer.number||''))
         saved.set(number,{id:record.id,status,note});
@@ -182,8 +183,8 @@ function makeRows(transfers:LieutenantTransfer[],snapshot:RecordSnapshot,periodE
         counterparts:movement.counterparts||[movement.counterpart].filter((value):value is string=>!!value)};
     if(result)return {source,status:approvals.warnings.has(number)?'linked':result.status,
       recordId:result.id,note:approvals.warnings.get(number)||result.note};
-    if(queue.has(number))return {source,status:'queued',note:'محفوظ مستقلًا عن الفواتير؛ لم تُنشأ فاتورة تلقائية.'};
-    return {source,status:'missing',note:'الترحيل موجود في ملف SAP، لكن ليس في السجل ولا قائمة الجندي.'};
+    if(queue.has(number))return {source,status:'queued',note:'ترحيل SAP مستقل؛ ليس مجموعة فواتير ولا يتطلب فاتورة تلقائيًا.'};
+    return {source,status:'missing',note:'ترحيل SAP غير مرتبط بفاتورة؛ متابعة الملازم أول فقط دون إنشاء مجموعة أو طلب فاتورة.'};
   });
 }
 
@@ -433,10 +434,20 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const periodValid=!!sapStockBalanceQuery(from)&&!!sapStockBalanceQuery(to)&&from<=to&&to<=todayLocal();
   const canCompare=!!closing?.date&&closing.date===to&&!!selectedTransfer&&periodValid;
   const invoiceRequiredNumbers=useMemo(()=>{
+    // A saved, explicitly numbered blue invoice creates an invoice obligation.
+    // Unassigned SAP movements never become invoice groups automatically.
+    const assigned=new Set<string>();
+    if(recordsReady)for(const record of snapshot.records){
+      const draft=readReconciliationRecord(record.payload);
+      if(!draft||!draft.invoices.some(invoice=>!!invoiceDocumentNo(invoice.number)))continue;
+      for(const item of draft.transfers)
+        for(const number of transferNumbers(item.number||''))assigned.add(number);
+    }
     const movements=analyzeLieutenantMovements(transfers,to);
-    return new Set(transfers.filter(row=>!row.reverse&&movements.get(row.transfer.number)?.kind==='normal')
+    return new Set(transfers.filter(row=>assigned.has(row.transfer.number)&&!row.reverse&&
+      movements.get(row.transfer.number)?.kind==='normal')
       .map(row=>row.transfer.number));
-  },[transfers,to]);
+  },[transfers,to,snapshot.records,recordsReady]);
   const stockRows=useMemo(()=>{
     if(!closing?.items.length)return [];
     const byKey=new Map<string,StockItem>();
@@ -662,7 +673,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           <div className="stat"><span>أصناف كشف الرصيد</span><strong>{closing.items.length}</strong></div>
           <div className="stat"><span>تاريخ الرصيد</span><strong>{closing.date||'غير محدد'}</strong></div>
           <div className="stat"><span>الترحيلات المحمّلة</span><strong>{transfers.length}</strong></div>
-          <div className="stat"><span>أصناف بحاجة فواتير معتمدة</span><strong>{coverageReady?uncoveredItems.length:'—'}</strong></div>
+          <div className="stat"><span>أصناف مرتبطة بفواتير بانتظار اعتماد</span><strong>{coverageReady?uncoveredItems.length:'—'}</strong></div>
           <div className="stat"><span>أصناف تحتاج مراجعة البيانات</span><strong>{canCompare?incompleteItems.length:'—'}</strong></div>
           <div className="stat"><span>أصناف فيها فرق بالأرصدة</span><strong>{canCompare?stockRows.filter(item=>item.difference!==null&&Math.abs(item.difference)>0.000001).length:'—'}</strong></div>
         </div>
@@ -804,9 +815,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         <label>البحث<input type="search" value={query} onChange={event=>{setQuery(event.target.value);setRowLimit(50)}} placeholder="رقم الترحيل أو الفرع"/></label>
         <button className="button primary" disabled={busy||autoLoading||!transfers.length||!periodValid}
           onClick={()=>void refreshSnapshot().catch(cause=>setError(cause.message))}><Search size={16}/> تحديث نتائج الفحص المحفوظة</button>
-        <a className="button secondary" href="/reconciliation?view=sap-files">معالجة ملفات SAP وإرسال الناقص للجندي</a>
+        <a className="button secondary" href="/reconciliation?view=sap-files">فتح أرشيف SAP ومتابعة الترحيلات المستقلة</a>
         <select aria-label="فلترة ترحيلات الملازم أول" value={filter} onChange={event=>{setFilter(event.target.value);setRowLimit(50)}}>
-          <option value="pending">المطلوبة فقط (بدون العكسي المسوّى)</option>
+          <option value="pending">متابعة الملازم أول — الترحيلات غير المنسوبة والمراجعات</option>
           <option value="all">الكل</option>
           {Object.entries(statusText).map(([key,text])=><option key={key} value={key}>{text}</option>)}
         </select>
@@ -820,8 +831,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       <div className="stats">
         <div className="stat"><span>ترحيلات الفترة</span><strong>{selectedTransfer&&periodValid?rows.length:'—'}</strong></div>
         <div className="stat"><span>مطابقة ومعتمدة</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.approved:'—'}</strong></div>
-        <div className="stat"><span>بانتظار الجندي</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.queued:'—'}</strong></div>
-        <div className="stat"><span>تحتاج متابعة</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.pending:'—'}</strong></div>
+        <div className="stat"><span>ترحيلات مستقلة بالأرشيف</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.queued:'—'}</strong></div>
+        <div className="stat"><span>تحت متابعة الملازم</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.pending:'—'}</strong></div>
       </div>
       {issues.length>0&&<div className="banner warn" role="alert"><AlertTriangle size={17}/>
         <div><strong>{issues.length} ملاحظة على قراءة SAP:</strong>
@@ -849,8 +860,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           {row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>حالة الإلغاء غير مذكورة</small>}
           {row.source.cancellationMentioned&&row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>Remarks تذكر إلغاء دون إثبات</small>}</td>
         <td>{recordsReady?row.note:'تعذّر قراءة سجل المطابقات بالكامل؛ لا يمكن تحديد تغطية هذا الترحيل بعد.'}</td>
-        <td>{row.recordId?<button type="button" className="button secondary small" onClick={()=>onOpenRecord(row.recordId!)}>فتح الفاتورة</button>:
-          <button type="button" className="button secondary small" disabled={!recordsReady||!soldierEligible(row.status)||!!row.source.issues.length} onClick={()=>onOpenTransfer(row.source.transfer,row.source.branch)}>{soldierEligible(row.status)?'إرسال للجندي':'ليس لفاتورة زرقاء'}</button>}</td>
+        <td>{row.recordId?<button type="button" className="button secondary small" onClick={()=>onOpenRecord(row.recordId!)}>{['approved','linked','paper'].includes(row.status)?'فتح الفاتورة':'فتح سجل الترحيل'}</button>:
+          <span className="hint">للملازم أول — ترحيل فقط</span>}</td>
       </tr>)}</tbody></table></div>}
       {visible.length>rowLimit&&<button type="button" className="button secondary" onClick={()=>setRowLimit(value=>value+100)}>
         إظهار ترحيلات إضافية ({Math.min(rowLimit,visible.length)} من {visible.length})
