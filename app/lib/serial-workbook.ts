@@ -563,7 +563,6 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في ملف سجى.');
   const sourceItem=report.rows.find(source=>source.row===item.row)||item;
   if(item.groupId){
-   const originalNumber=text(getCell(row,'D'+item.row),pkg.shared);
    if(item.number!==sourceItem.number){
     const destination=ensureCell(d,row,4,item.row);
     if(find(destination,'f'))throw Error('فاتورة '+item.number+': رقم الفاتورة في معادلة ولا يمكن تصحيحه.');
