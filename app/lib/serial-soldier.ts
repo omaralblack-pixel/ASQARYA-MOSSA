@@ -310,6 +310,20 @@ export function serialReviewNote(row:SerialRow):string {
 export function serialInvoiceColumns(row:Pick<SerialRow,'transfers'|'unassignedTransfers'>):string[]{
  return serialColumns([...row.transfers,...row.unassignedTransfers]);
 }
+/** Physical K:Q cells: replace all Saja transfer guesses with saved project links.
+ * More than four adjustment transfers overflow into Q without dropping any IDs.
+ */
+export function projectSerialTransferCells(row:Pick<SerialRow,'transfers'|'unassignedTransfers'>):string[]{
+ const transfers=[...new Map([...row.transfers,...row.unassignedTransfers]
+  .map(t=>[t.number,t] as const)).values()];
+ const main=transfers.filter(t=>t.kind==='main').map(t=>t.number);
+ const dry=transfers.filter(t=>t.kind==='dry').map(t=>t.number);
+ const others=transfers.filter(t=>t.kind==='adjustment').map(t=>t.number);
+ return [
+  main.join('، '),dry.join('، '),
+  ...Array.from({length:5},(_,i)=>i<4?(others[i]||''):others.slice(4).join('، ')),
+ ];
+}
 export function serialColumns(transfers:SerialTransfer[]):string[] {
   const seen=new Set<string>();
   const uniq=transfers.filter(t=>{if(seen.has(t.number))return false;seen.add(t.number);return true;});
