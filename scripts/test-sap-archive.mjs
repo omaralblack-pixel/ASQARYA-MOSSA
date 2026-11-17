@@ -43,4 +43,28 @@ const storageFetch=globalThis.fetch;
 globalThis.fetch=async(path,init)=>String(path).startsWith('https://storage.test')?storageFetch(path,init):handleInstitution(request(String(path)),env);
 assert.equal((await listSapFiles()).length,205);
 globalThis.fetch=previousFetch;
+// Cloudflare edge/gateway sometimes responds with HTML or bad JSON for HTTP 503.
+// The UI must show the failing operation, not a raw JSON.parse SyntaxError.
+const {readSapJson}=load('app/lib/sap-files-client.ts');
+const html503=new Response('<!DOCTYPE html><html><title>Service unavailable</title></html>',{
+ status:503,headers:{'Content-Type':'text/html'}});
+await assert.rejects(()=>readSapJson(html503,'استكمال دفعة SAP رقم 2'),
+ error=>error instanceof Error&&/HTTP 503/.test(error.message)&&
+  /استكمال دفعة SAP رقم 2/.test(error.message)&&/HTML/.test(error.message));
+const invalidJson=new Response('<html>bad JSON</html>',{
+ status:503,headers:{'Content-Type':'application/json'}});
+await assert.rejects(()=>readSapJson(invalidJson,'تحديث الحالة'),
+ error=>error instanceof Error&&/HTTP 503/.test(error.message)&&/ليس JSON صالحًا/.test(error.message));
+const validError=Response.json({error:'قاعدة D1 غير مربوطة'},{status:503});
+await assert.rejects(()=>readSapJson(validError,'قراءة المعالجة'),
+ error=>error instanceof Error&&/قاعدة D1 غير مربوطة/.test(error.message));
+assert.deepEqual(await readSapJson(Response.json({job:{done:1,total:3}}),'حالة المعالجة'),
+ {job:{done:1,total:3}});
+const screen=fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8');
+assert.ok(screen.includes('const saved=await readSapJson<'), 'SAP upload must not blindly parse a 503 HTML page');
+assert.ok(screen.includes('let archiveWarning=')&&screen.includes('await archiveUnifiedParts('),
+ 'A derived snapshot archive failure must not block completing durable SAP batches');
+assert.ok(screen.indexOf('for(const batch of state.batches.filter')<
+ screen.indexOf('let archiveWarning='),'Archive failure cannot run before batch resume');
+console.log('PASS: SAP HTML 503, invalid JSON, actionable endpoint diagnosis, partial batch resume and archive isolation.');
 console.log('PASS: immutable original bytes, duplicate uploads, opening/closing dates independent of upload time, downloadable filenames, invalid dates, auth/same-origin guards, traversal rejection and full 205-file pagination.');
