@@ -125,6 +125,11 @@ function serialTransfer(draft:Draft, saved:Saved, owner:Map<string,string>, bloc
     const p=parseTransfer(transfer.paste||'',{allowReverse:true});
     if(p.issues.length||p.excluded.length||!p.lines.length){
       blockers.push('الترحيل '+number+': بنود غير مقروءة أو خارج المسارات المعتمدة؛ لا يجوز تصنيفه دون مراجعة.');
+      // The saved group still proves that this transfer NUMBER belongs to the
+      // invoices in this record, even when its SAP lines cannot be classified.
+      // Keep it visible in adjustments (unverified), and leave the invoice in
+      // review; dropping the link caused false "no shared group" export errors.
+      if(!unassigned.some(row=>row.number===number))unassigned.push({number,kind:'adjustment'});
       continue;
     }
     const routes=new Set(p.lines.map(line=>line.from+'>'+line.to));
