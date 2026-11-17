@@ -1,16 +1,18 @@
 import {classifyLieutenantContent,parseLieutenantStock} from './lieutenant-stock';
+import {isUnifiedSapSource,splitUnifiedSapSource} from './unified-sap-query';
 import {parseLieutenantTransfers} from './lieutenant';
 import {lieutenantImportPlan} from './lieutenant-import-plan';
 import {readAqabaOfficial,readAqabaTransfers,readAqabaJournal} from './aqaba';
 
 export const sapProcessorVersion=1;
-export const sapKinds={transfers:'جميع ترحيلات SAP من وإلى 011',opening:'رصيد 011 الافتتاحي الفعلي',balance:'رصيد 011 الفعلي بنهاية الفترة',official:'فواتير ومستندات SAP الرسمية — العقبة',inventory:'حركات المخزون والإلغاءات OINM',aqabaTransfer:'ترحيلات SAP بتنسيق العقبة',monthly:'كشف أرقام ترحيلات M2026',other:'كشف SAP مساعد — غير معروف'};
+export const sapKinds={unified:'الكويري الشامل — SAP 011',transfers:'جميع ترحيلات SAP من وإلى 011',opening:'رصيد 011 الافتتاحي الفعلي',balance:'رصيد 011 الفعلي بنهاية الفترة',official:'فواتير ومستندات SAP الرسمية — العقبة',inventory:'حركات المخزون والإلغاءات OINM',aqabaTransfer:'ترحيلات SAP بتنسيق العقبة',monthly:'كشف أرقام ترحيلات M2026',other:'كشف SAP مساعد — غير معروف'};
 export type SapKind=keyof typeof sapKinds;
 export type SapBatch={action:string;items:unknown[]};
 export type SapPlan={kind:SapKind;issues:string[];documents:{number:string;state:string;reason:string}[];batches:SapBatch[];count:number};
 const headers=(text:string)=>text.replace(/^\uFEFF/,'').split(/\r?\n/).find(x=>x.trim())?.toLowerCase().replace(/[\s._-]+/g,'')||'';
 export function classifySapFile(text:string):SapKind{
  const h=headers(text);
+ if(isUnifiedSapSource(text))return 'unified';
  if(h.includes('transnum')||h.includes('معرفحركةالمخزون'))return 'inventory';
  if((h.includes('نوعالمستند')||h.includes('documenttype'))&&(h.includes('رقمالزبون')||h.includes('cardcode')||h.includes('customercode')))return 'official';
  const kind=classifyLieutenantContent(text);
@@ -33,6 +35,43 @@ export function buildSapBatches(action:string,items:unknown[]):SapBatch[]{
 }
 export function buildSapPlan(text:string,branches:string[]):SapPlan{
  const kind=classifySapFile(text);
+ if(kind==='unified'){
+  const parts=splitUnifiedSapSource(text);
+  const issues:string[]=[],documents:SapPlan['documents']=[],batches:SapBatch[]=[];
+  let count=0;
+  // Reuse the existing transfer importer so its invoice, cancellation and
+  // duplicate protections remain authoritative.
+  if(parts.counts.TRANSFER){
+   const plan=buildSapPlan(parts.transfers,branches);
+   issues.push(...plan.issues);documents.push(...plan.documents);
+   batches.push(...plan.batches.filter(x=>x.action==='lieutenantImport'));
+   // Aqaba assignments demand explicit branch evidence, never an inference
+   // from a shared warehouse.
+   const aqaba=readAqabaTransfers(parts.transfers);
+   const documented=aqaba.items.filter(x=>x.classified==='aqaba-remark');
+   batches.push(...buildSapBatches('aqabaTransfer',documented));
+   count+=plan.count;
+  }
+  if(parts.counts.OFFICIAL){
+   const official=readAqabaOfficial(parts.official);
+   issues.push(...official.issues);
+   batches.push(...buildSapBatches('aqabaOfficial',official.items));
+   count+=official.items.length;
+  }
+  if(parts.counts.OINM){
+   const journal=readAqabaJournal(parts.journal);
+   issues.push(...journal.issues);
+   batches.push(...buildSapBatches('aqabaJournal',journal.items));
+   count+=journal.items.length;
+  }
+  const opening=parseLieutenantStock(parts.opening,'opening'),
+    closing=parseLieutenantStock(parts.closing,'balance');
+  issues.push(...opening.issues,...closing.issues);
+  count+=opening.items.length+closing.items.length;
+  // The physical stock snapshots are archived by the file-center client
+  // separately with the actual query dates (never upload timestamps).
+  return {kind,issues:[...new Set(issues)],documents,batches,count};
+ }
  if(kind==='transfers'){
   const scan=parseLieutenantTransfers(text,branches);
   const documents=lieutenantImportPlan(scan.transfers,'0001-01-01','9999-12-31');
