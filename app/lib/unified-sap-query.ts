@@ -85,7 +85,10 @@ export function unifiedSapQuery(from:string,to:string):string{
 const transferHeaders=[
   ['Document Number','DocumentNumber'],['Document Date','DocumentDate'],
   ['Item No.','ItemCode'],['Item Description','ItemName'],
-  ['Quantity','Quantity'],['UoM Code','Unit'],
+  ['Quantity','Quantity'],['UoM Code','Unit'],['الوحدة','Unit'],
+  ['رقم الترحيل','DocumentNumber'],['التاريخ','DocumentDate'],
+  ['رقم السطر','LineNumber'],['DocEntry','DocEntry'],
+  ['اسم الصنف','ItemName'],
   ['From Warehouse','FromWarehouse'],['To Warehouse','ToWarehouse'],
   ['Remarks','Remarks'],['Journal Remarks','JournalRemarks'],
   ['CANCELED','CancellationStatus'],
