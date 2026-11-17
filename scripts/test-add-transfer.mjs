@@ -311,3 +311,37 @@ assert.equal((await claim('2616391')).source.recordId, right.id);
 assert.ok(archives().some(row=>JSON.parse(row.source_record).id===wrong.id));
 assert.equal((await save(corrected, [correction])).status, 409, 'stale correction cannot run twice');
 console.log('PASS: explicit invoice correction, original transfer integrity, archive and stale-save protection');
+
+// Branch approval must be a narrow, auditable authorization. It never changes
+// SAP evidence, transfers, invoices, or any other branch/transfer's permissions.
+const branch99='99 — سوق بدر الجديد';
+const branch5='5 — شفا بدران';
+sql.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify([branch,branch99,branch5]),'branches');
+const approveException=({transferNo='2616606',sourceBranches=[branch99],targetBranch=branch5,reason='تم تدقيق الفاتورة الأصلية والتأكد من فرع شفا بدران'}={})=>POST(new Request(apiUrl,{
+ method:'POST',headers:{origin,'content-type':'application/json'},
+ body:JSON.stringify({action:'approveBranchException',transferNo,sourceBranches,targetBranch,reason}),
+}));
+const countBefore=sql.prepare('SELECT count(*) AS n FROM reconciliations').get().n;
+assert.equal((await approveException({reason:'2616606'})).status,400,'Number alone is not an audit reason');
+assert.equal((await approveException({sourceBranches:['فرع غير معروف']})).status,400,'Unknown source cannot be approved');
+assert.equal((await approveException({targetBranch:branch99})).status,400,'Same source and target must be rejected');
+const approvedResponse=await approveException();
+assert.equal(approvedResponse.status,200,JSON.stringify(await approvedResponse.json()));
+const approvedBody=await approvedResponse.json();
+assert.equal(approvedBody.exceptions.length,1);
+assert.deepEqual([approvedBody.exceptions[0].transferNo,approvedBody.exceptions[0].sourceBranch,approvedBody.exceptions[0].targetBranch],
+ ['2616606',branch99,branch5]);
+const reading=await GET(new Request(apiUrl+'?branchExceptions=2616606'));
+assert.equal(reading.status,200);
+assert.equal((await reading.json()).exceptions[0].reason,'تم تدقيق الفاتورة الأصلية والتأكد من فرع شفا بدران');
+assert.equal((await approveException({reason:'سبب ثانٍ لا يجوز أن يحل محل قرار معتمد'})).status,200);
+assert.equal(sql.prepare('SELECT count(*) AS n FROM reconciliation_branch_exceptions WHERE transfer_no=?').get('2616606').n,1,
+ 'Repeated authorization is idempotent');
+assert.equal(sql.prepare('SELECT reason FROM reconciliation_branch_exceptions WHERE transfer_no=?').get('2616606').reason,
+ 'تم تدقيق الفاتورة الأصلية والتأكد من فرع شفا بدران','Original reason remains immutable');
+assert.equal(sql.prepare('SELECT count(*) AS n FROM reconciliations').get().n,countBefore,
+ 'Approval must not change invoice or transfer records');
+assert.equal(sql.prepare('SELECT count(*) AS n FROM reconciliation_branch_exceptions WHERE transfer_no=?').get('2616607').n,0,
+ 'Approval must not authorize other transfers');
+console.log('PASS: branch exception 2616606 stays scoped to 99 -> 5 with immutable reason and no SAP/invoice writes');
+
