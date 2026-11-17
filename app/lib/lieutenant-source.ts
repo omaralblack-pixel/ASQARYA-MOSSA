@@ -42,8 +42,12 @@ export async function restoreUnifiedStockSnapshots(
  const candidates=files.filter(file=>file.kind==='unified'||file.kind==='other')
    .sort((a,b)=>(a.kind==='unified'?0:1)-(b.kind==='unified'?0:1)||
      (b.created||'').localeCompare(a.created||''));
+ const seenFingerprints=new Set<string>();
  for(const file of candidates){
    if(opening&&closing?.file.snapshotDate===to)break;
+   const fingerprint=file.key.match(/^lieutenant\/(?:unified|other)__([a-f0-9]{32})__/)?.[1]||file.key;
+   if(seenFingerprints.has(fingerprint))continue;
+   seenFingerprints.add(fingerprint);
    try{
      const text=await readArchive(file);
      if(!isUnifiedSapSource(text))continue;
