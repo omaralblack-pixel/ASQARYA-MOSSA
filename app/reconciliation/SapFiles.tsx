@@ -215,6 +215,8 @@ export default function SapFiles(){
   M('تم التحقق من وجود ملف SAP وسلامة بصمته في Supabase: '+restored.name+'. يمكن فتحه واستكمال دفعاته.');
  }
  const archiveUnlistedJobs=Object.values(jobs).filter(row=>!files.some(file=>file.key===row.key));
+ const orphanActive=archiveUnlistedJobs.filter(row=>row.done<row.total);
+ const orphanHistory=archiveUnlistedJobs.filter(row=>row.done>=row.total);
  const visible=files.filter(file=>{
   const actual=jobs[file.key]?.kind||file.kind,uploaded=uploadDay(file.created),snapshot=file.snapshotDate||'';
   return (!query||(file.name+' '+sapKinds[actual as SapKind]).toLowerCase().includes(query.trim().toLowerCase()))&&
@@ -267,13 +269,17 @@ export default function SapFiles(){
    </div></td></tr>;
   })}</tbody></table></div>{!loading&&!visible.length&&<p>لا توجد ملفات ظاهرة ضمن التصفية. افحص سجلات المعالجة أدناه قبل إعادة الرفع.</p>}
    {archiveUnlistedJobs.length>0&&<div className="banner warn" role="status"><AlertTriangle size={17}/><div>
-    <strong>{archiveUnlistedJobs.length} سجل معالجة في D1 بدون أصل ظاهر بقائمة Supabase</strong>
-    <p>سجل معالجة SAP لا يثبت وحده حفظ الملف الأصلي. تحقق من وجود الأصل، دون إعادة المعالجة أو حذف الدفعات.</p>
-    {archiveUnlistedJobs.slice(0,20).map(row=><p key={row.key}>
+    <strong>{orphanActive.length} معالجة غير مكتملة بلا أصل ظاهر في Supabase؛ {orphanHistory.length} سجل تاريخي مكتمل أو بلا دفعات</strong>
+    <p>الملفات ذات المعالجة غير المكتملة هي أولوية الاسترجاع. سجل D1 ليس إثباتًا أن الأصل محفوظ، ولا نربط الملفات بالاسم وحده.</p>
+    {orphanActive.slice(0,20).map(row=><p key={row.key}>
      <b dir="auto">{row.key.split('__').at(-1)}</b> <small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done} من {row.total} دفعة
      {' '}<button type="button" className="button secondary small" disabled={busy}
        onClick={()=>void exclusive(()=>verifyUnlistedOriginal(row))}>تحقق من الأصل</button>
     </p>)}
+    {orphanHistory.length>0&&<details><summary>{orphanHistory.length} سجلات معالجة تاريخية — للعرض فقط</summary>
+     {orphanHistory.map(row=><p key={row.key}><span dir="auto">{row.key.split('__').at(-1)}</span>
+       {' '}<small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done}/{row.total}</p>)}
+    </details>}
    </div></div>}
   </section>
   {opened&&<section className="panel"><h2>الملف المفتوح: <b dir="auto">{opened.file.name}</b></h2><p>معاينة أول 100 ألف حرف؛ التنزيل يسترجع الملف الأصلي كاملًا.</p><textarea readOnly dir="ltr" rows={12} style={{width:'100%'}} value={opened.text.slice(0,100000)}/></section>}
