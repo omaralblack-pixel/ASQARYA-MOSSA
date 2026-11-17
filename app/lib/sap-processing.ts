@@ -37,7 +37,7 @@ export function buildSapPlan(text:string,branches:string[]):SapPlan{
  const kind=classifySapFile(text);
  if(kind==='unified'){
   const parts=splitUnifiedSapSource(text);
-  const issues:string[]=[],documents:SapPlan['documents']=[],batches:SapBatch[]=[];
+  const issues:string[]=[...parts.warnings],documents:SapPlan['documents']=[],batches:SapBatch[]=[];
   let count=0;
   // Reuse the existing transfer importer so its invoice, cancellation and
   // duplicate protections remain authoritative.
