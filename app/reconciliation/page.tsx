@@ -29,17 +29,18 @@ const newInvoice=():Invoice=>({id:uid(),number:'',date:'',amount:'',complete:fal
 const newTransfer=()=>({id:uid(),number:'',date:today(),paste:''});
 type OrderedDraft = Draft & {pageEntryOrder?: string[]};
 const blank=():OrderedDraft=>({mode:'manual',checks:{},branch:'',driver:'',date:today(),transfers:[newTransfer()],invoices:[newInvoice()],notes:''});
-async function api(body?:any,url=''){
+async function api(body?:any,url='',signal?:AbortSignal){
  const endpoint='/api/reconcile'+url;
  const options:RequestInit=body
-   ?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}
-   :{cache:'no-store'};
+   ?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal}
+   :{cache:'no-store',signal};
  // Retry read-only requests only: re-sending a failed POST could duplicate a saved invoice.
  const attempts=body?1:3;
  for(let attempt=0;attempt<attempts;attempt++){
    let response:Response;
    try{response=await fetch(endpoint,options)}
    catch{
+     if(signal?.aborted)throw Error('انتهت مهلة استجابة الخادم. لا تُكرر الحفظ قبل التحقق من القرار المسجل.');
      if(attempt+1<attempts){await new Promise<void>(resolve=>setTimeout(resolve,350*(attempt+1)));continue}
      throw Error(body
        ?'انقطع الاتصال بالخادم. افحص السجل قبل إعادة الحفظ حتى لا تتكرر الفاتورة.'
@@ -61,6 +62,12 @@ async function api(body?:any,url=''){
    return data;
  }
  throw Error('تعذّر الاتصال بخادم المطابقة.');
+}
+async function apiTimed(body?:any,url='',timeoutMs=15000){
+ const controller=new AbortController();
+ const timer=setTimeout(()=>controller.abort(),timeoutMs);
+ try{return await api(body,url,controller.signal)}
+ finally{clearTimeout(timer)}
 }
 type StoredTransfer = {transfer: Transfer; invoiceNumbers: string[]; recordId: string; version: number; branch: string};
 class BranchExceptionRequired extends Error {
@@ -95,6 +102,7 @@ const [sapPreview,setSapPreview]=useState<{groups:SapImportGroup[];records:{id:s
 const [correctTransferInvoice,setCorrectTransferInvoice]=useState(false);
 const [branchMismatch,setBranchMismatch]=useState<BranchExceptionRequired|null>(null);
 const [branchExceptionReason,setBranchExceptionReason]=useState('');
+ const [branchExceptionSaving,setBranchExceptionSaving]=useState(false);
 const [transferConflict,setTransferConflict]=useState<{id:string;number:string}|null>(null);
 const [missingTransfer,setMissingTransfer]=useState<{id:string;number:string}|null>(null);
 const [duplicateTransfer,setDuplicateTransfer]=useState('');
@@ -399,23 +407,50 @@ async function findTransferForAddition(number: string, saved: StoredTransfer | n
 }
 async function approveBranchMismatch(){
  if(!branchMismatch||searchTransferBusy)return;
- if(branchMismatch.transferNo!==digits(searchTransferNumber).trim()||branchMismatch.targetBranch!==draft?.branch){
+ const {transferNo,targetBranch,sourceBranches}=branchMismatch;
+ if(transferNo!==digits(searchTransferNumber).trim()||targetBranch!==draft?.branch){
    setSearchTransferError('تغير رقم الترحيل أو فرع الكشف. ابحث مجددًا قبل اعتماد الاستثناء.');
    setBranchMismatch(null);return;
  }
  const reason=branchExceptionReason.trim();
- if(reason.length<8||reason.length>500){
-   setSearchTransferError('اكتب سببًا واضحًا للاستثناء من 8 إلى 500 حرف.');return;
+ if(reason.length<8||reason.length>500||/^\d+$/.test(digits(reason))){
+   setSearchTransferError('اكتب سببًا واضحًا للاستثناء (8 إلى 500 حرف). رقم الترحيل وحده ليس سببًا، ويجب توضيح مستند أو نتيجة المراجعة.');
+   return;
  }
+ setSearchTransferError('');
  setSearchTransferBusy(true);
+ setBranchExceptionSaving(true);
+ const verified=(rows:BranchException[])=
+   unmatchedBranchSources(rows,transferNo,targetBranch,sourceBranches).length===0;
+ const savedMessage='تم التأكد من حفظ استثناء الفرع للترحيل '+transferNo+
+   ' في سجل القرارات. اضغط «بحث وإضافة» لإكمال الربط، ثم احفظ الكشف.';
  try{
-   await api({action:'approveBranchException',transferNo:branchMismatch.transferNo,
-     targetBranch:branchMismatch.targetBranch,sourceBranches:branchMismatch.sourceBranches,reason});
+   const response=await apiTimed({action:'approveBranchException',transferNo,targetBranch,sourceBranches,reason},'',16000)
+     as {exceptions?:BranchException[]};
+   if(!Array.isArray(response.exceptions)||!verified(response.exceptions))
+     throw Error('لم يؤكد الخادم حفظ الاستثناء في سجل المراجعة.');
    setBranchMismatch(null);setBranchExceptionReason('');
-   setSearchTransferError('تم حفظ استثناء الفرع لهذا الترحيل في سجل القرارات. اضغط «بحث وإضافة» لإكمال ربطه، ثم احفظ الكشف.');
+   setSearchTransferError(savedMessage);
  }catch(error){
-   setSearchTransferError(error instanceof Error?error.message:'تعذّر حفظ استثناء الفرع.');
- }finally{setSearchTransferBusy(false)}
+   // A POST can reach D1 even if the browser times out. Read back instead of
+   // blindly repeating the write or claiming it failed.
+   let confirmed=false;
+   try{
+     const result=await apiTimed(undefined,'?branchExceptions='+encodeURIComponent(transferNo),8000)
+       as {exceptions?:BranchException[]};
+     confirmed=Array.isArray(result.exceptions)&&verified(result.exceptions);
+   }catch{/* The result is unknown, not proof of a failed write. */}
+   if(confirmed){
+     setBranchMismatch(null);setBranchExceptionReason('');
+     setSearchTransferError(savedMessage);
+   }else{
+     setSearchTransferError((error instanceof Error?error.message:'تعذّر تأكيد حفظ استثناء الفرع.')+
+       ' لم يتم التأكد من تسجيل القرار. لا تعيد الاعتماد قبل إعادة فحص الترحيل.');
+   }
+ }finally{
+   setBranchExceptionSaving(false);
+   setSearchTransferBusy(false);
+ }
 }
 function stageTransfer(transfer: Transfer, branch: string, source?: TransferSource, replaceId?: string, invoiceNumbers:string[]=[],exceptions:BranchException[]=[]) {
   const cardId = replaceId || uid();
@@ -778,13 +813,14 @@ return <div className="recon-app"><header className="topbar"><a className="brand
             onChange={event=>setBranchExceptionReason(event.target.value)}
             placeholder="مثال: تم التحقق من الفاتورة الأصلية؛ الترحيل يخص هذا الفرع رغم اسم الفرع في SAP"/>
         </label>
-        <button type="button" className="button secondary" disabled={searchTransferBusy||branchExceptionReason.trim().length<8}
-          onClick={()=>void approveBranchMismatch()}>اعتماد استثناء الفرع وحفظ السبب</button>
+        <p className="hint">اكتب سبب المراجعة الفعلي (8 أحرف على الأقل). رقم الترحيل وحده لا يكفي؛ إذا لم يُحفظ القرار ستظهر رسالة واضحة بدل الانتظار المستمر.</p>
+        <button type="button" className="button secondary" disabled={searchTransferBusy}
+          onClick={()=>void approveBranchMismatch()}>{branchExceptionSaving?'جارٍ حفظ استثناء الفرع…':'اعتماد استثناء الفرع وحفظ السبب'}</button>
       </div>}
       {searchTransferMissing&&<p role="alert">الترحيل غير موجود في السجل أو ملف TXT. يمكنك إدخال بنوده يدويًا.</p>}
       <div className="save-actions">
         <button type="submit" className="button primary" disabled={searchTransferBusy}>
-          {searchTransferBusy?'جارٍ البحث…':'بحث وإضافة'}
+          {searchTransferBusy?(branchExceptionSaving?'جارٍ حفظ الاستثناء…':'جارٍ البحث…'):'بحث وإضافة'}
         </button>
         {searchTransferMissing&&<button type="button" className="button secondary" onClick={()=>{
           const number=digits(searchTransferNumber).trim();
