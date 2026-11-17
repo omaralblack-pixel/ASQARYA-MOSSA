@@ -11,6 +11,17 @@ const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'num
 const uploadDay=(date:string)=>date&&Number.isFinite(Date.parse(date))?new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)):'';
 const uploadTime=(date:string)=>date&&Number.isFinite(Date.parse(date))?uploadDay(date)+' '+new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(date)):'';
 const statusNames={complete:'مكتمل',review:'اكتملت الدفعات — بحاجة مراجعة',archived:'محفوظ — نوع غير معروف',pending:'بانتظار المعالجة',running:'قيد المعالجة',failed:'دفعات فاشلة — يمكن استكمالها'};
+/** Prove uploaded immutable bytes are retrievable before starting any D1 job.
+ * Exact comparison runs in the browser, outside the CPU-limited Worker. */
+async function verifyArchivedSource(key:string,original:ArrayBuffer){
+ const res=await fetch('/api/lieutenant-files?key='+encodeURIComponent(key),{cache:'no-store'});
+ if(!res.ok)throw Error('الخادم أعاد مفتاح ملف، لكن تعذّر استرجاع الأصل من Supabase (HTTP '+res.status+'). لا يمكن تأكيد حفظ الملف.');
+ const returned=await res.arrayBuffer();
+ const a=new Uint8Array(original),b=new Uint8Array(returned);
+ if(a.length!==b.length||!a.every((v,i)=>v===b[i]))
+  throw Error('الملف المسترجع من Supabase لا يطابق الملف الأصلي. أوقفت المعالجة لحماية البيانات.');
+}
+
 export default function SapFiles(){
  const [files,F]=useState<SapArchiveFile[]>([]),[jobs,J]=useState<Record<string,SapJob>>({}),[job,SJ]=useState<SapJob|null>(null);
  const [kind,K]=useState<SapKind>('unified'),[date,D]=useState(today()),[busy,B]=useState(false),[loading,L]=useState(true),[error,E]=useState(''),[message,M]=useState('');
@@ -133,13 +144,19 @@ export default function SapFiles(){
    const res=await fetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream','X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind,'X-Snapshot-Date':needsDate?date:''},body:bytes});
    const saved=await readSapJson<{key:string}>(res,'حفظ الملف الأصلي في أرشيف SAP');
    if(!saved.key)throw Error('لم يؤكد الخادم حفظ الملف الأصلي.');
+   // Save, verify and display the archive before any CPU-heavy processing.
+   await verifyArchivedSource(saved.key,bytes);
+   const stored:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
+    created:new Date().toISOString(),snapshotDate:needsDate?date:'',size:file.size};
+   F(prev=>[stored,...prev.filter(item=>item.key!==stored.key)]);
    K(detected);
-   if(!text){M('حُفظ الملف الأصلي؛ '+issue);await refresh().catch(e=>E(e instanceof Error?e.message:'تعذّر تحديث الأرشيف.'));return;}
-   const stored={key:saved.key,name:file.name,kind:archiveKind,created:'',snapshotDate:needsDate?date:''};
    OPEN({file:stored,text});
-   await processFile(stored,text);
-   // Archival listing is advisory: a transient 503 cannot undo an import.
-   await refresh().catch(e=>E(e instanceof Error?e.message:'تعذّر تحديث قائمة الأرشيف.'));
+   M('تم حفظ الأصل والتحقق من مطابقته في Supabase: '+file.name+'. المعالجة خطوة مستقلة.');
+   if(!text){E('الأصل محفوظ ومؤكد؛ تعذّر قراءة محتواه: '+issue);return;}
+   try{await processFile(stored,text)}
+   finally{
+    await refresh().catch(e=>E('الأصل محفوظ ومؤكد، لكن تحديث المعالجة/قائمة الأرشيف فشل: '+(e instanceof Error?e.message:'خطأ غير معروف')));
+   }
   });
  }
  async function stamp(file:SapArchiveFile){
