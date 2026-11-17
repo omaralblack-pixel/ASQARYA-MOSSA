@@ -1,0 +1,255 @@
+'use client';
+import {useCallback,useEffect,useMemo,useState} from 'react';
+import {AlertTriangle,CalendarCheck,CheckCircle2,ClipboardCheck,FileSpreadsheet,RefreshCw,ShieldCheck,ArrowLeftRight} from 'lucide-react';
+import {listSapFiles,readSapArchive} from '../lib/sap-files-client';
+import {readSavedSapImport} from '../lib/saved-sap-import';
+import {restoreLieutenantSource} from '../lib/lieutenant-source';
+import {buildColonelReport,type ColonelRecord,type ColonelAssignment,type ColonelDayState} from '../lib/colonel-core';
+import type {LieutenantTransfer} from '../lib/lieutenant';
+import type {CancellationDecision} from '../lib/lieutenant-cancellation-decisions';
+
+type Event={event_type:string;entity_no:string;note:string;created_at:string};
+type ProjectEdit={id:string;branch:string;updated:string};
+type Control={days:ColonelDayState[];assignments:ColonelAssignment[];
+ decisions:CancellationDecision[];events:Event[];recentProjectEdits:ProjectEdit[]};
+const currentMonth=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit'})
+ .format(new Date()).slice(0,7);
+const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'})
+ .format(new Date());
+const empty:Control={days:[],assignments:[],decisions:[],events:[],recentProjectEdits:[]};
+const stateLabels:Record<string,string>={
+ normal:'ترحيل وارد',reversed:'عكسي مطابق',reverse:'حركة عكسية',
+ 'sap-canceled':'ملغى رسميًا في SAP','sap-cancel-doc':'مستند إلغاء SAP',
+ 'cashvan-pending':'كاش فان — يحتاج مراجعة',
+ 'cancellation-review':'تصحيح / إلغاء يحتاج إثبات',
+ 'not-in-current-sap-source':'غير موجود في كشف SAP المقروء',
+};
+async function readApi<T>(path:string,body?:unknown):Promise<T>{
+ const response=await fetch(path,body?{
+  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
+ }:{cache:'no-store'});
+ if(!response.headers.get('content-type')?.toLowerCase().includes('application/json'))
+  throw Error(response.redirected||[401,403].includes(response.status)?
+   'جلسة الدخول غير متاحة؛ سجّل الدخول مجددًا.':'الخادم أعاد HTML بدل JSON (HTTP '+response.status+').');
+ const result=await response.json() as T&{error?:string};
+ if(!response.ok)throw Error(result.error||'تعذّر طلب العقيد (HTTP '+response.status+').');
+ return result;
+}
+async function getRecords():Promise<ColonelRecord[]>{
+ const result:ColonelRecord[]=[];
+ let cursor:{updated:string;id:string}|null=null;
+ const seen=new Set<string>();
+ for(let i=0;i<250;i++){
+  const params=new URLSearchParams({serialExport:'1'});
+  if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id);}
+  const response=await readApi<{records:ColonelRecord[];hasMore:boolean;
+   nextCursor:{updated:string;id:string}|null}>('/api/reconcile?'+params.toString());
+  if(!Array.isArray(response.records))throw Error('استجابة الفواتير ناقصة.');
+  for(const record of response.records){
+   if(typeof record.id!=='string'||typeof record.payload!=='string'||seen.has(record.id))
+    throw Error('تكرار أو تلف سجل أثناء القراءة؛ أُلغي الفحص.');
+   seen.add(record.id);result.push(record);
+  }
+  if(response.hasMore===false)return result;
+  if(!response.hasMore||!response.nextCursor||!response.records.length)
+   throw Error('قراءة المشروع غير مكتملة؛ لا يجوز إصدار حكم على اليوم.');
+  cursor=response.nextCursor;
+ }
+ throw Error('تجاوز حجم السجلات حد القراءة؛ يلزم ترقيم إضافي.');
+}
+const displayDate=(value:string)=>value?new Date(value).toLocaleString('ar-JO',{timeZone:'Asia/Amman'}):'—';
+
+export default function Colonel({branches,onOpenRecord,onNavigate}:{
+ branches:string[];onOpenRecord:(id:string)=>void;onNavigate:(view:'lieutenant'|'serial-soldier'|'sap-files')=>void;
+}){
+ const [month,setMonth]=useState(currentMonth);
+ const [selectedDay,setSelectedDay]=useState(today());
+ const [records,setRecords]=useState<ColonelRecord[]>([]);
+ const [sap,setSap]=useState<LieutenantTransfer[]>([]);
+ const [control,setControl]=useState<Control>(empty);
+ const [sourceName,setSourceName]=useState('');
+ const [sourceIssues,setSourceIssues]=useState<string[]>([]);
+ const [loaded,setLoaded]=useState(false);
+ const [busy,setBusy]=useState(false);
+ const [error,setError]=useState('');
+ const [notice,setNotice]=useState('');
+ const [search,setSearch]=useState('');
+ const [manualNo,setManualNo]=useState('');
+ const [manualDay,setManualDay]=useState('');
+ const [manualReason,setManualReason]=useState('');
+ const reload=useCallback(async()=>{
+  setBusy(true);setError('');setNotice('');setLoaded(false);
+  try{
+   const [project,admin,files]=await Promise.all([
+    getRecords(),readApi<Control>('/api/colonel?month='+month),listSapFiles(),
+   ]);
+   const source=await restoreLieutenantSource(files,branches,readSapArchive,readSavedSapImport);
+   setRecords(project);setControl(admin);setSap(source?.scan.transfers||[]);
+   setSourceIssues(source?.scan.issues||[]);
+   setSourceName(source?.name||'');
+   setLoaded(true);
+  }catch(cause){
+   setError(cause instanceof Error?cause.message:'تعذّر تحميل بيانات العقيد.');
+  }finally{setBusy(false)}
+ },[month,branches]);
+ useEffect(()=>{void reload()},[reload]);
+ const report=useMemo(()=>loaded?buildColonelReport(
+  month,records,sap,control.decisions,control.assignments,control.days,
+  !!sourceName&&!sourceIssues.length,
+ ):null,[month,records,sap,control,loaded,sourceName,sourceIssues.length]);
+ const current=report?.days.find(day=>day.day===selectedDay)||report?.days[0];
+ const missingPaper=current?.invoices.filter(inv=>!inv.complete||!inv.number||inv.number==='بدون رقم')||[];
+ const unmatched=report?.unassigned.filter(t=>t.needsAction)||[];
+ const activities=useMemo(()=>{
+  const actions=control.events.map(e=>({when:e.created_at,title:
+   e.event_type==='complete-day'?'اعتماد إدخال فواتير اليوم':
+   e.event_type==='reopen-day'?'إعادة فتح اليوم':
+   e.event_type==='assign-transfer'?'تحديد تاريخ فاتورة للترحيل':'إلغاء ربط يوم الترحيل',
+   description:e.entity_no+' — '+e.note}));
+  const edits=control.recentProjectEdits.map(e=>({when:e.updated,title:'آخر حفظ لمجموعة فواتير في المشروع',
+   description:e.branch+' — السجل '+e.id}));
+  return [...actions,...edits].filter(e=>Number.isFinite(Date.parse(e.when)))
+   .sort((a,b)=>b.when.localeCompare(a.when)).slice(0,35);
+ },[control]);
+ const todayActions=activities.filter(e=>new Intl.DateTimeFormat('en-CA',{
+  timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(e.when))===today());
+ const filteredInvoices=current?.invoices.filter(inv=>!search||[
+  inv.number,inv.branch,inv.recordId,...inv.transfers].some(s=>s.includes(search)))||[];
+ const filteredTransfers=current?.transfers.filter(t=>!search||[
+  t.number,t.branch,...t.invoiceNumbers,...t.counterparts].some(s=>s.includes(search)))||[];
+ async function action(data:Record<string,string>){
+  setBusy(true);setError('');setNotice('');
+  try{
+   await readApi<{ok:boolean}>('/api/colonel',data);
+   setControl(await readApi<Control>('/api/colonel?month='+month));
+   setNotice('تم حفظ القرار في العقيد دون تعديل فواتير المشروع أو SAP.');
+   setManualNo('');setManualReason('');setManualDay('');
+  }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر حفظ القرار.')}
+  finally{setBusy(false)}
+ }
+ return <div>
+  <div className="page-title"><div><p className="eyebrow">مركز القيادة والرقابة</p>
+   <h1>العقيد — الفواتير والترحيلات والإلغاءات</h1>
+   <p>فواتير الأيام تُرتّب بتاريخ الفاتورة الزرقاء؛ تاريخ ترحيل SAP مستقل. بيانات المشروع مرجع الفواتير، وSAP مرجع الحركة والإلغاء الفعلي.</p>
+  </div><ShieldCheck size={34}/></div>
+  <section className="panel">
+   <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'end',justifyContent:'space-between'}}>
+    <label>شهر المتابعة <input type="month" value={month} disabled={busy}
+     onChange={e=>{setMonth(e.target.value);setSelectedDay(e.target.value+'-01')}}/></label>
+    <button className="button secondary" disabled={busy} onClick={()=>void reload()}><RefreshCw size={16}/> تحديث قراءة المشروع وSAP</button>
+   </div>
+   {busy&&<p className="hint">جاري فحص البيانات المحفوظة…</p>}
+   {error&&<div role="alert" className="banner error">{error}</div>}
+   {notice&&<div role="status" className="banner success">{notice}</div>}
+   <p className="hint">مصدر SAP المقروء: {sourceName||'لا يوجد كشف قابل للقراءة'}.
+    لا يُعدّ غياب مستند عن ملف ناقص إثباتًا أنه غير مرحّل. ويعتمد فحص الإلغاءات على نفس محرك الملازم أول.</p>
+   {sourceIssues.length>0&&<div className="review-list" role="alert">
+    <b>تغطية SAP غير مكتملة</b>{sourceIssues.slice(0,12).map((s,i)=><p key={i}>{s}</p>)}
+   </div>}
+   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+    <button className="button secondary" onClick={()=>onNavigate('lieutenant')}>فتح الملازم أول</button>
+    <button className="button secondary" onClick={()=>onNavigate('serial-soldier')}>فتح جندي السيريل</button>
+    <button className="button secondary" onClick={()=>onNavigate('sap-files')}>ملفات SAP</button>
+   </div>
+  </section>
+  {report&&<>
+   <div className="stats" style={{marginBottom:14}}>
+    <div className="stat"><span>فواتير الشهر بالمشروع</span><strong>{report.stats.invoices}</strong></div>
+    <div className="stat"><span>ترحيلات في كشف SAP</span><strong>{report.stats.sapTransfers}</strong></div>
+    <div className="stat"><span>حالات مفتوحة</span><strong>{report.stats.open}</strong></div>
+    <div className="stat"><span>بلا يوم فاتورة مثبت</span><strong>{report.stats.unassigned}</strong></div>
+   </div>
+   <section className="panel">
+    <div className="section-title"><CalendarCheck size={20}/><div><h2>أيام الفواتير الزرقاء</h2>
+     <p>الجمعة تظهر أيضًا إذا عليها فواتير محفوظة؛ لا تنتقل الفواتير ليوم آخر تلقائيًا.</p></div></div>
+    <div className="table-scroll"><table><thead><tr><th>اليوم</th><th>الفواتير</th><th>الترحيلات المرتبطة</th>
+     <th>بانتظار إجراء</th><th>الحالة</th><th>فتح</th></tr></thead>
+     <tbody>{report.days.map(d=><tr key={d.day} style={d.day===current?.day?{background:'var(--theme-info-surface)'}:undefined}>
+      <td dir="ltr">{d.day}</td><td>{d.invoices.length}</td><td>{d.transfers.length}</td>
+      <td>{d.openCount}</td><td>{d.ready?'جاهز للمراجعة النهائية':d.invoicesComplete?'الفواتير مكتملة — رقابة الترحيلات مفتوحة':'لم تعتمد الفواتير مكتملة'}</td>
+      <td><button className="button secondary small" onClick={()=>setSelectedDay(d.day)}>تفاصيل اليوم</button></td>
+     </tr>)}</tbody></table></div>
+   </section>
+   {current&&<section className="panel">
+    <div className="section-title"><ClipboardCheck size={20}/><div><h2>تفاصيل {current.day}</h2><p>{current.reason}</p></div></div>
+    <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+     {current.invoicesComplete?
+      <button className="button secondary" disabled={busy} onClick={()=>void action({action:'reopen-day',day:current.day})}>إعادة فتح إدخال فواتير اليوم</button>:
+      <button className="button primary" disabled={busy||missingPaper.length>0||!current.invoices.length}
+       onClick={()=>void action({action:'complete-day',day:current.day})}>
+       <CheckCircle2 size={17}/> فواتير {current.day} مكتملة</button>}
+     <span className="hint">هذا تأكيد إدخال الورق، وليس إلغاء SAP أو إغلاق المخزون.</span>
+    </div>
+    {missingPaper.length>0&&<p className="amber">يوجد {missingPaper.length} فاتورة غير مؤكدة أو ناقصة الرقم؛ يجب تصحيحها في سجل المشروع قبل اعتماد اليوم.</p>}
+    <label>بحث داخل اليوم <input value={search} onChange={e=>setSearch(e.target.value)}
+      placeholder="رقم فاتورة، ترحيل، فرع أو مجموعة"/></label>
+    <h3>الفواتير الزرقاء ({current.invoices.length})</h3>
+    <div className="table-scroll"><table><thead><tr><th>رقم الفاتورة</th><th>الفرع</th><th>المبلغ</th>
+     <th>الترحيلات المسجلة في المجموعة</th><th>الورق</th><th>المصدر</th></tr></thead>
+     <tbody>{filteredInvoices.map((inv,i)=><tr key={inv.recordId+'-'+inv.number+'-'+i}>
+      <td><button type="button" className="button secondary small" onClick={()=>onOpenRecord(inv.recordId)}>{inv.number}</button></td>
+      <td>{inv.branch}</td><td dir="ltr">{inv.amount}</td><td dir="ltr">{inv.transfers.join('، ')||'—'}</td>
+      <td>{inv.complete?'مؤكد':'غير مؤكد'}</td><td>{inv.dateSource==='transfer'?'تاريخ مستنتج — بحاجة إثبات الورق':'تاريخ الفاتورة المحفوظ'}</td>
+     </tr>)}</tbody></table></div>
+    <h3>ترحيلات هذا اليوم ({current.transfers.length})</h3>
+    <div className="table-scroll"><table><thead><tr><th>رقم الترحيل</th><th>تاريخ SAP</th>
+      <th>فاتورته أو مجموعته</th><th>الحالة / المقابل</th><th>ملاحظة</th></tr></thead>
+      <tbody>{filteredTransfers.map(t=><tr key={t.number}>
+       <td dir="ltr">{t.number}</td><td dir="ltr">{t.postingDate||'غير مثبت'}</td>
+       <td dir="ltr">{t.invoiceNumbers.join('، ')||'بلا فاتورة مثبتة'}</td>
+       <td>{stateLabels[t.state]||t.state}{t.counterparts.length?' — مقابل '+t.counterparts.join('، '):''}</td>
+       <td>{t.needsAction?<strong>يحتاج إجراء. </strong>:null}{t.note||'—'}</td>
+      </tr>)}</tbody></table></div>
+   </section>}
+   <section className="panel">
+    <div className="section-title"><AlertTriangle size={20}/><div><h2>ترحيلات بلا يوم فاتورة مثبت ({report.unassigned.length})</h2>
+     <p>لا تُنسب ليوم تاريخ ترحيل SAP بالتخمين. يمكن توثيق يومها يدويًا مع السبب، دون إنشاء فاتورة وهمية.</p></div></div>
+    <div className="table-scroll"><table><thead><tr><th>الترحيل</th><th>تاريخ SAP</th><th>مرجع الفواتير</th><th>الحالة</th><th>إجراء</th></tr></thead>
+     <tbody>{report.unassigned.filter(t=>!search||t.number.includes(search)||t.invoiceNumbers.some(n=>n.includes(search))).slice(0,180).map(t=><tr key={t.number}>
+      <td dir="ltr">{t.number}</td><td dir="ltr">{t.postingDate||'—'}</td>
+      <td dir="ltr">{t.invoiceNumbers.join('، ')||'—'}</td><td>{stateLabels[t.state]||t.state}
+       {t.counterparts.length?' — مقابل '+t.counterparts.join('، '):''}</td>
+      <td><button type="button" className="button secondary small"
+        onClick={()=>{setManualNo(t.number);setManualDay('');setManualReason('')}}>تحديد يوم الفاتورة</button></td>
+     </tr>)}</tbody></table></div>
+    {report.unassigned.length>180&&<p className="hint">يعرض أول 180 ترحيلًا؛ استخدم البحث للوصول للرقم المطلوب.</p>}
+    {manualNo&&<div style={{border:'1px solid var(--theme-border)',padding:12,borderRadius:10,marginTop:12}}>
+     <h3>توثيق تاريخ فاتورة الترحيل {manualNo}</h3>
+     <p className="hint">قرار إداري لإسناد الترحيل ليوم متابعة، لا يربطه تلقائيًا برقم فاتورة في قاعدة المشروع.</p>
+     <div style={{display:'flex',flexWrap:'wrap',gap:10}}>
+      <label>تاريخ الفاتورة <input type="date" value={manualDay} onChange={e=>setManualDay(e.target.value)}/></label>
+      <label style={{flex:'1 1 260px'}}>دليل/سبب تحديد اليوم <input value={manualReason}
+       onChange={e=>setManualReason(e.target.value)} placeholder="رقم الفاتورة الزرقاء أو مرجع موثّق"/></label>
+     </div>
+     <div style={{display:'flex',gap:8,marginTop:9}}>
+      <button className="button primary" disabled={busy||!manualDay||manualReason.trim().length<6}
+        onClick={()=>void action({action:'assign-transfer',transferNo:manualNo,day:manualDay,reason:manualReason})}>حفظ يوم المتابعة</button>
+      <button className="button secondary" onClick={()=>setManualNo('')}>إلغاء</button>
+     </div>
+    </div>}
+    {control.assignments.length>0&&<details style={{marginTop:12}}><summary>روابط الأيام اليدوية المحفوظة ({control.assignments.length})</summary>
+     <div className="table-scroll"><table><thead><tr><th>الترحيل</th><th>اليوم</th><th>الدليل</th><th>حذف الربط</th></tr></thead>
+      <tbody>{control.assignments.map(a=><tr key={a.transfer_no}><td>{a.transfer_no}</td>
+       <td>{a.invoice_day}</td><td>{a.reason}</td><td><button className="button secondary small"
+       disabled={busy} onClick={()=>void action({action:'clear-assignment',transferNo:a.transfer_no})}>إزالة</button></td></tr>)}</tbody></table></div>
+    </details>}
+   </section>
+   {(report.undated.length>0||report.warnings.length>0)&&<section className="panel">
+    <div className="section-title"><AlertTriangle size={20}/><div><h2>استثناءات لا تُخفى</h2>
+     <p>فواتير بلا تاريخ صالح، أرقام مفقودة أو تعارضات مجموعات.</p></div></div>
+    {report.undated.map((i,n)=><p key={i.recordId+'-'+n}>الفاتورة {i.number} — المجموعة {i.recordId} — تاريخ الورق غير مثبت
+     <button className="button secondary small" onClick={()=>onOpenRecord(i.recordId)}>فتح</button></p>)}
+    {report.warnings.slice(0,100).map((w,n)=><p key={n}>{w}</p>)}
+   </section>}
+   <section className="panel">
+    <div className="section-title"><FileSpreadsheet size={20}/><div><h2>نشاط اليوم {today()}</h2>
+     <p>آخر حفظ للمشروع + قرارات العقيد الجديدة. لا يدّعي هذا السجل معرفة تاريخ كل تعديل قديم غير مسجل.</p></div></div>
+    {todayActions.length?todayActions.map((a,i)=><p key={i}><b>{a.title}</b> · {displayDate(a.when)} — {a.description}</p>):
+     <p className="hint">لا توجد عمليات محفوظة بتاريخ اليوم ضمن آخر السجلات المقروءة.</p>}
+    <details><summary>أحدث النشاطات ({activities.length})</summary>
+     {activities.map((a,i)=><p key={i}>{displayDate(a.when)} — {a.title}: {a.description}</p>)}
+    </details>
+   </section>
+  </>}
+ </div>;
+}
