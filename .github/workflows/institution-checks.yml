@@ -54,6 +54,8 @@ jobs:
           node scripts/test-reassurance.mjs
       - name: SAP 011 closing stock query regression tests
         run: node scripts/test-sap-stock-query.mjs
+      - name: Unified SAP export query and parser regression tests
+        run: node scripts/test-unified-sap.mjs
       - name: Storage, invoice registry and uniqueness checks
         run: |
           python3 scripts/test-storage.py
