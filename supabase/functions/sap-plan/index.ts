@@ -1,4 +1,5 @@
 import {createHash, createHmac, timingSafeEqual} from 'node:crypto';
+import {Buffer} from 'node:buffer';
 import {buildSapPlan} from '../../../app/lib/sap-processing.ts';
 import {decodeArchivedSapSource} from '../../../app/lib/sap-source-integrity.ts';
 import branches from '../../../app/branches.json' with {type:'json'};
