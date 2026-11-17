@@ -18,7 +18,7 @@ type Source = {
 const unique=(items:string[])=>[...new Set(items.filter(Boolean))];
 const oneOrMany=(items:string[])=>unique(items).join('، ');
 
-export function projectInvoiceExportRows(records:SerialRecord[]):ProjectInvoiceExportRow[] {
+export function projectInvoiceExportRows(records:SerialRecord[],colonelNotes:Map<string,string>=new Map()):ProjectInvoiceExportRow[] {
  const groups=new Map<string,Source[]>();
  for(const record of records){
   const draft=readReconciliationRecord(record.payload);
@@ -49,7 +49,7 @@ export function projectInvoiceExportRows(records:SerialRecord[]):ProjectInvoiceE
    const original=String(invoice.number||'').trim();
    const key=number||'unnumbered:'+record.id+':'+i;
    const resolved=invoiceDate(invoice,draft.transfers||[]);
-   const notes=[...transferNotes];
+   const notes=[...transferNotes,...unique(draft.transfers.flatMap(t=>transferNumbers(t.number||'')).map(no=>colonelNotes.get(no)||'').filter(Boolean))];
    if(!number)notes.push('رقم الفاتورة مفقود أو غير صالح'+(original?' ('+original+')':''));
    if(!resolved.date)notes.push(resolved.reason||'تاريخ الفاتورة غير مثبت');
    else if(resolved.source==='transfer')notes.push('تاريخ مستنتج من ترحيل SAP، وليس تاريخًا مؤكدًا من الورق');
@@ -106,8 +106,8 @@ function numberCell(col:number,row:number,value:number,style:number){
 }
 
 /** Independent Excel download; it needs no Saja template and performs no writes. */
-export function createProjectInvoicesWorkbook(records:SerialRecord[]):Blob{
- const lines=projectInvoiceExportRows(records);
+export function createProjectInvoicesWorkbook(records:SerialRecord[],colonelNotes:Map<string,string>=new Map()):Blob{
+ const lines=projectInvoiceExportRows(records,colonelNotes);
  const data=[ '<row r="1" ht="30" customHeight="1">'+headers.map((h,i)=>textCell(i+1,1,h,1)).join('')+'</row>' ];
  for(const [i,line] of lines.entries()){
   const row=i+2,style=line.status.includes('مكرر')||line.status.includes('مراجعة')?3:2;
