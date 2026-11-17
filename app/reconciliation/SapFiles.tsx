@@ -150,14 +150,18 @@ export default function SapFiles(){
    // when a same-name but different-hash source is partially processed.
    const otherPartial=Object.values(jobs).find(row=>
     row.done<row.total&&row.key!==saved.key&&row.key.split('__').at(-1)===file.name);
+   const sameSource=!!otherPartial&&otherPartial.key.split('__')[1]===saved.key.split('__')[1];
    if(otherPartial){
     const checked:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
      created:new Date().toISOString(),size:file.size};
     F(prev=>[checked,...prev.filter(entry=>entry.key!==checked.key)]);
     OPEN({file:checked,text});
     K(detected);
-    E('الملف الحالي محفوظ ومؤكد، لكن يوجد سجل معالجة قديم لنفس الاسم ('+
-      otherPartial.done+'/'+otherPartial.total+' دفعات) وبصمة رقمية مختلفة. لن أبدأ معالجة ثانية تلقائيًا؛ استعد أصل السجل القديم المطابق أو راجعه.');
+    E('الملف الحالي محفوظ ومؤكد، لكن يوجد سجل معالجة غير مكتمل لنفس الاسم ('+
+      otherPartial.done+'/'+otherPartial.total+' دفعات). '+
+      (sameSource?'محتواه مطابق لكن نوع الأرشفة/مفتاح الحفظ مختلف. ':
+       'محتواه مختلف حسب بصمة SHA-256. ')+
+      'لن أبدأ معالجة ثانية تلقائيًا؛ تحقق من أصل السجل السابق قبل الاستكمال.');
     return;
    }
    const stored:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
@@ -252,7 +256,8 @@ export default function SapFiles(){
    <label>تاريخ الرفع من<input type="date" value={uploadFrom} onChange={e=>UF(e.target.value)}/></label><label>تاريخ الرفع إلى<input type="date" value={uploadTo} onChange={e=>UT(e.target.value)}/></label>
   </div><p className="hint">{visible.length} من {files.length} ملفًا ظاهرًا في فهرس Supabase. سجلات معالجة D1 مستقلة عن الملفات الأصلية.</p>
   <div className="table-scroll"><table><thead><tr><th>الملف</th><th>النوع</th><th>تاريخ الرصيد</th><th>تاريخ الرفع</th><th>حالة المعالجة</th><th>الإجراءات</th></tr></thead><tbody>{visible.map(file=>{
-   const state=jobs[file.key];return <tr key={file.key}><td dir="auto">{file.name}</td><td>{sapKinds[(state?.kind||file.kind) as SapKind]||file.kind}</td><td dir="ltr">{file.snapshotDate||'—'}</td><td dir="ltr">{uploadTime(file.created)}</td><td>{state?statusNames[state.status]+' ('+state.done+'/'+state.total+')':'لم تُسجّل معالجة'}{state?.failed?` · ${state.failed} فاشلة`:''}</td><td><div className="row-actions">
+   const state=jobs[file.key];return <tr key={file.key}><td dir="auto">{file.name}</td><td>{file.kind==='other'&&opened?.file.key===file.key&&isUnifiedSapSource(opened.text)?
+     'الكويري الشامل — نسخة مؤرشفة قديمة':sapKinds[(state?.kind||file.kind) as SapKind]||file.kind}</td><td dir="ltr">{file.snapshotDate||'—'}</td><td dir="ltr">{uploadTime(file.created)}</td><td>{state?statusNames[state.status]+' ('+state.done+'/'+state.total+')':'لم تُسجّل معالجة'}{state?.failed?` · ${state.failed} فاشلة`:''}</td><td><div className="row-actions">
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(async()=>{OPEN({file,text:await readSapArchive(file)});const result=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));SJ(result.job);})}>فتح</button>
     <a className="button secondary small" href={'/api/lieutenant-files?key='+encodeURIComponent(file.key)} download={file.name}><Download size={14}/>تنزيل</a>
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(()=>processFile(file))}>{state?.status==='complete'?'تحقق من المعالجة':'حالة / استكمال'}</button>
