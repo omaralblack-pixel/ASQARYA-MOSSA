@@ -369,7 +369,8 @@ console.log('PASS: Signed SAP cancellation quantities, stock effects in both dir
 const screen=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
 assert.ok(screen.includes("response.headers.get('content-type')"),'HTML responses need a friendly diagnostic');
 assert.ok(screen.includes("movements.get(row.transfer.number)?.kind==='normal'"),'Auto-import must skip reversals and Cash Van');
-assert.ok(screen.includes("soldierEligible(row.status)"),'Settled Cash Van should not be sent to soldier');
+assert.ok(screen.includes('للملازم أول — ترحيل فقط'),
+  'All invoice-less SAP transfers stay with First Lieutenant instead of automatic invoice routing');
 console.log('PASS: Lieutenant Cash Van matching, period cutoff, uniqueness, SAP cancellation, import exclusion and HTML-response diagnosis.');
 
 
