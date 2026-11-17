@@ -82,6 +82,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
  const [manualNo,setManualNo]=useState('');
  const [manualDay,setManualDay]=useState('');
  const [manualReason,setManualReason]=useState('');
+ const [lastQueued,setLastQueued]=useState<string[]>([]);
  const reload=useCallback(async()=>{
   setBusy(true);setError('');setNotice('');setLoaded(false);
   try{
@@ -90,7 +91,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
    ]);
    const source=await restoreLieutenantSource(files,branches,readSapArchive,readSavedSapImport);
    setRecords(project);setControl(admin);setSap(source?.scan.transfers||[]);setArchiveFiles(files);
-   setSourceIssues(source?.scan.issues||[]);
+   setSourceIssues(source?.scan.issues||[]);setLastQueued([]);
    setSourceName(source?.name||'');setSourceKey(source?.key||'');
    setLoaded(true);
   }catch(cause){
@@ -148,6 +149,39 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
   inv.number,inv.branch,inv.recordId,...inv.transfers].some(s=>s.includes(search)))||[];
  const filteredTransfers=current?.transfers.filter(t=>!search||[
   t.number,t.branch,...t.invoiceNumbers,...t.counterparts].some(s=>s.includes(search)))||[];
+ async function sendMissingToLieutenant(){
+  if(!/^lieutenant\/[a-z]+__[a-f0-9]{32}__[^/]{1,120}$/.test(sourceKey)){
+   setError('ارفع كشف ترحيلات SAP إلى أرشيف ملفات SAP أولًا، ولا تستخدم نسخة مشتركة بلا مصدر محفوظ.');return;
+  }
+  const queued=new Set(lastQueued);
+  const candidates=report?[...report.days.flatMap(day=>day.transfers),...report.unassigned]
+   .filter(t=>t.source==='sap'&&!t.inProject&&t.needsAction&&t.state==='normal'&&!queued.has(t.number)):[];
+  const allowed=new Set(candidates.map(t=>t.number));
+  const records=sap.filter(source=>allowed.has(source.transfer.number)&&
+   !source.reverse&&!source.signedAdjustment&&source.cancellationState==='active'&&
+   !source.issues.length&&!!source.transfer.date&&!!source.transfer.paste);
+  if(!records.length){setNotice('لا توجد ترحيلات واردة جديدة قابلة للإرسال للملازم من هذا الكشف.');return;}
+  if(!window.confirm('إرسال '+records.length+' ترحيلًا من SAP إلى قائمة متابعة الملازم أول؟ لن تُنشأ فواتير جديدة، والمرسل سابقًا لن يتكرر.'))return;
+  setBusy(true);setError('');setNotice('');
+  try{
+   let added=0,already=0;
+   for(let i=0;i<records.length;i+=50){
+    const input=records.slice(i,i+50).map(source=>({
+     number:source.transfer.number,date:source.transfer.date,paste:source.transfer.paste,
+     branch:source.branch,remarks:source.remarks,reverse:source.reverse,
+     cancellationState:source.cancellationState,cancellationMentioned:source.cancellationMentioned,
+     invoiceNumbers:source.invoiceNumbers,
+    }));
+    const result=await readApi<{added:number;existing:number;total:number;documents:{number:string;state:string}[]}>(
+     '/api/reconcile',{action:'lieutenantImport',sourceFile:sourceKey,transfers:input});
+    added+=result.added;already+=result.existing;
+    result.documents.forEach(row=>queued.add(row.number));
+    setLastQueued([...queued]);
+   }
+   setNotice('تم إرسال '+added+' ترحيلًا إلى قائمة الملازم، و'+already+' كان موجودًا مسبقًا. لا فواتير منشأة.');
+  }catch(cause){setError((cause instanceof Error?cause.message:'تعذّر إرسال الدفعة.')+' قد تكون بعض الدفعات السابقة محفوظة؛ أعد الفحص قبل الإرسال.');}
+  finally{setBusy(false)}
+ }
  async function action(data:Record<string,string>){
   setBusy(true);setError('');setNotice('');
   try{
@@ -238,6 +272,13 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
        <td>{t.needsAction?<strong>يحتاج إجراء. </strong>:null}{t.note||'—'}</td>
       </tr>)}</tbody></table></div>
    </section>}
+   <section className="panel">
+    <div className="section-title"><ArrowLeftRight size={20}/><div><h2>إرسال الترحيلات الناقصة للملازم أول</h2>
+     <p>فقط ترحيلات SAP الواردة وغير الموجودة في سجلات المشروع، مع أصلها المحفوظ؛ لا تُنشأ فواتير تلقائيًا، ولا تُرسل الإلغاءات أو الكاش فان كفواتير.</p></div></div>
+    <button className="button primary" disabled={busy||!sourceKey}
+     onClick={()=>void sendMissingToLieutenant()}>إرسال الترحيلات الجديدة إلى قائمة الملازم</button>
+    {!!lastQueued.length&&<p className="hint">آخر ما تم التحقق من إرساله في هذه الجلسة: {lastQueued.length} ترحيلًا. الإرسال المتكرر لا ينسخ المستندات المحفوظة.</p>}
+   </section>
    <section className="panel">
     <div className="section-title"><AlertTriangle size={20}/><div><h2>ترحيلات بلا يوم فاتورة مثبت ({report.unassigned.length})</h2>
      <p>لا تُنسب ليوم تاريخ ترحيل SAP بالتخمين. يمكن توثيق يومها يدويًا مع السبب، دون إنشاء فاتورة وهمية.</p></div></div>
