@@ -1,5 +1,5 @@
 import {digits, fils, invoiceDocumentNo, dateValue, parseTransfer, readReconciliationRecord, transferNumbers, type Draft} from './reconcile';
-import {collectInvoicesByDate} from './invoice-collector';
+import {collectInvoicesByDate,invoiceDate} from './invoice-collector';
 
 
 export const PROJECT_ONLY_NOTE='موجودة بالمشروع وغير موجودة بكشف سجى';
@@ -98,7 +98,7 @@ export function duplicateGeneratedSerialRows(rows:SerialInput[]):Map<number,numb
 }
 
 export type SerialTransfer = {number:string; kind:'main'|'dry'|'adjustment'};
-export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; unassignedTransfers:SerialTransfer[]; branch:string; omarNumber:string; omarAmount:string; groupId:string};
+export type SerialRow = SerialInput & {state:SerialState; reason:string; transfers:SerialTransfer[]; unassignedTransfers:SerialTransfer[]; branch:string; omarNumber:string; omarAmount:string; groupId:string; projectDate:string};
 export type SerialRecord = {id:string; branch:string; status?:string; payload:string};
 export type SerialReport = {rows:SerialRow[]; projectOnly:SerialRow[]; period:SerialPeriod|null; blockers:string[]; legacyWarnings:string[]; count:{received:number;pending:number;missing:number;review:number}};
 
@@ -185,7 +185,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
   const evaluate=(row:SerialInput):SerialRow=>{
     const number=normalNumber(row.number);
     const key=number;
-    const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في سجل المطابقة؛ لا يعني أن ورقها غير واصل',transfers:[] as SerialTransfer[],unassignedTransfers:[] as SerialTransfer[],branch:'',omarNumber:'',omarAmount:'',groupId:''};
+    const base={...row,number,state:'missing' as SerialState,reason:'غير موجودة في سجل المطابقة؛ لا يعني أن ورقها غير واصل',transfers:[] as SerialTransfer[],unassignedTransfers:[] as SerialTransfer[],branch:'',omarNumber:'',omarAmount:'',groupId:'',projectDate:''};
     if(!/^\d{8,20}$/.test(number)){
       blockers.push('صف '+row.row+': رقم فاتورة مفقود أو غير صالح.');
       return {...base,state:'review',reason:'رقم فاتورة غير صالح'};
@@ -228,7 +228,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
       for(const saved of candidates)
         represented.add(saved.record.id+'|'+number);
       return {...base,state:'review',reason:conflicts.join('؛ '),
-        branch:branches.join(' / '),omarNumber:number,omarAmount:amounts.length===1?amounts[0]:'',groupId:'',
+        branch:branches.join(' / '),omarNumber:number,omarAmount:amounts.length===1?amounts[0]:'',groupId:'',projectDate:'',
         transfers,unassignedTransfers};
     }
     if(!candidates.length)return base;
@@ -243,7 +243,7 @@ export function evaluateSerial(rows:SerialInput[], records:SerialRecord[],period
     const payloadSummary=(saved.draft as Draft & {summary?:{status?:string}}).summary;
     const approvedStatus=payloadSummary?.status||saved.record.status;
     const omarNumber=normalNumber(saved.invoice.number),omarAmount=String(saved.invoice.amount||'');
-    const rowBase={...base,transfers,unassignedTransfers,branch:saved.record.branch||'',omarNumber,omarAmount,groupId:saved.record.id};
+    const rowBase={...base,transfers,unassignedTransfers,branch:saved.record.branch||'',omarNumber,omarAmount,groupId:saved.record.id,projectDate:invoiceDate(saved.invoice,saved.draft.transfers).date||''};
     if(amount===null||confirmed===null){
       blockers.push('فاتورة '+number+': مبلغ غير صالح أو مفقود في ملف سجى أو سجل المشروع.');
       return {...rowBase,state:'review',reason:'المبلغ غير صالح أو مفقود'};
