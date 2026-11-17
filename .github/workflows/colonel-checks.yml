@@ -1,0 +1,35 @@
+name: Colonel command center checks
+on:
+  push:
+    branches:
+      - feature/colonel-command-center
+  pull_request:
+    paths:
+      - 'app/lib/colonel-core.ts'
+      - 'app/api/colonel/route.ts'
+      - 'app/reconciliation/Colonel.tsx'
+      - 'scripts/test-colonel.mjs'
+      - 'app/reconciliation/page.tsx'
+      - 'components/WorkspaceNav.tsx'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Colonel movement regression
+        run: node scripts/test-colonel.mjs
+      - name: TypeScript
+        run: pnpm exec tsc --noEmit
+      - name: Production build
+        run: pnpm run build

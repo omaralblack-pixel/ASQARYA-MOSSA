@@ -349,7 +349,7 @@ function splitIntoDailySheets(pkg:Package,allRows:SerialReport['rows'],period:Se
    +seen.size+' من '+expected.size+').');
 }
 
-export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,approvedMergeNumbers:string[]=[]):Blob {
+export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,approvedMergeNumbers:string[]=[],colonelNotes:Map<string,string>=new Map()):Blob {
  const pkg=load(new Uint8Array(input));
  const actual=rowsFrom(pkg);
  if(actual.rows.length!==report.rows.length||actual.rows.some((r,i)=>r.row!==report.rows[i].row||r.number!==report.rows[i].number||r.amount!==report.rows[i].amount))
@@ -627,7 +627,8 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
    'فرع Excel السابق: '+(sourceItem.workbookBranch||'فارغ')+'؛ الفرع المعتمد من المشروع: '+item.branch:'';
   const removed=removedNotes.get(item.row)||[];
   const cleanupNote=removed.length?'دُمج الصف '+removed.join('، ')+' في هذا الصف بموافقة المستخدم؛ رقم الفاتورة يظهر مرة واحدة':'';
-  const note=[discrepancy,dateWarning,branchWarning,transferWarning,cleanupNote].filter(Boolean).join(' | ');
+  const colonelWarnings=[...new Set(transfers.map(transfer=>colonelNotes.get(transfer.number)).filter((entry):entry is string=>!!entry))].join(' | ');
+  const note=[discrepancy,dateWarning,branchWarning,transferWarning,cleanupNote,colonelWarnings].filter(Boolean).join(' | ');
   const effectiveState=item.origin==='project'?'project_only':item.state;
   if(combinedTransfers){
    const maximum=Math.max(1,...Array.from({length:7},(_,i)=>
