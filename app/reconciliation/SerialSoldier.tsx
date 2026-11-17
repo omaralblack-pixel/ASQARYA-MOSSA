@@ -6,10 +6,35 @@ import {serialMergeProposals,previouslyApprovedSerialMerges,evaluateSerial,seria
 const label={received:'واصل ومطابق',received_difference:'واصلة — فرق في الملاحظات',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
 const color={received:'light-dark(#d8f3dc, var(--theme-success-surface))',received_difference:'light-dark(#fff0bf, var(--theme-warning-surface))',pending:'light-dark(#fad5e5, var(--theme-pink-surface))',missing:'light-dark(#fad5e5, var(--theme-pink-surface))',review:'light-dark(#fff0bf, var(--theme-warning-surface))'};
 async function getSaved():Promise<SerialRecord[]> {
- const response=await fetch('/api/reconcile?export=1',{cache:'no-store'});
- const data:any=await response.json();
- if(!response.ok||!Array.isArray(data.records))throw Error(data.error||'تعذر قراءة السجلات المحفوظة.');
- return data.records;
+ const saved:SerialRecord[]=[];
+ const seen=new Set<string>();
+ let cursor:{updated:string;id:string}|null=null;
+ for(let page=0;page<200;page++){
+  const params=new URLSearchParams({serialExport:'1'});
+  if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id);}
+  const response=await fetch('/api/reconcile?'+params.toString(),{cache:'no-store'});
+  const contentType=(response.headers.get('content-type')||'').toLowerCase();
+  if(!contentType.includes('application/json')){
+   if(response.redirected||[401,403].includes(response.status))
+    throw Error('جلسة الدخول انتهت أو أُعيد توجيهك إلى صفحة الدخول. سجل الدخول مجددًا ثم أعد طلب الكشف.');
+   throw Error('تعذّر سحب سجل المشروع: الخادم أعاد صفحة HTML بدل JSON (HTTP '+response.status+'). لا يوجد ملف مكتمل، ولا تغيّر شيء في سجلات المشروع.');
+  }
+  let data:any;
+  try{data=await response.json();}
+  catch{throw Error('رد الخادم ليس JSON مكتملًا (HTTP '+response.status+'). لم يتم إنشاء كشف ناقص.');}
+  if(!response.ok||!Array.isArray(data?.records))
+   throw Error(data?.error||'تعذّر قراءة سجلات المشروع (HTTP '+response.status+').');
+  for(const record of data.records){
+   if(!record||typeof record.id!=='string'||typeof record.payload!=='string'||seen.has(record.id))
+    throw Error('بيانات التصدير ناقصة أو تكررت أثناء تحميل السجل؛ ألغيت العملية لمنع كشف غير سليم.');
+   seen.add(record.id);saved.push(record);
+  }
+  if(data.hasMore===false)return saved;
+  if(data.hasMore!==true||!data.nextCursor?.updated||!data.nextCursor?.id||!data.records.length)
+   throw Error('انقطع تسلسل صفحات سجل المشروع؛ لم يتم تنزيل كشف ناقص.');
+  cursor={updated:data.nextCursor.updated,id:data.nextCursor.id};
+ }
+ throw Error('سجل المشروع تجاوز حد صفحات التصدير المسموح؛ لا يجوز تسليم كشف غير مكتمل.');
 }
 export default function SerialSoldier(){
  const [file,setFile]=useState<File|null>(null);
