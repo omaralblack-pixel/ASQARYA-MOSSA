@@ -8,7 +8,7 @@ const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
 const collector=url(compile(fs.readFileSync('app/lib/invoice-collector.ts','utf8').replace("'./reconcile'","'"+rec+"'")));
 const source=fs.readFileSync('app/lib/serial-soldier.ts','utf8').replace("'./reconcile'","'"+rec+"'")
  .replace("'./invoice-collector'","'"+collector+"'");
-const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,duplicateGeneratedSerialRows,serialMergeProposals,previouslyApprovedSerialMerges,auditSerialExport,serialWorkingDays}=await import(url(compile(source)));
+const {evaluateSerial,serialColumns,serialReviewNote,serialInvoiceColumns,projectSerialTransferCells,duplicateGeneratedSerialRows,serialMergeProposals,previouslyApprovedSerialMerges,auditSerialExport,serialWorkingDays}=await import(url(compile(source)));
 const header='Item No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse';
 const paste=(code,from,to)=>header+'\n'+code+'\tItem\t1\tPiece\t'+from+'\t'+to;
 const invoice=(number,amount,complete=true)=>({number,amount,complete});
@@ -60,6 +60,28 @@ assert.deepEqual(result.rows.map(r=>r.transfers),[[],[]],
 assert.deepEqual(result.rows.map(r=>r.unassignedTransfers.map(t=>t.number)),
  [['2612001','2612002'],['2612001','2612002']]);
 assert.deepEqual(result.count,{received:2,pending:0,missing:0,review:0});
+// Regression fixture only: these transfers are NOT claims about live production.
+const savedKhaled=record('saved-khaled-group',
+ [invoice('2610013337','600.640'),invoice('2610013339','582.330')],
+ [transfer('2615999','DAR00001','001','011')]);
+const savedKarama=record('saved-karama-group',
+ [invoice('2621609885','251.300'),invoice('2621609886','345.440')],
+ [transfer('2615774','DAR00002','001','011')]);
+const wrongExcelKhaled={...row(9,'2610013337','600.640'),originalTransfers:['2615774','2615773']};
+const wrongExcelKarama={...row(10,'2621609885','251.300'),originalTransfers:['2615799']};
+const projectWins=evaluateSerial([wrongExcelKhaled,wrongExcelKarama],[savedKhaled,savedKarama]);
+assert.deepEqual(projectSerialTransferCells(projectWins.rows[0]),['2615999','','','','','',''],
+ 'Khaled transfer slots are rebuilt from its SAVED PROJECT record, never from its Excel K:Q guesses');
+assert.deepEqual(projectSerialTransferCells(projectWins.rows[1]),['2615774','','','','','',''],
+ '2615774 follows the saved Karama group, not an unrelated Excel Khaled cell');
+assert.equal(projectWins.rows[0].groupId,'saved-khaled-group');
+assert.equal(projectWins.rows[1].groupId,'saved-karama-group');
+assert.equal(projectWins.blockers.length,0);
+auditSerialExport(projectWins.rows.map(r=>({
+ number:r.number,date:r.date,groupId:r.groupId,
+ transfers:projectSerialTransferCells(r).flatMap(value=>value.match(/\\d{4,20}/g)||[]),
+ confirmedTransfers:serialInvoiceColumns(r).filter(Boolean)
+})));
 const withoutPersonalPages={...JSON.parse(group.payload),pages:{'s:DAR00001':'99','s:DAR00002':'0'},
  soldierLineAllocations:{},soldierLineTotals:{},soldierManualLineKeys:[]};
 const noPages=record('g-multi-nopage',withoutPersonalPages.invoices,withoutPersonalPages.transfers,withoutPersonalPages);
