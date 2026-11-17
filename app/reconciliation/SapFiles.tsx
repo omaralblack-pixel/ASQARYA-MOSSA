@@ -182,7 +182,7 @@ export default function SapFiles(){
   });
  }
  async function verifyUnlistedOriginal(source:SapJob){
-  const match=source.key.match(/^lieutenant\/(transfers|opening|balance|other)__([a-f0-9]{32}__(?:(\d{4}-\d{2}-\d{2})__)?(.+))$/);
+  const match=source.key.match(/^lieutenant\/(transfers|opening|balance|other)__([a-f0-9]{32})__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
   if(!match)throw Error('مفتاح سجل المعالجة غير صالح.');
   const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(source.key),{cache:'no-store'});
   if(response.status===404)throw Error('يوجد سجل معالجة في D1 ('+source.done+'/'+source.total+
@@ -190,7 +190,7 @@ export default function SapFiles(){
   if(!response.ok)throw Error('تعذّر التأكد من أصل SAP في Supabase: HTTP '+response.status+'. لم أعتبر الملف مفقودًا.');
   const bytes=await response.arrayBuffer();
   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
-  if(hash.slice(0,32)!==match[2].slice(0,32))throw Error('بصمة أصل SAP لا تطابق مفتاح سجل D1؛ أوقفت الاستكمال.');
+  if(hash.slice(0,32)!==match[2])throw Error('بصمة أصل SAP لا تطابق مفتاح سجل D1؛ أوقفت الاستكمال.');
   const restored:SapArchiveFile={key:source.key,name:match[4],kind:match[1],
    snapshotDate:match[3]||'',created:source.updated,size:bytes.byteLength};
   F(prev=>[restored,...prev.filter(file=>file.key!==restored.key)]);
