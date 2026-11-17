@@ -119,7 +119,7 @@ const journalHeaders=[
 ] as const;
 export type UnifiedSapSections={
   transfers:string;opening:string;closing:string;official:string;journal:string;
-  from:string;to:string;counts:Record<string,number>;
+  from:string;to:string;counts:Record<string,number>;warnings:string[];
 };
 export function isUnifiedSapSource(text:string):boolean{
   const first=text.replace(/^\uFEFF/,'').split(/\r?\n/).find(Boolean)||'';
@@ -137,6 +137,7 @@ export function splitUnifiedSapSource(text:string):UnifiedSapSections{
   const positions=Object.fromEntries(header.map((key,index)=>[key,index]));
   const groups:Record<string,string[][]>={WINDOW:[],TRANSFER:[],OPENING:[],CLOSING:[],OFFICIAL:[],OINM:[]};
   let from='',to='';
+  const warnings:string[]=[];
   for(let i=1;i<lines.length;i++){
     const parts=lines[i].split('\t');
     if(parts.length!==header.length)throw Error('السطر '+(i+1)+': عدد الأعمدة مختلف؛ لم تُعالَج البيانات منعًا لفقدان بنود.');
@@ -144,6 +145,12 @@ export function splitUnifiedSapSource(text:string):UnifiedSapSections{
     if(!Object.prototype.hasOwnProperty.call(groups,kind))
       throw Error('السطر '+(i+1)+': نوع سجل SAP غير معروف: '+kind);
     const date=parts[positions.DocumentDate];
+    if(kind==='TRANSFER'){
+      const note=parts[positions.Remarks]||'';
+      const suspicious=note.match(/(?<!\d)\d{9}(?!\d)/g)||[];
+      if(suspicious.length)warnings.push('الترحيل '+(parts[positions.DocumentNumber]||'؟')+
+        ': مرجع فاتورة محتمل بتسع خانات ('+[...new Set(suspicious)].join('، ')+')؛ تحقّق من SAP دون تعديل تلقائي.');
+    }
     if((kind==='OPENING'||kind==='CLOSING')&&!dateOk(date))
       throw Error('السطر '+(i+1)+': تاريخ الرصيد غير صحيح.');
     if(kind==='OPENING'){if(from&&from!==date)throw Error('كشف الافتتاحي يحتوي تواريخ مختلفة.');from=date}
@@ -166,7 +173,7 @@ export function splitUnifiedSapSource(text:string):UnifiedSapSections{
     closing:asTsv([...stockHeaders,['الرصيد الفعلي بنهاية التاريخ','StockQuantity'] as const],groups.CLOSING),
     official:asTsv(officialHeaders,groups.OFFICIAL),
     journal:asTsv(journalHeaders,groups.OINM),
-    from,to,
+    from,to,warnings:[...new Set(warnings)],
     counts:Object.fromEntries(Object.entries(groups).map(([key,rows])=>[key,rows.length])),
   };
 }
