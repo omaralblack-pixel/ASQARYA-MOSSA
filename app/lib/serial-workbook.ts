@@ -554,45 +554,51 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
  for(const item of allRows){
   const row=rowElements.get(item.row);
   if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في ملف سجى.');
-  // A confirmed historical group belongs to every invoice in that saved group, even
-  // when the old record has no per-invoice page allocation. Place its shared transfer
-  // numbers in Saja's transfer slots as GROUP associations (not claimed page ownership).
+  // The SAVED PROJECT is authoritative. Never preserve old K:Q transfer links
+  // from the uploaded spreadsheet or use them to assign a different group.
+  if(!item.groupId&&item.reason.includes('مكرر في سجلات المشروع'))
+   throw Error('فاتورة '+item.number+': ربط متعارض في سجلات المشروع؛ لا يجوز اختيار مجموعة بالتخمين.');
   const transfers=[...new Map([...item.transfers,...item.unassignedTransfers]
    .map(t=>[t.number,t] as const)).values()];
-  const original=new Set([
-   ...(item.originalTransfers||[]),
-   ...Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+item.row),pkg.shared))
-    .flatMap(raw=>raw.match(/\d{4,20}/g)||[]),
-  ].filter(Boolean));
-  let combinedTransfers=false;
-  const missingTransfers:string[]=[];
-  for(const transfer of transfers){
-   if(!transfer.number||original.has(transfer.number))continue;
-   // Multiple verified main/dry transfers stay inside K/L; adjustment
-   // overflow is comma-separated in Q. Never silently drop a number.
-   const col=transfer.kind==='main'?11:transfer.kind==='dry'?12:
-    (Array.from({length:5},(_,i)=>13+i).find(c=>{
-      const cell=getCell(row,columnName(c)+item.row);
-      return !cell||(!find(cell,'f')&&!text(cell,pkg.shared));
-    })??17);
-   const cell=ensureCell(d,row,col,item.row);
-   if(find(cell,'f'))throw Error('فاتورة '+item.number+': خلية ترحيل فيها معادلة.');
-   const previous=text(cell,pkg.shared);
-   if(previous&&!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(previous))
-    throw Error('فاتورة '+item.number+': بيانات غير رقمية في خانة '+columnName(col)+'.');
-   const template=getCell(row,'Q'+item.row)||getCell(row,'K'+item.row)||getCell(row,'D'+item.row);
-   if(!cell.getAttribute('s')&&template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
-   if(previous){overwriteText(d,cell,previous+'، '+transfer.number);combinedTransfers=true;}
-   else editCell(d,cell,transfer.number,pkg.shared);
-   original.add(transfer.number);
+  const originalCells=Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+item.row),pkg.shared));
+  for(const [offset,raw] of originalCells.entries()){
+   if(raw&&!/^\s*\d{4,20}(?:\s*[,،]\s*\d{4,20})*\s*$/.test(raw))
+    throw Error('فاتورة '+item.number+': خانة '+columnName(11+offset)+' فيها بيانات لا يمكن توثيقها قبل تصحيح Excel.');
   }
+  const originalNumbers=originalCells.flatMap(raw=>raw.match(/\d{4,20}/g)||[]);
+  const expectedNumbers=transfers.map(t=>t.number);
+  const originalSet=new Set(originalNumbers),expectedSet=new Set(expectedNumbers);
+  const excluded=[...originalSet].filter(number=>!expectedSet.has(number));
+  const added=expectedNumbers.filter(number=>!originalSet.has(number));
+  const repeated=originalNumbers.filter((number,i)=>originalNumbers.indexOf(number)!==i);
+  const main=transfers.filter(t=>t.kind==='main').map(t=>t.number);
+  const dry=transfers.filter(t=>t.kind==='dry').map(t=>t.number);
+  const adjustments=transfers.filter(t=>t.kind==='adjustment').map(t=>t.number);
+  const desired=[
+   main.join('، '),dry.join('، '),
+   ...Array.from({length:5},(_,i)=>i<4?(adjustments[i]||''):adjustments.slice(4).join('، ')),
+  ];
+  let combinedTransfers=false;
+  for(let offset=0;offset<7;offset++){
+   const col=11+offset;
+   const cell=ensureCell(d,row,col,item.row);
+   if(find(cell,'f'))throw Error('فاتورة '+item.number+': خانة ترحيل تحتوي معادلة ولا يمكن تصحيحها آليًا.');
+   const template=getCell(row,'D'+item.row);
+   if(!cell.getAttribute('s')&&template?.getAttribute('s'))cell.setAttribute('s',template.getAttribute('s')!);
+   if(originalCells[offset]!==desired[offset])overwriteText(d,cell,desired[offset]);
+   if((desired[offset].match(/\d{4,20}/g)||[]).length>1)combinedTransfers=true;
+  }
+  const transferWarning=[
+   excluded.length?'إزالة ترحيلات Excel غير المرتبطة بهذه الفاتورة في المشروع: '+excluded.join('، '):'',
+   added.length?'إضافة ترحيلات من مجموعة المشروع: '+added.join('، '):'',
+   repeated.length?'إزالة ترحيلات مكررة داخل صف Excel: '+[...new Set(repeated)].join('، '):'',
+   !item.groupId&&originalNumbers.length?'لا يوجد ربط مثبت لهذه الفاتورة في المشروع؛ نُقلت أرقام Excel القديمة إلى هذه الملاحظة فقط':'',
+  ].filter(Boolean).join('؛ ');
   const discrepancy=serialReviewNote(item);
-  const transferWarning=missingTransfers.length?
-    'ترحيلات عمر لم تتسع لها خانات سجى: '+missingTransfers.join('، '):'';
   const removed=removedNotes.get(item.row)||[];
   const cleanupNote=removed.length?'دُمج الصف '+removed.join('، ')+' في هذا الصف بموافقة المستخدم؛ رقم الفاتورة يظهر مرة واحدة':'';
   const note=[discrepancy,transferWarning,cleanupNote].filter(Boolean).join(' | ');
-  const effectiveState=item.origin==='project'?'project_only':transferWarning?'review':item.state;
+  const effectiveState=item.origin==='project'?'project_only':item.state;
   if(combinedTransfers){
    const maximum=Math.max(1,...Array.from({length:7},(_,i)=>
     (text(getCell(row,columnName(11+i)+item.row),pkg.shared).match(/\d{4,20}/g)||[]).length));
