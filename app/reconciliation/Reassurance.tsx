@@ -97,13 +97,13 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
         try{unifiedStock=await restoreUnifiedStockSnapshots(files,from,to,readArchive)}
         catch(cause){sourceErrors.push('تعذّر استخراج رصيد 011 من الملف الشامل: '+(cause instanceof Error?cause.message:'خطأ غير معروف'))}
       }
-      if(sourceResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف الترحيلات من الأرشيف.');
-      if(closingResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف رصيد 011 الفعلي.');
-      if(openingResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف الرصيد الافتتاحي.');
-      const {scan,name:sourceName}=reassuranceSource(source,shared,branches);
-      if(id!==request.current)return;
       const actualClosing=closing||unifiedStock?.closing;
       const actualOpening=opening||unifiedStock?.opening;
+      if(sourceResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف الترحيلات من الأرشيف.');
+      if(closingResult.status==='rejected'&&!actualClosing)sourceErrors.push('تعذّر فتح كشف رصيد 011 الفعلي.');
+      if(openingResult.status==='rejected'&&!actualOpening)sourceErrors.push('تعذّر فتح كشف الرصيد الافتتاحي.');
+      const {scan,name:sourceName}=reassuranceSource(source,shared,branches);
+      if(id!==request.current)return;
       setLoaded({data,transfers:scan?.transfers||[],sourceIssues:[
         ...sourceErrors,...(!actualClosing||!actualOpening?unifiedStock?.issues||[]:[]),
         ...(scan?.issues||[]),
