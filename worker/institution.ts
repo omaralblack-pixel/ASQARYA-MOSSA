@@ -186,6 +186,22 @@ export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
         !/^lieutenant[/](?:transfers|opening|balance|other)__[a-f0-9]{32}__(?:\d{4}-\d{2}-\d{2}__)?[^/\\]{1,120}$/.test(key)) {
         return reply(400, "معرّف ملف الأرشيف غير صالح.");
       }
+      // Never delete the immutable original of a partially processed SAP file.
+      // D1 batch progress and original Supabase storage are separate stores.
+      if (env.DB) {
+        try {
+          const active = await env.DB.prepare(
+            "SELECT j.total AS total, (SELECT COUNT(*) FROM sap_file_batches b WHERE b.file_key=j.key AND b.state='complete') AS done FROM sap_file_jobs j WHERE j.key=?"
+          ).bind(key).first<{total:number;done:number}>();
+          if (active && active.done < active.total)
+            return reply(409, "لا يمكن حذف أصل SAP أثناء وجود دفعات معالجة غير مكتملة. استكملها أو راجع سجل المعالجة أولاً.");
+        } catch (error) {
+          // Older deployments may not have this schema; a failed safety check
+          // must not silently authorize deleting evidence.
+          if (!(error instanceof Error && /no such table: sap_file_jobs/i.test(error.message)))
+            return reply(503, "تعذّر التحقق من حماية أصل SAP في D1؛ لم يتم حذف الملف.");
+        }
+      }
       const result = await fetch(base + "/" + bucket, {
         method: "DELETE",
         headers: { ...Object.fromEntries(headers), "Content-Type": "application/json" },
