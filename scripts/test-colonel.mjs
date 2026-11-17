@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import ts from 'typescript';
 import assert from 'node:assert/strict';
 const compile=source=>ts.transpileModule(source,{compilerOptions:{
- target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext,jsx:ts.JsxEmit.ReactJSX}}).outputText;
+ target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext},fileName:'colonel-core.ts'}).outputText;
 const url=source=>'data:text/javascript;base64,'+Buffer.from(source).toString('base64');
 const rec=url(compile(fs.readFileSync('app/lib/reconcile.ts','utf8')));
 const invoice=url(compile(fs.readFileSync('app/lib/invoice-collector.ts','utf8')
