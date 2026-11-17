@@ -97,7 +97,9 @@ export default function SapFiles(){
   }
   remember(state);
   if(state.kind==='unified')await archiveUnifiedParts(file,text??await readSapArchive(file));
-  if(state.kind==='transfers'||state.kind==='unified')await publishShared(file,text??await readSapArchive(file));
+  // Unified imports are already preserved as immutable, dated archives and D1 receipts.
+  // Never replace the legacy shared full export with a shorter date-window subset.
+  if(state.kind==='transfers')await publishShared(file,text??await readSapArchive(file));
   // Only unfinished batches are requested. Finished batches survive reloads and
   // independent tabs; the server lease serializes claims for the same batch.
   for(const batch of state.batches.filter(x=>x.state!=='complete')){
