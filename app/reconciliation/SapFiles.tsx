@@ -181,6 +181,22 @@ export default function SapFiles(){
    if(opened?.file.key===file.key)OPEN(null);await refresh();M('حُذف الملف المحدد من الأرشيف.');
   });
  }
+ async function verifyUnlistedOriginal(source:SapJob){
+  const match=source.key.match(/^lieutenant\/(transfers|opening|balance|other)__([a-f0-9]{32}__(?:(\d{4}-\d{2}-\d{2})__)?(.+))$/);
+  if(!match)throw Error('مفتاح سجل المعالجة غير صالح.');
+  const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(source.key),{cache:'no-store'});
+  if(response.status===404)throw Error('يوجد سجل معالجة في D1 ('+source.done+'/'+source.total+
+   ') لكن أصل الملف غير موجود في Supabase. أعد رفع نفس الأصل بالاسم نفسه لاستعادة الأرشيف، بدون حذف سجل المعالجة.');
+  if(!response.ok)throw Error('تعذّر التأكد من أصل SAP في Supabase: HTTP '+response.status+'. لم أعتبر الملف مفقودًا.');
+  const bytes=await response.arrayBuffer();
+  const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+  if(hash.slice(0,32)!==match[2].slice(0,32))throw Error('بصمة أصل SAP لا تطابق مفتاح سجل D1؛ أوقفت الاستكمال.');
+  const restored:SapArchiveFile={key:source.key,name:match[4],kind:match[1],
+   snapshotDate:match[3]||'',created:source.updated,size:bytes.byteLength};
+  F(prev=>[restored,...prev.filter(file=>file.key!==restored.key)]);
+  M('تم التحقق من وجود ملف SAP وسلامة بصمته في Supabase: '+restored.name+'. يمكن فتحه واستكمال دفعاته.');
+ }
+ const archiveUnlistedJobs=Object.values(jobs).filter(row=>!files.some(file=>file.key===row.key));
  const visible=files.filter(file=>{
   const actual=jobs[file.key]?.kind||file.kind,uploaded=uploadDay(file.created),snapshot=file.snapshotDate||'';
   return (!query||(file.name+' '+sapKinds[actual as SapKind]).toLowerCase().includes(query.trim().toLowerCase()))&&
@@ -220,7 +236,7 @@ export default function SapFiles(){
    <label>بحث باسم الملف<input type="search" value={query} onChange={e=>Q(e.target.value)}/></label><label>نوع الملف<select value={filter} onChange={e=>FL(e.target.value)}><option value="all">جميع الأنواع</option>{Object.entries(sapKinds).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
    <label>تاريخ الرصيد من<input type="date" value={balanceFrom} onChange={e=>BF(e.target.value)}/></label><label>تاريخ الرصيد إلى<input type="date" value={balanceTo} onChange={e=>BT(e.target.value)}/></label>
    <label>تاريخ الرفع من<input type="date" value={uploadFrom} onChange={e=>UF(e.target.value)}/></label><label>تاريخ الرفع إلى<input type="date" value={uploadTo} onChange={e=>UT(e.target.value)}/></label>
-  </div><p className="hint">{visible.length} من {files.length} ملفًا. «لم تُسجّل معالجة» تعني أن الملف قديم ولا يوجد سجل معالجة له؛ لا تعني فشل قراءته في التقارير.</p>
+  </div><p className="hint">{visible.length} من {files.length} ملفًا ظاهرًا في فهرس Supabase. سجلات معالجة D1 مستقلة عن الملفات الأصلية.</p>
   <div className="table-scroll"><table><thead><tr><th>الملف</th><th>النوع</th><th>تاريخ الرصيد</th><th>تاريخ الرفع</th><th>حالة المعالجة</th><th>الإجراءات</th></tr></thead><tbody>{visible.map(file=>{
    const state=jobs[file.key];return <tr key={file.key}><td dir="auto">{file.name}</td><td>{sapKinds[(state?.kind||file.kind) as SapKind]||file.kind}</td><td dir="ltr">{file.snapshotDate||'—'}</td><td dir="ltr">{uploadTime(file.created)}</td><td>{state?statusNames[state.status]+' ('+state.done+'/'+state.total+')':'لم تُسجّل معالجة'}{state?.failed?` · ${state.failed} فاشلة`:''}</td><td><div className="row-actions">
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(async()=>{OPEN({file,text:await readSapArchive(file)});const result=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));SJ(result.job);})}>فتح</button>
@@ -228,9 +244,18 @@ export default function SapFiles(){
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(()=>processFile(file))}>{state?.status==='complete'?'تحقق من المعالجة':'حالة / استكمال'}</button>
     {state&&state.kind!=='unified'&&state.done===state.total&&<button className="button secondary small" disabled={busy} onClick={()=>void exclusive(()=>processFile(file,undefined,true))}>إعادة فحص</button>}
     {['balance','opening'].includes(state?.kind||file.kind)&&!file.snapshotDate&&<button className="button secondary small" disabled={busy} onClick={()=>void stamp(file)}>تثبيت تاريخ الرصيد</button>}
-    <button className="button secondary small" disabled={busy} onClick={()=>void remove(file)}><Trash2 size={14}/>حذف</button>
+    <button className="button secondary small" disabled={busy||!!state&&state.done<state.total} title={state&&state.done<state.total?'يوجد دفعات SAP غير مكتملة؛ الأصل محمي من الحذف.':'حذف الأصل بعد التأكيد'} onClick={()=>void remove(file)}><Trash2 size={14}/>حذف</button>
    </div></td></tr>;
-  })}</tbody></table></div>{!loading&&!visible.length&&<p>لا توجد ملفات ضمن التصفية المختارة.</p>}
+  })}</tbody></table></div>{!loading&&!visible.length&&<p>لا توجد ملفات ظاهرة ضمن التصفية. افحص سجلات المعالجة أدناه قبل إعادة الرفع.</p>}
+   {archiveUnlistedJobs.length>0&&<div className="banner warn" role="status"><AlertTriangle size={17}/><div>
+    <strong>{archiveUnlistedJobs.length} سجل معالجة في D1 بدون أصل ظاهر بقائمة Supabase</strong>
+    <p>سجل معالجة SAP لا يثبت وحده حفظ الملف الأصلي. تحقق من وجود الأصل، دون إعادة المعالجة أو حذف الدفعات.</p>
+    {archiveUnlistedJobs.slice(0,20).map(row=><p key={row.key}>
+     <b dir="auto">{row.key.split('__').at(-1)}</b> — {row.done} من {row.total} دفعة
+     {' '}<button type="button" className="button secondary small" disabled={busy}
+       onClick={()=>void exclusive(()=>verifyUnlistedOriginal(row))}>تحقق من الأصل</button>
+    </p>)}
+   </div></div>}
   </section>
   {opened&&<section className="panel"><h2>الملف المفتوح: <b dir="auto">{opened.file.name}</b></h2><p>معاينة أول 100 ألف حرف؛ التنزيل يسترجع الملف الأصلي كاملًا.</p><textarea readOnly dir="ltr" rows={12} style={{width:'100%'}} value={opened.text.slice(0,100000)}/></section>}
  </div>;
