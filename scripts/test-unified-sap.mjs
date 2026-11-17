@@ -52,6 +52,11 @@ assert.equal(parts.from,'2026-11-01');
 assert.equal(parts.to,'2026-11-03');
 for(const kind of ['WINDOW','TRANSFER','OPENING','CLOSING','OINM','OFFICIAL'])
  assert.equal(parts.counts[kind],1,'Section count '+kind);
+assert.deepEqual(parts.warnings,[]);
+const flagged=splitUnifiedSapSource(exported.replace('مؤسسة العقبة','2623323211 262332321 2623323212'));
+assert.equal(flagged.warnings.length,1);
+assert.ok(flagged.warnings[0].includes('262332321'));
+assert.equal(flagged.counts.TRANSFER,1,'Warning must not drop a transfer');
 assert.ok(parts.transfers.includes('2615754'));
 assert.ok(parts.transfers.includes('2623000001'));
 assert.ok(parts.transfers.includes('\tY'));
