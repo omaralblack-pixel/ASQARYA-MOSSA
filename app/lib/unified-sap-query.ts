@@ -39,7 +39,7 @@ export function unifiedSapQuery(from:string,to:string):string{
   'WHERE (L."FromWhsCod" = '+wh011+' OR L."WhsCode" = '+wh011+
   ') AND H."DocDate" BETWEEN '+first+' AND '+last);
   const stock=(kind:'OPENING'|'CLOSING')=>select({
-    RecordType:kind==="'OPENING'"?"'OPENING'":"'CLOSING'",
+    RecordType:kind==='OPENING'?"'OPENING'":"'CLOSING'",
     DocumentDate:kind==='OPENING'?"'"+from+"'":"'"+to+"'",
     ItemCode:'M."ItemCode"',ItemName:'I."ItemName"',
     Unit:'I."InvntryUom"',Warehouse:"'011'",
@@ -78,7 +78,7 @@ export function unifiedSapQuery(from:string,to:string):string{
   ' AND H."DocDate" BETWEEN '+first+' AND '+last));
   return '-- SAP Business One HANA | Complete 011 evidence | '+from+' through '+to+
     '\n-- One TSV/Excel export; do not filter canceled or reverse documents.\n'+
-    [transfer,stock('OPENING'),stock('CLOSING'),journal,...official].join('\nUNION ALL\n')+
+    [select({RecordType:"'WINDOW'",DocumentDate:"'"+from+"'",BaseRef:"'"+to+"'"},'FROM DUMMY',''),transfer,stock('OPENING'),stock('CLOSING'),journal,...official].join('\nUNION ALL\n')+
     '\nORDER BY "RecordType", "DocumentDate", "DocumentNumber", "LineNumber";';
 }
 
@@ -132,7 +132,7 @@ export function splitUnifiedSapSource(text:string):UnifiedSapSections{
   const missing=fields.filter(col=>!header.includes(col));
   if(missing.length)throw Error('كشف SAP الشامل ناقص أعمدة: '+missing.join('، '));
   const positions=Object.fromEntries(header.map((key,index)=>[key,index]));
-  const groups:Record<string,string[][]>={TRANSFER:[],OPENING:[],CLOSING:[],OFFICIAL:[],OINM:[]};
+  const groups:Record<string,string[][]>={WINDOW:[],TRANSFER:[],OPENING:[],CLOSING:[],OFFICIAL:[],OINM:[]};
   let from='',to='';
   for(let i=1;i<lines.length;i++){
     const parts=lines[i].split('\t');
@@ -147,15 +147,20 @@ export function splitUnifiedSapSource(text:string):UnifiedSapSections{
     if(kind==='CLOSING'){if(to&&to!==date)throw Error('كشف الختامي يحتوي تواريخ مختلفة.');to=date}
     groups[kind].push(parts);
   }
-  if(!from||!to||from>to)throw Error('الكويري الشامل لا يحتوي تاريخ افتتاحي وختامي مثبتين؛ لا يمكن تدقيق الفترة.');
+  const window=groups.WINDOW;
+  if(window.length!==1)throw Error('بيانات بداية ونهاية فترة الكويري ناقصة أو مكررة.');
+  const expectedFrom=window[0][positions.DocumentDate],expectedTo=window[0][positions.BaseRef];
+  if(!dateOk(expectedFrom)||!dateOk(expectedTo)||expectedFrom>expectedTo)throw Error('فترة الكويري غير صالحة.');
+  if(from&&from!==expectedFrom||to&&to!==expectedTo)throw Error('تواريخ الأرصدة لا تطابق فترة الكويري.');
+  from=expectedFrom;to=expectedTo;
   const asTsv=(mapping:readonly (readonly [string,string])[],rows:string[][])=>
     [mapping.map(([key])=>key).join('\t'),
       ...rows.map(cells=>mapping.map(([,key])=>(cells[positions[key]]||'').replace(/[\t\r\n]+/g,' ')).join('\t'))]
     .join('\n');
   return {
     transfers:asTsv(transferHeaders,groups.TRANSFER),
-    opening:asTsv([...stockHeaders,['الرصيد الافتتاحي','StockQuantity']],groups.OPENING),
-    closing:asTsv([...stockHeaders,['الرصيد الفعلي بنهاية التاريخ','StockQuantity']],groups.CLOSING),
+    opening:asTsv([...stockHeaders,['الرصيد الافتتاحي','StockQuantity'] as const],groups.OPENING),
+    closing:asTsv([...stockHeaders,['الرصيد الفعلي بنهاية التاريخ','StockQuantity'] as const],groups.CLOSING),
     official:asTsv(officialHeaders,groups.OFFICIAL),
     journal:asTsv(journalHeaders,groups.OINM),
     from,to,
