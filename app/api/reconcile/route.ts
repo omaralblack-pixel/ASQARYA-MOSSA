@@ -127,6 +127,46 @@ if(u.searchParams.has('lieutenant')){
     }
     return json({...collected,records:selected,reference:await refs()});
   }catch(cause){return json({error:cause instanceof Error?cause.message:'تعذّر تجميع الفواتير.'},400)}
+}if(u.searchParams.has('serialExport')){
+ // Small, cursor-paginated, read-only projection. Avoid fetching full
+ // reconciliation snapshots/attachments in a single huge JSON response.
+ const afterUpdated=u.searchParams.get('afterUpdated');
+ const afterId=u.searchParams.get('afterId');
+ if((afterUpdated===null)!==(afterId===null))
+  return json({error:'مؤشر تصدير غير مكتمل.'},400);
+ if(afterUpdated!==null&&(!afterUpdated||!afterId))
+  return json({error:'مؤشر تصدير غير صالح.'},400);
+ const batchSize=25;
+ const cursorClause=afterUpdated!==null?'WHERE (updated < ? OR (updated = ? AND id < ?))':'';
+ const query=`SELECT id,branch,status,updated, CASE WHEN json_valid(payload)
+  AND json_type(payload,'$.invoices')='array' AND json_type(payload,'$.transfers')='array'
+  AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object')
+  AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object')
+ THEN json_object(
+  'summary',json(json_extract(payload,'$.summary')),
+  'invoices',json((SELECT json_group_array(json_object(
+    'id',json_extract(value,'$.id'),'number',json_extract(value,'$.number'),
+    'date',json_extract(value,'$.date'),'dateTransferNos',json(json_extract(value,'$.dateTransferNos')),
+    'manualDate',json(CASE WHEN json_extract(value,'$.manualDate')=1 THEN 'true' ELSE 'false' END),
+    'amount',json_extract(value,'$.amount'),
+    'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END)
+  )) FROM json_each(reconciliations.payload,'$.invoices'))),
+  'transfers',json((SELECT json_group_array(json_object(
+    'number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'),
+    'paste',json_extract(value,'$.paste')
+  )) FROM json_each(reconciliations.payload,'$.transfers')))
+ ) ELSE payload END AS payload
+ FROM reconciliations ${cursorClause}
+ ORDER BY updated DESC,id DESC LIMIT ?`;
+ const statement=db().prepare(query);
+ const {results}=await (afterUpdated!==null
+  ?statement.bind(afterUpdated,afterUpdated,afterId,batchSize+1)
+  :statement.bind(batchSize+1))
+  .all<{id:string;branch:string;status:string;updated:string;payload:string}>();
+ const records=results.slice(0,batchSize);
+ const last=records.at(-1);
+ return json({records,hasMore:results.length>batchSize,
+   nextCursor:last?{updated:last.updated,id:last.id}:null});
 }if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,status,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array' AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object') AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object') THEN json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) ELSE payload END ELSE payload END AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
 type StoredReconciliation = {
   id: string;
