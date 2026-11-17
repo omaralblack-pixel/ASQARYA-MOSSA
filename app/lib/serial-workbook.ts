@@ -1,6 +1,6 @@
 import {strFromU8,strToU8,unzipSync,zipSync} from 'fflate';
 import {digits,dateValue as invoiceDateValue,fils} from './reconcile';
-import {PROJECT_ONLY_NOTE,serialMergeProposals,serialInvoiceColumns,serialReviewNote,serialWorkingDays,auditSerialExport,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
+import {PROJECT_ONLY_NOTE,serialMergeProposals,serialInvoiceColumns,projectSerialTransferCells,serialReviewNote,serialWorkingDays,auditSerialExport,type SerialInput,type SerialReport,type SerialState,type SerialPeriod} from './serial-soldier';
 
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -603,13 +603,7 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   const excluded=[...originalSet].filter(number=>!expectedSet.has(number));
   const added=expectedNumbers.filter(number=>!originalSet.has(number));
   const repeated=originalNumbers.filter((number,i)=>originalNumbers.indexOf(number)!==i);
-  const main=transfers.filter(t=>t.kind==='main').map(t=>t.number);
-  const dry=transfers.filter(t=>t.kind==='dry').map(t=>t.number);
-  const adjustments=transfers.filter(t=>t.kind==='adjustment').map(t=>t.number);
-  const desired=[
-   main.join('، '),dry.join('، '),
-   ...Array.from({length:5},(_,i)=>i<4?(adjustments[i]||''):adjustments.slice(4).join('، ')),
-  ];
+  const desired=projectSerialTransferCells(item);
   let combinedTransfers=false;
   for(let offset=0;offset<7;offset++){
    const col=11+offset;
