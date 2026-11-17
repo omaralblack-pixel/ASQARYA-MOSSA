@@ -9,7 +9,8 @@ import type {LieutenantTransfer} from '../lib/lieutenant';
 import type {CancellationDecision} from '../lib/lieutenant-cancellation-decisions';
 
 type Event={event_type:string;entity_no:string;note:string;created_at:string};
-type ProjectEdit={id:string;branch:string;updated:string};
+ type ProjectEdit={id:string;branch:string;updated:string};
+type SapArchiveActivity={key:string;name:string;kind:string;created:string};
 type Signoff={day:string;fingerprint:string;source_key:string;signed_at:string};
 type Control={days:ColonelDayState[];assignments:ColonelAssignment[];
  decisions:CancellationDecision[];events:Event[];recentProjectEdits:ProjectEdit[];signoffs:Signoff[]};
@@ -67,6 +68,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
  const [selectedDay,setSelectedDay]=useState(today());
  const [records,setRecords]=useState<ColonelRecord[]>([]);
  const [sap,setSap]=useState<LieutenantTransfer[]>([]);
+ const [archiveFiles,setArchiveFiles]=useState<SapArchiveActivity[]>([]);
  const [control,setControl]=useState<Control>(empty);
  const [sourceName,setSourceName]=useState('');
  const [sourceKey,setSourceKey]=useState('');
@@ -87,7 +89,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
     getRecords(),readApi<Control>('/api/colonel?month='+month),listSapFiles(),
    ]);
    const source=await restoreLieutenantSource(files,branches,readSapArchive,readSavedSapImport);
-   setRecords(project);setControl(admin);setSap(source?.scan.transfers||[]);
+   setRecords(project);setControl(admin);setSap(source?.scan.transfers||[]);setArchiveFiles(files);
    setSourceIssues(source?.scan.issues||[]);
    setSourceName(source?.name||'');setSourceKey(source?.key||'');
    setLoaded(true);
@@ -129,11 +131,17 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
    e.event_type==='signoff-day'?'اعتماد اليوم جاهز بعد مراجعة SAP':
    e.event_type==='assign-transfer'?'تحديد تاريخ فاتورة للترحيل':'إلغاء ربط يوم الترحيل',
    description:e.entity_no+' — '+e.note}));
+  const reviews=control.decisions.map(e=>({when:e.updated_at,title:'قرار محفوظ لدى الملازم أول',
+   description:'الترحيل '+e.transfer_no+' — '+(e.decision==='ignore'?'تجاوز إداري':
+    e.decision==='keep'?'عدم الإلغاء بسبب فاتورة':'ربط مستند')+
+    (e.related_number?' — '+e.related_number:'')}));
+  const archives=archiveFiles.map(e=>({when:e.created,title:'حفظ ملف SAP في الأرشيف',
+   description:e.name+' — '+e.kind}));
   const edits=control.recentProjectEdits.map(e=>({when:e.updated,title:'آخر حفظ لمجموعة فواتير في المشروع',
    description:e.branch+' — السجل '+e.id}));
-  return [...actions,...edits].filter(e=>Number.isFinite(Date.parse(e.when)))
+  return [...actions,...reviews,...archives,...edits].filter(e=>Number.isFinite(Date.parse(e.when)))
    .sort((a,b)=>b.when.localeCompare(a.when)).slice(0,35);
- },[control]);
+ },[control,archiveFiles]);
  const todayActions=activities.filter(e=>new Intl.DateTimeFormat('en-CA',{
   timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(e.when))===today());
  const filteredInvoices=current?.invoices.filter(inv=>!search||[
@@ -262,6 +270,25 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
        <td>{a.invoice_day}</td><td>{a.reason}</td><td><button className="button secondary small"
        disabled={busy} onClick={()=>void action({action:'clear-assignment',transferNo:a.transfer_no})}>إزالة</button></td></tr>)}</tbody></table></div>
     </details>}
+   </section>
+   <section className="panel">
+    <div className="section-title"><ShieldCheck size={20}/><div><h2>رقابة الإلغاءات والكاش فان من الملازم</h2>
+     <p>قرار الملازم محفوظ، لكن حالة SAP لا تتغير إلا بدليل إلغاء رسمي أو عكسي مطابق. يظهر رقم المقابل متى ثبت.</p></div></div>
+    <div className="table-scroll"><table><thead><tr><th>الترحيل</th><th>تاريخ SAP</th><th>حالة SAP / التسوية</th>
+      <th>المستند المقابل</th><th>قرار الملازم</th><th>تفاصيل الإثبات</th></tr></thead>
+     <tbody>{[...report.days.flatMap(d=>d.transfers),...report.unassigned]
+      .filter(t=>t.state!=='normal'||!!t.decision)
+      .filter(t=>!search||[t.number,...t.counterparts,...t.invoiceNumbers].some(n=>n.includes(search)))
+      .sort((a,b)=>Number(b.needsAction)-Number(a.needsAction)||a.number.localeCompare(b.number))
+      .slice(0,170).map(t=><tr key={t.number}><td dir="ltr">{t.number}</td>
+       <td dir="ltr">{t.postingDate||'—'}</td>
+       <td>{stateLabels[t.state]||t.state}</td><td dir="ltr">{t.counterparts.join('، ')||'—'}</td>
+       <td>{t.decision==='ignore'?'تجاوز إداري':
+        t.decision==='keep'?'لا يُلغى — قرار مرتبط بفاتورة':
+        t.decision==='linked'?'ربط إداري':'لم يسجل قرار'}</td>
+       <td>{t.needsAction?<strong>متابعة مطلوبة. </strong>:null}{t.note||'لا توجد ملاحظات إضافية'}</td>
+      </tr>)}</tbody></table></div>
+    <button className="button secondary" onClick={()=>onNavigate('lieutenant')}>الانتقال للملازم أول لمراجعة التفاصيل والقرارات</button>
    </section>
    {(report.undated.length>0||report.warnings.length>0)&&<section className="panel">
     <div className="section-title"><AlertTriangle size={20}/><div><h2>استثناءات لا تُخفى</h2>
