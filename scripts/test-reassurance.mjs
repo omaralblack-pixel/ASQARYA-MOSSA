@@ -132,16 +132,16 @@ console.log(`${passed} reassurance business-rule tests passed.`);
 const {restoreUnifiedStockSnapshots}=loadTs('app/lib/lieutenant-source.ts');
 const {unifiedSapQuery}=loadTs('app/lib/unified-sap-query.ts');
 const unifiedSql=unifiedSapQuery('2026-11-01','2026-11-17');
-const unifiedHeaders=[...unifiedSql.split('\\nUNION ALL\\n')[0].matchAll(/ AS "([^"]+)"/g)].map(match=>match[1]);
-const unifiedRow=values=>unifiedHeaders.map(key=>String(values[key]??'')).join('\\t');
+const unifiedHeaders=[...unifiedSql.split('\nUNION ALL\n')[0].matchAll(/ AS "([^"]+)"/g)].map(match=>match[1]);
+const unifiedRow=values=>unifiedHeaders.map(key=>String(values[key]??'')).join('\t');
 const unifiedText=[
- unifiedHeaders.join('\\t'),
+ unifiedHeaders.join('\t'),
  unifiedRow({RecordType:'WINDOW',DocumentDate:'2026-11-01',BaseRef:'2026-11-17'}),
  unifiedRow({RecordType:'OPENING',DocumentDate:'2026-11-01',ItemCode:code,ItemName:'item',
    Warehouse:'011',Unit:'Piece',StockQuantity:'5'}),
  unifiedRow({RecordType:'CLOSING',DocumentDate:'2026-11-17',ItemCode:code,ItemName:'item',
    Warehouse:'011',Unit:'Piece',StockQuantity:'105'}),
-].join('\\n');
+].join('\n');
 const onlyUnified=[{key:'unified',name:'SAP-all.txt',kind:'unified',created:'2026-11-17T11:27:22Z'}];
 const recovered=await restoreUnifiedStockSnapshots(onlyUnified,'2026-11-01','2026-11-17',async()=>unifiedText);
 assert.equal(recovered.opening?.file.snapshotDate,'2026-11-01');
@@ -162,7 +162,7 @@ assert.equal(stale.closing?.file.snapshotDate,'2026-11-17',
  'Original SAP date, not upload date or selected date, governs the comparison');
 const unmatchedOpening=await restoreUnifiedStockSnapshots(onlyUnified,'2026-11-02','2026-11-17',async()=>unifiedText);
 assert.equal(unmatchedOpening.opening,null,'Do not invent opening stock for another day');
-const missingClosing=unifiedText.split('\\n').filter(row=>!row.startsWith('CLOSING\\t')).join('\\n');
+const missingClosing=unifiedText.split('\n').filter(row=>!row.startsWith('CLOSING\t')).join('\n');
 const insufficient=await restoreUnifiedStockSnapshots(onlyUnified,'2026-11-01','2026-11-17',async()=>missingClosing);
 assert.equal(insufficient.closing,null,'A missing CLOSING section never proves zero stock');
 const legacy=await restoreUnifiedStockSnapshots([{...onlyUnified[0],kind:'other'}],'2026-11-01','2026-11-17',async()=>unifiedText);
