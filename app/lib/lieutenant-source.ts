@@ -47,9 +47,10 @@ function missingCancellationOriginals(scan:LieutenantScan):string[]{
   return [...missing];
 }
 
-/** Restore the newest SAP archive, supplementing only missing original documents
- * referenced by cancellation corrections from older archives. Archive reads never
- * create blue invoices or overwrite the newer version of an SAP document.
+/** Restore latest SAP archive and non-destructively supplement documents absent
+ * from that export using immutable historical archives. This is essential for a
+ * date-scoped unified upload: a November export cannot erase October evidence.
+ * For duplicate document numbers newest wins; no invoice is created here.
  */
 export async function restoreLieutenantSource(
   files:LieutenantSourceFile[],branches:string[],
@@ -67,7 +68,7 @@ export async function restoreLieutenantSource(
   let restored:RestoredLieutenantSource|null=null;
   let supplements=0;
   for(const file of candidates){
-    if(restored&&!missingCancellationOriginals(restored.scan).length)break;
+    // Never stop after the newest export: it may cover only the selected dates.
     try{
       const scan=parse(await readArchive(file));
       if(!scan)continue;
@@ -80,7 +81,7 @@ export async function restoreLieutenantSource(
     }catch(cause){failures.push(cause instanceof Error?cause.message:'تعذّر فتح ملف ترحيلات من الأرشيف.');}
   }
   if(restored){
-    if(supplements)restored.name+=' + '+supplements+' ملف SAP أقدم (لاستكمال مستندات الإلغاء)';
+    if(supplements)restored.name+=' + '+supplements+' ملف SAP أقدم (لاستكمال السجلات التاريخية المفقودة)';
     // The shared legacy export is a supplemental evidence source even when a
     // newer immutable archive exists. Copy only specifically referenced missing
     // originals: never overwrite new documents or import unrelated old rows.
