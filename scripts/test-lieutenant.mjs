@@ -151,6 +151,21 @@ const sourceCode=compile('app/lib/lieutenant-source.ts')
   .replace(/from ['"]\.\/lieutenant['"]/, 'from "'+lieutenantUrl+'"');
 const {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey}=await import('data:text/javascript;base64,'+Buffer.from(sourceCode).toString('base64'));
 const savedText=en+'\n'+normal;
+
+// Transfer-only policy: the existence of an OWTR/OINM movement cannot create a
+// blue-invoice group, even for normal inward transfers or legacy blank records.
+const lieutenantUi=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
+assert.match(lieutenantUi,/unlinked:'ترحيل فقط — سجل بلا فاتورة زرقاء'/);
+assert.match(lieutenantUi,/missing:'ترحيل SAP غير منسوب — لدى الملازم أول'/);
+assert.match(lieutenantUi,/queued:'ترحيل SAP مستقل — لدى الملازم أول'/);
+assert.match(lieutenantUi,/const assigned=new Set<string>\(\);/);
+assert.match(lieutenantUi,/draft\.invoices\.some\(invoice=>!!invoiceDocumentNo\(invoice\.number\)\)/);
+assert.match(lieutenantUi,/assigned\.has\(row\.transfer\.number\)/);
+assert.match(lieutenantUi,/completeStatuses=new Set<ReviewStatus>\(\['approved','linked','paper'/);
+assert.doesNotMatch(lieutenantUi,/soldierEligible/, 'No automatic soldier handoff for an unlinked SAP transfer');
+assert.doesNotMatch(lieutenantUi,/إرسال للجندي/, 'Never advertise invoice creation for a transfer-only record');
+console.log('PASS: invoice-less SAP movements remain lieutenant-only; linked blue invoices close the missing-invoice question.');
+
 let archiveReads=0,sharedReads=0;
 const fallback=await restoreLieutenantSource([{key:'legacy',name:'011.txt',kind:'transfers'}],['21 — السرو'],
   async()=>{archiveReads++;return balanceText},async()=>{sharedReads++;return {name:'November.txt',text:savedText}});
