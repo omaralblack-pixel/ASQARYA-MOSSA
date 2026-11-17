@@ -52,7 +52,7 @@ assert.equal((await listSapFiles()).length,205);
 // filename/hash; old 'other' originals remain untouched for recovery.
 const unified=await upload('unified');
 assert.ok(unified.key.startsWith('lieutenant/unified__'));
-const unifiedArchive=await handleInstitution(request('/api/lieutenant-files?page=0'),env);
+const unifiedArchive=await handleInstitution(request('/api/lieutenant-files?page=2'),env);
 assert.equal(unifiedArchive.status,200);
 const unifiedList=await unifiedArchive.json();
 assert.ok(unifiedList.files.some(file=>file.key===unified.key&&file.kind==='unified'));
