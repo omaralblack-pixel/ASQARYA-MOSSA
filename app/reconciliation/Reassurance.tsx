@@ -4,7 +4,7 @@ import {useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDownToLine,CheckCircle2,HeartPulse,Printer,RefreshCw,RotateCcw,Search} from 'lucide-react';
 import {readSapArchive} from '../lib/sap-files-client';
 import type {LieutenantTransfer} from '../lib/lieutenant';
-import {restoreLieutenantSource,restoreLieutenantStock,type LieutenantSourceFile} from '../lib/lieutenant-source';
+import {restoreLieutenantSource,restoreLieutenantStock,restoreUnifiedStockSnapshots,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {reassure,reassuranceSource,type ReassuranceData,type ReassuranceReport,type ReassuranceStock,type ReassuranceState} from '../lib/reassurance';
 import {digits,type Transfer} from '../lib/reconcile';
@@ -90,14 +90,26 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
       const source=sourceResult.status==='fulfilled'?sourceResult.value:null;
       const closing=closingResult.status==='fulfilled'?closingResult.value:null;
       const opening=openingResult.status==='fulfilled'?openingResult.value:null;
+      // A verified unified original can supply stock even when publishing the
+      // optional separate opening/closing archive copies failed.
+      let unifiedStock:Awaited<ReturnType<typeof restoreUnifiedStockSnapshots>>|null=null;
+      if((!closing||!opening)&&files.some(file=>file.kind==='unified'||file.kind==='other')){
+        try{unifiedStock=await restoreUnifiedStockSnapshots(files,from,to,readArchive)}
+        catch(cause){sourceErrors.push('تعذّر استخراج رصيد 011 من الملف الشامل: '+(cause instanceof Error?cause.message:'خطأ غير معروف'))}
+      }
       if(sourceResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف الترحيلات من الأرشيف.');
       if(closingResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف رصيد 011 الفعلي.');
       if(openingResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف الرصيد الافتتاحي.');
       const {scan,name:sourceName}=reassuranceSource(source,shared,branches);
       if(id!==request.current)return;
-      setLoaded({data,transfers:scan?.transfers||[],sourceIssues:[...sourceErrors,...scan?.issues||[]],sourceName,
-        closing:closing?{date:closing.file.snapshotDate!,...closing.stock}:null,
-        opening:opening?{date:opening.file.snapshotDate!,...opening.stock}:null});
+      const actualClosing=closing||unifiedStock?.closing;
+      const actualOpening=opening||unifiedStock?.opening;
+      setLoaded({data,transfers:scan?.transfers||[],sourceIssues:[
+        ...sourceErrors,...(!actualClosing||!actualOpening?unifiedStock?.issues||[]:[]),
+        ...(scan?.issues||[]),
+      ],sourceName,
+        closing:actualClosing?{date:actualClosing.file.snapshotDate!,...actualClosing.stock}:null,
+        opening:actualOpening?{date:actualOpening.file.snapshotDate!,...actualOpening.stock}:null});
       setCheckedAt(new Date().toLocaleTimeString('ar-JO',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit'}));
     }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر إجراء الفحص.');}
     finally{if(id===request.current)setBusy(false);}
@@ -105,6 +117,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
   useEffect(()=>{void reload();return()=>{request.current++};},[from,to,branches]); // Read-only; refreshes when the screen opens or dates change.
 
   const settled=report?.state==='match';
+  const closingUnavailable=!!report&&(!loaded?.closing||loaded.closing.date!==to);
   return <div className="reassurance-screen">
     <div className="page-title"><div><p className="eyebrow">الفواتير × المستودع 011</p><h1><HeartPulse size={30}/> طمني</h1><p>افحص كميات الفواتير ورصيد 011، واعرف ما يحتاج ترحيلًا أو مراجعة مرتجع.</p></div>
       <div className="save-actions no-print"><button type="button" className="button secondary" disabled={busy||!report} onClick={()=>window.print()}><Printer size={16}/>طباعة النتيجة</button>
@@ -121,16 +134,17 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
         {settled?<CheckCircle2 size={38}/>:<AlertTriangle size={38}/>}
         <div><h2>{settled?'اطمّن، الكميات مطابقة':report.state==='review'?'في بيانات بدها تحقق': 'في فروقات بدها متابعة'}</h2>
         <p>{settled?'كميات الفواتير والافتتاحي تساوي رصيد 011 حسب الكشوف المحفوظة للفترة.':
+          closingUnavailable?'رصيد 011 الفعلي غير متاح بتاريخ الفحص؛ لا يمكن تحديد عدد الترحيلات أو المرتجعات بعد. '+counts.review+' صنف ينتظر التحقق.':
           `${counts.transfer} صنف يحتاج ترحيل · ${counts.return} صنف فيه زيادة لمراجعة المرتجع · ${counts.review} صنف يحتاج تحقق`}</p>
         <small>الفترة <b dir="ltr">{from} — {to}</b> · {report.invoiceCount} فاتورة · آخر فحص {checkedAt}</small></div>
       </section>
       <div className="stats reassurance-stats">{([
         ['match','مطابقة',CheckCircle2],['transfer','تحتاج ترحيل',ArrowDownToLine],['return','زيادة / مراجعة مرتجع',RotateCcw],['review','تحتاج تحقق',Search],
-      ] as const).map(([key,label,Icon])=><button type="button" className={'stat '+(filter===key?'selected':'')} key={key} onClick={()=>setFilter(filter===key?'action':key)} aria-pressed={filter===key}><Icon size={20}/><span>{label}</span><strong>{counts[key]}</strong></button>)}</div>
+      ] as const).map(([key,label,Icon])=><button type="button" className={'stat '+(filter===key?'selected':'')} key={key} onClick={()=>setFilter(filter===key?'action':key)} aria-pressed={filter===key}><Icon size={20}/><span>{label}</span><strong>{closingUnavailable&&key!=='review'?'—':counts[key]}</strong></button>)}</div>
       <section className="panel">
         <p className="hint">كشف الترحيلات: {loaded?.sourceName||'غير متاح'} · آخر حركة ظاهرة: <b dir="ltr">{report.sourceLastDate||'—'}</b> · رصيد 011 بتاريخ <b dir="ltr">{loaded?.closing?.date||'غير متاح'}</b>.</p>
         {loaded?.closing&&loaded.closing.date!==to&&<button type="button" className="button secondary no-print" onClick={()=>{setFrom(loaded.closing!.date.slice(0,8)+'01');setTo(loaded.closing!.date)}}>افحص بتاريخ آخر رصيد محفوظ ({loaded.closing.date})</button>}
-        {!!report.issues.length&&<div className="banner error" role="alert"><b>الفحص غير مكتمل</b><ul>{report.issues.map((issue,i)=><li key={i}>{issue}</li>)}</ul><a href="/reconciliation?view=lieutenant">فتح الملازم أول لتحديث الكشوف</a></div>}
+        {!!report.issues.length&&<div className="banner error" role="alert"><b>الفحص غير مكتمل</b><ul>{report.issues.map((issue,i)=><li key={i}>{issue}</li>)}</ul><p>المصدر المعتمد للرصيد هو كشف SAP الفعلي بتاريخ الفحص. يُقرأ من الملف الشامل عندما تتوفر أقسام الأرصدة وتواريخها الصحيحة، وإلا يلزم رفع كشف رصيد مؤرّخ. الترحيلات وحدها لا تثبت رصيد 011.</p><a href="/reconciliation?view=sap-files">فتح ملفات SAP للتحقق من كشف الرصيد</a></div>}
         <p className="hint">دليل الكميات: {report.paperGroups} مجموعة من بنود الفواتير الورقية · {report.approvedGroups} مجموعة من ترحيلات SAP المعتمدة سابقًا. الاعتماد المالي مستقل عن دليل الكميات.</p>
         {report.financialPending>0&&<div className="banner info" role="status">هناك {report.financialPending} سجل لم يعتمد ماليًا بعد. نتيجة الكميات لا تُعد اعتمادًا ماليًا، وراجع حالة كل فاتورة قبل إغلاقها.</div>}
         {report.approvedGroups>0&&<p className="hint">استُخدمت كميات {report.approvedGroups} مجموعة من نسخة الترحيلات المحفوظة وقت اعتمادها، مرة واحدة لكل مجموعة. يظهر مصدر الكمية في تفاصيل الصنف.</p>}
