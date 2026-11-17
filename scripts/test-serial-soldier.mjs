@@ -99,6 +99,32 @@ const badTransfer=record('g-invalid',[invoice('2624002303','186.400')],[{number:
 const badResult=evaluateSerial([row(5,'2624002303','186.400')],[badTransfer]);
 assert.equal(badResult.rows[0].state,'review','Invalid transfer evidence remains a real blocker');
 assert.ok(badResult.blockers.some(e=>e.includes('غير مقروءة')));
+const savedButUnreadableGroup=record('g-saved-2615774',
+ [invoice('2621609886','345.440'),invoice('2621609885','251.300')],
+ [{number:'2615774',paste:'bad SAP lines'}]);
+const sharedUnreadable=evaluateSerial([
+ row(5,'2621609886','345.440'),row(6,'2621609885','251.300')
+],[savedButUnreadableGroup]);
+assert.deepEqual(sharedUnreadable.rows.map(r=>serialInvoiceColumns(r).filter(Boolean)),
+ [['2615774'],['2615774']],
+ 'A saved group transfer must remain attached to both invoices even if SAP lines are unreadable');
+assert.ok(sharedUnreadable.rows.every(r=>r.state==='review'),
+ 'Unreadable SAP detail must not be silently accepted as a verified match');
+auditSerialExport(sharedUnreadable.rows.map(r=>({
+ number:r.number,date:r.date,groupId:r.groupId,
+ transfers:serialInvoiceColumns(r).filter(Boolean),
+ confirmedTransfers:serialInvoiceColumns(r).filter(Boolean)
+})));
+assert.throws(()=>auditSerialExport([
+ ...sharedUnreadable.rows.map(r=>({
+  number:r.number,date:r.date,groupId:r.groupId,
+  transfers:serialInvoiceColumns(r).filter(Boolean),
+  confirmedTransfers:serialInvoiceColumns(r).filter(Boolean)
+ })),
+ {number:'2610013337',date:'2026-11-01',groupId:'different-group',
+  transfers:['2615774'],confirmedTransfers:['2615774']}
+]),/دون إثبات مجموعة/,
+ 'A transfer stored in a different group must still block export');
 assert.deepEqual(serialInvoiceColumns({
  transfers:[{number:'2615908',kind:'main'}],
  unassignedTransfers:[{number:'2615908',kind:'main'},{number:'2615826',kind:'dry'}],
