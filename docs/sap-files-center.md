@@ -40,3 +40,12 @@ Reproduce with `SAP_BENCH_BASE_REF=83b237d node scripts/test-sap-files.mjs` in a
 | 3 | 1093.48 | 243.27 | 87 | 18 |
 
 Median: 921.11 ms → 263.98 ms (~71% lower). Reopening an already processed file took 1.68–2.55 ms locally and performed zero invoice scans/import batches. Production timing remains to be measured from a permitted signed-in session.
+
+
+## Transfer-only versus blue-invoice group (mandatory rule)
+
+- An SAP transfer (OWTR/WTR1) or warehouse movement (OINM) is **not** an invoice group by itself. Never derive a group or a blue-invoice requirement from SAP Remarks, the transfer number, or a normal inward warehouse direction alone.
+- A blue-invoice group exists only when a saved project record contains at least one actual, nonempty blue-invoice number. When a transfer belongs to any saved numbered invoice, its **missing-invoice** question is closed; quantity, financial and physical-inventory audits are independent.
+- A transfer with no saved numbered invoice is **transfer-only** and stays in First Lieutenant's queue for human disposition. It must not be sent automatically to invoice entry and must not generate placeholder invoice records/groups.
+- Cancellation, reverse transfer and Cash Van handling depend on SAP evidence and separately saved operator decisions. Absence of an invoice never authorizes a cancellation, deletion or stock adjustment.
+- Previously saved unnumbered draft records may remain physically in historical storage for audit/recovery, but they are not blue-invoice groups in reports or missing-invoice coverage. No automatic destructive cleanup.
