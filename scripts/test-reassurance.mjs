@@ -128,3 +128,44 @@ test('New shared source keeps recovered archive originals and newest document ve
   assert.equal(reassuranceSource(archive,undefined,[]).scan,archive.scan);
 });
 console.log(`${passed} reassurance business-rule tests passed.`);
+
+const {restoreUnifiedStockSnapshots}=loadTs('app/lib/lieutenant-source.ts');
+const {unifiedSapQuery}=loadTs('app/lib/unified-sap-query.ts');
+const unifiedSql=unifiedSapQuery('2026-11-01','2026-11-17');
+const unifiedHeaders=[...unifiedSql.split('\\nUNION ALL\\n')[0].matchAll(/ AS "([^"]+)"/g)].map(match=>match[1]);
+const unifiedRow=values=>unifiedHeaders.map(key=>String(values[key]??'')).join('\\t');
+const unifiedText=[
+ unifiedHeaders.join('\\t'),
+ unifiedRow({RecordType:'WINDOW',DocumentDate:'2026-11-01',BaseRef:'2026-11-17'}),
+ unifiedRow({RecordType:'OPENING',DocumentDate:'2026-11-01',ItemCode:code,ItemName:'item',
+   Warehouse:'011',Unit:'Piece',StockQuantity:'5'}),
+ unifiedRow({RecordType:'CLOSING',DocumentDate:'2026-11-17',ItemCode:code,ItemName:'item',
+   Warehouse:'011',Unit:'Piece',StockQuantity:'105'}),
+].join('\\n');
+const onlyUnified=[{key:'unified',name:'SAP-all.txt',kind:'unified',created:'2026-11-17T11:27:22Z'}];
+const recovered=await restoreUnifiedStockSnapshots(onlyUnified,'2026-11-01','2026-11-17',async()=>unifiedText);
+assert.equal(recovered.opening?.file.snapshotDate,'2026-11-01');
+assert.equal(recovered.closing?.file.snapshotDate,'2026-11-17');
+assert.equal(recovered.opening?.stock.items[0].quantity,5);
+assert.equal(recovered.closing?.stock.items[0].quantity,105);
+const fromRecovered=fixture({opening:5,actual:105});
+fromRecovered.from='2026-11-01';fromRecovered.to='2026-11-17';
+fromRecovered.opening={date:recovered.opening.file.snapshotDate,...recovered.opening.stock};
+fromRecovered.closing={date:recovered.closing.file.snapshotDate,...recovered.closing.stock};
+fromRecovered.transfers=[live(100,'2617001','Piece','001','011',{transfer:{...card(),date:'2026-11-17'}})];
+const verifiedReport=reassure(fromRecovered);
+assert.equal(verifiedReport.rows[0].actual,105);
+assert.equal(verifiedReport.rows[0].opening,5);
+assert.equal(verifiedReport.rows[0].expected,105);
+const stale=await restoreUnifiedStockSnapshots(onlyUnified,'2026-11-01','2026-11-18',async()=>unifiedText);
+assert.equal(stale.closing?.file.snapshotDate,'2026-11-17',
+ 'Original SAP date, not upload date or selected date, governs the comparison');
+const unmatchedOpening=await restoreUnifiedStockSnapshots(onlyUnified,'2026-11-02','2026-11-17',async()=>unifiedText);
+assert.equal(unmatchedOpening.opening,null,'Do not invent opening stock for another day');
+const missingClosing=unifiedText.split('\\n').filter(row=>!row.startsWith('CLOSING\\t')).join('\\n');
+const insufficient=await restoreUnifiedStockSnapshots(onlyUnified,'2026-11-01','2026-11-17',async()=>missingClosing);
+assert.equal(insufficient.closing,null,'A missing CLOSING section never proves zero stock');
+const legacy=await restoreUnifiedStockSnapshots([{...onlyUnified[0],kind:'other'}],'2026-11-01','2026-11-17',async()=>unifiedText);
+assert.equal(legacy.closing?.stock.items[0].quantity,105,'Recover a misclassified older unified original');
+console.log('PASS: Tammeni restores dated stock from a unified SAP original without separate derived archives, rejecting missing or mismatched evidence');
+
