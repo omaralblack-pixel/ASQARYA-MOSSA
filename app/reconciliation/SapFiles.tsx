@@ -200,7 +200,7 @@ export default function SapFiles(){
   });
  }
  async function verifyUnlistedOriginal(source:SapJob){
-  const match=source.key.match(/^lieutenant\/(transfers|opening|balance|other)__([a-f0-9]{32})__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
+  const match=source.key.match(/^lieutenant\/(transfers|opening|balance|unified|other)__([a-f0-9]{32})__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
   if(!match)throw Error('مفتاح سجل المعالجة غير صالح.');
   const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(source.key),{cache:'no-store'});
   if(response.status===404)throw Error('يوجد سجل معالجة في D1 ('+source.done+'/'+source.total+
