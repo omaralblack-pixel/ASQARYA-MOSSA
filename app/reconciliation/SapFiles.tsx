@@ -79,9 +79,15 @@ export default function SapFiles(){
  async function processFile(file:SapArchiveFile,text?:string,recheck=false):Promise<void>{
   const current=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));
   let state=current.job;
-  if(!state||recheck){
+  // Reuse D1 job state; a 1/3 import must never be restarted from the
+  // expensive full Excel parsing path.
+  const mayRecheck=!!state&&recheck&&state.done===state.total&&
+   state.running===0&&state.kind!=='unified';
+  if(!state||mayRecheck){
    const source=text??await readSapArchive(file);
-   state=(await sapRequest<{job:SapJob}>('/api/sap-processing',{action:'start',key:file.key,text:source,recheck})).job;
+   state=(await sapRequest<{job:SapJob}>('/api/sap-processing',{
+    action:'start',key:file.key,text:source,recheck:mayRecheck,
+   })).job;
   }
   const archiveKind=['transfers','balance','opening'].includes(state.kind)?state.kind:'other';
   if(file.kind!==archiveKind){
@@ -203,7 +209,7 @@ export default function SapFiles(){
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(async()=>{OPEN({file,text:await readSapArchive(file)});const result=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));SJ(result.job);})}>فتح</button>
     <a className="button secondary small" href={'/api/lieutenant-files?key='+encodeURIComponent(file.key)} download={file.name}><Download size={14}/>تنزيل</a>
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(()=>processFile(file))}>{state?.status==='complete'?'تحقق من المعالجة':'حالة / استكمال'}</button>
-    {state&&<button className="button secondary small" disabled={busy} onClick={()=>void exclusive(()=>processFile(file,undefined,true))}>إعادة فحص</button>}
+    {state&&state.kind!=='unified'&&state.done===state.total&&<button className="button secondary small" disabled={busy} onClick={()=>void exclusive(()=>processFile(file,undefined,true))}>إعادة فحص</button>}
     {['balance','opening'].includes(state?.kind||file.kind)&&!file.snapshotDate&&<button className="button secondary small" disabled={busy} onClick={()=>void stamp(file)}>تثبيت تاريخ الرصيد</button>}
     <button className="button secondary small" disabled={busy} onClick={()=>void remove(file)}><Trash2 size={14}/>حذف</button>
    </div></td></tr>;
