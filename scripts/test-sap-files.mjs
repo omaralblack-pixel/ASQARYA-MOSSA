@@ -62,6 +62,17 @@ job=await call({action:'batch',key,index:0});assert.equal(job.done,1);assert.equ
 const snapshot=sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n;
 failImport=true;job=await call({action:'batch',key,index:1});assert.equal(job.failed,1);assert.equal(job.done,1);assert.equal(job.status,'failed');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n,snapshot);
 job=await read();assert.equal(job.done,1);assert.equal(job.failed,1);assert.ok(job.batches[1].error);
+const beforeAccidentalRecheck=originalChecks;
+const resumeInsteadOfRecheck=await call({action:'start',key,text,recheck:true});
+assert.equal(resumeInsteadOfRecheck.done,1,'A partial SAP job keeps completed batches on recheck');
+assert.equal(resumeInsteadOfRecheck.failed,1,'Failed batch remains recoverable');
+assert.equal(originalChecks,beforeAccidentalRecheck,'Recheck of a partial job must not re-download or parse original');
+assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM sap_job_history WHERE key=?').get(key).n,0,
+ 'Accidental recheck must not create a new job generation');
+assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n,snapshot);
+const sapFilesScreen=fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8');
+assert.match(sapFilesScreen,/state\.kind!=='unified'&&state\.done===state\.total/,
+ 'Avoid showing full recheck for huge unified SAP exports');
 const checksBefore=originalChecks;job=await call({action:'start',key,text});assert.equal(job.done,1);assert.equal(originalChecks,checksBefore,'same file never reparses or redownloads source');
 for(const b of job.batches.filter(x=>x.state!=='complete'))job=await call({action:'batch',key,index:b.idx});
 assert.equal(job.done,18);assert.equal(job.status,'complete');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n,867);
