@@ -464,7 +464,14 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
   }
  }
  const last=Math.max(17,notes.column);
- const allRows=report.rows.filter(item=>!discarded.has(item.row));
+ // Read project data as the canonical exported invoice. Excel values remain
+ // available on the original report rows for precise discrepancy notes.
+ const allRows=report.rows.filter(item=>!discarded.has(item.row)).map(item=>({
+  ...item,
+  number:item.groupId&&item.omarNumber?item.omarNumber:item.number,
+  amount:item.groupId&&fils(item.omarAmount)!==null?item.omarAmount:item.amount,
+  date:item.groupId&&item.projectDate?item.projectDate:item.date,
+ }));
  const sourceRow=actual.rows.filter(item=>!discarded.has(item.row)).at(-1)?.row;
  const template=sourceRow===undefined?undefined:rowElements.get(sourceRow);
  let nextRow=Math.max(4,...actual.rows.map(row=>row.row))+1;
@@ -554,6 +561,32 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
  for(const item of allRows){
   const row=rowElements.get(item.row);
   if(!row)throw Error('صف '+item.row+' لم يعد موجودًا في ملف سجى.');
+  const sourceItem=report.rows.find(source=>source.row===item.row)||item;
+  if(item.groupId){
+   const originalNumber=text(getCell(row,'D'+item.row),pkg.shared);
+   if(item.number!==sourceItem.number){
+    const destination=ensureCell(d,row,4,item.row);
+    if(find(destination,'f'))throw Error('فاتورة '+item.number+': رقم الفاتورة في معادلة ولا يمكن تصحيحه.');
+    overwriteText(d,destination,item.number);
+   }
+   if(item.date&&item.date!==sourceItem.date){
+    const destination=ensureCell(d,row,3,item.row);
+    if(find(destination,'f'))throw Error('فاتورة '+item.number+': التاريخ في معادلة ولا يمكن تصحيحه.');
+    const day=Date.parse(item.date+'T00:00:00Z');
+    if(!Number.isFinite(day))throw Error('تاريخ المشروع غير صالح لفاتورة '+item.number);
+    writeNumber(d,destination,Math.round((day-Date.UTC(1899,11,30))/86400000));
+   }
+   if(fils(item.amount)!==null&&fils(item.amount)!==fils(sourceItem.amount)){
+    const destination=ensureCell(d,row,6,item.row);
+    if(find(destination,'f'))throw Error('فاتورة '+item.number+': المبلغ في معادلة ولا يمكن تصحيحه.');
+    writeNumber(d,destination,fils(item.amount)!/1000);
+   }
+   if(item.branch&&item.branch!==sourceItem.workbookBranch){
+    const destination=ensureCell(d,row,5,item.row);
+    if(find(destination,'f'))throw Error('فاتورة '+item.number+': الفرع في معادلة ولا يمكن تصحيحه.');
+    overwriteText(d,destination,item.branch);
+   }
+  }
   // The SAVED PROJECT is authoritative. Never preserve old K:Q transfer links
   // from the uploaded spreadsheet or use them to assign a different group.
   if(!item.groupId&&item.reason.includes('مكرر في سجلات المشروع'))
@@ -594,10 +627,14 @@ export function createSerialWorkbook(input:ArrayBuffer,report:SerialReport,appro
    repeated.length?'إزالة ترحيلات مكررة داخل صف Excel: '+[...new Set(repeated)].join('، '):'',
    !item.groupId&&originalNumbers.length?'لا يوجد ربط مثبت لهذه الفاتورة في المشروع؛ نُقلت أرقام Excel القديمة إلى هذه الملاحظة فقط':'',
   ].filter(Boolean).join('؛ ');
-  const discrepancy=serialReviewNote(item);
+  const discrepancy=serialReviewNote(sourceItem);
+  const dateWarning=item.groupId&&item.projectDate&&item.projectDate!==sourceItem.date?
+   'تصحيح تاريخ Excel من '+(sourceItem.date||'فارغ')+' إلى تاريخ المشروع '+item.projectDate:'';
+  const branchWarning=item.groupId&&item.branch&&item.branch!==sourceItem.workbookBranch?
+   'فرع Excel السابق: '+(sourceItem.workbookBranch||'فارغ')+'؛ الفرع المعتمد من المشروع: '+item.branch:'';
   const removed=removedNotes.get(item.row)||[];
   const cleanupNote=removed.length?'دُمج الصف '+removed.join('، ')+' في هذا الصف بموافقة المستخدم؛ رقم الفاتورة يظهر مرة واحدة':'';
-  const note=[discrepancy,transferWarning,cleanupNote].filter(Boolean).join(' | ');
+  const note=[discrepancy,dateWarning,branchWarning,transferWarning,cleanupNote].filter(Boolean).join(' | ');
   const effectiveState=item.origin==='project'?'project_only':item.state;
   if(combinedTransfers){
    const maximum=Math.max(1,...Array.from({length:7},(_,i)=>
