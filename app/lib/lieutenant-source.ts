@@ -1,4 +1,5 @@
 import {classifyLieutenantContent,parseLieutenantStock,type StockRead} from './lieutenant-stock';
+import {isUnifiedSapSource,splitUnifiedSapSource} from './unified-sap-query';
 import {parseLieutenantTransfers,type LieutenantScan} from './lieutenant';
 import type {SavedSapImport} from './saved-sap-import';
 
@@ -25,6 +26,41 @@ export async function restoreLieutenantStock(
     if(stock.items.length)return {file,stock};
   }
   return null;
+}
+
+export type RestoredDatedStock={file:LieutenantSourceFile;stock:StockRead};
+/** Recover dated 011 balances from the *original* complete SAP export when
+ * the optional separate opening/closing archives failed to upload. Dates
+ * come from the verified WINDOW and stock rows, never upload timestamps.
+ * Empty sections are not proof of zero warehouse stock. */
+export async function restoreUnifiedStockSnapshots(
+ files:LieutenantSourceFile[],from:string,to:string,
+ readArchive:(file:LieutenantSourceFile)=>Promise<string>,
+):Promise<{opening:RestoredDatedStock|null;closing:RestoredDatedStock|null;issues:string[]}>{
+ let opening:RestoredDatedStock|null=null,closing:RestoredDatedStock|null=null;
+ const issues:string[]=[];
+ const candidates=files.filter(file=>file.kind==='unified'||file.kind==='other')
+   .sort((a,b)=>(a.kind==='unified'?0:1)-(b.kind==='unified'?0:1)||
+     (b.created||'').localeCompare(a.created||''));
+ for(const file of candidates){
+   if(opening&&closing?.file.snapshotDate===to)break;
+   try{
+     const text=await readArchive(file);
+     if(!isUnifiedSapSource(text))continue;
+     const parts=splitUnifiedSapSource(text);
+     if(parts.from===from&&parts.counts.OPENING>0&&!opening){
+       const stock=parseLieutenantStock(parts.opening,'opening');
+       if(stock.items.length)opening={file:{...file,kind:'opening',snapshotDate:parts.from},stock};
+     }
+     if(parts.to<=to&&parts.counts.CLOSING>0&&(!closing||parts.to>closing.file.snapshotDate!)){
+       const stock=parseLieutenantStock(parts.closing,'balance');
+       if(stock.items.length)closing={file:{...file,kind:'balance',snapshotDate:parts.to},stock};
+     }
+   }catch(error){
+     issues.push('تعذّر استخراج الأرصدة من '+file.name+': '+(error instanceof Error?error.message:'ملف غير صالح'));
+   }
+ }
+ return {opening,closing,issues};
 }
 
 /** Preserve the newest document version while recovering originals omitted from later
