@@ -158,17 +158,18 @@ export default function SapFiles(){
   <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع الكشف مرة واحدة. تبقى النسخة الأصلية محفوظة وتستخدم الشاشات المرتبطة البيانات المشتركة.</p></div><FileArchive size={32}/></div>
   <section className="panel"><h2>رفع ملف SAP جديد</h2><div className="table-controls">
    <label>نوع الملف المتوقع (يُصحّح تلقائيًا)<select value={kind} disabled={busy} onChange={e=>K(e.target.value as SapKind)}>{Object.entries(sapKinds).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></label>
-   <label>تاريخ الرصيد الفعلي<input type="date" max={today()} value={date} disabled={busy} onChange={e=>D(e.target.value)}/></label>
-   <label className="button primary sap-file-picker"><FileUp size={16}/>إرفاق وحفظ في قاعدة البيانات<input type="file" accept=".txt,.tsv,.csv,.xlsx" aria-label="رفع ملف SAP جديد" disabled={busy} onChange={upload}/></label>
+   {kind!=='unified'&&<><label>تاريخ الرصيد الفعلي<input type="date" max={today()} value={date} disabled={busy} onChange={e=>D(e.target.value)}/></label>
+   <label className="button primary sap-file-picker"><FileUp size={16}/>إرفاق وحفظ في قاعدة البيانات<input type="file" accept=".txt,.tsv,.csv,.xlsx" aria-label="رفع ملف SAP جديد" disabled={busy} onChange={upload}/></label></>}
   </div>{kind==='unified'&&<div className="sap-unified-query" aria-label="الكويري الشامل — SAP 011">
    <div className="sap-unified-query-top"><div><h3>الكويري الشامل — SAP 011</h3><p>استخرج الترحيلات والأرصدة والحركات ومستندات العقبة مرة واحدة.</p></div>
     <label>من تاريخ<input type="date" value={fromDate} max={today()} onChange={e=>FROM(e.target.value)}/></label>
     <label>إلى تاريخ<input type="date" value={toDate} max={today()} onChange={e=>TO(e.target.value)}/></label>
     <button type="button" className="button secondary" disabled={!unifiedSql} onClick={()=>void copyUnifiedSql()}><Copy size={15}/>نسخ الكويري</button>
+    <label className="button primary sap-file-picker"><FileUp size={15}/>رفع الملف الموحد<input type="file" accept=".txt,.tsv,.csv,.xlsx" aria-label="رفع الملف الموحد SAP" disabled={busy} onChange={upload}/></label>
    </div>
    <textarea ref={queryRef} aria-label="كويري SAP الشامل" dir="ltr" readOnly rows={4} value={unifiedSql} />
    {queryError&&<p className="red" role="alert">{queryError}</p>}
-   <p className="hint">شغّل الكويري في SAP، وصدّر النتائج إلى Excel أو TXT، ثم اضغط «إرفاق وحفظ في قاعدة البيانات». يحفظ النظام الملف الأصلي ويجهّز النسخ المقروءة للشاشات القديمة دون حذفها.</p>
+   <p className="hint">شغّل الكويري في SAP، وصدّر النتائج إلى Excel أو TXT، ثم اضغط «رفع الملف الموحد». يحفظ النظام الملف الأصلي ويجهّز النسخ المقروءة للشاشات القديمة دون حذفها.</p>
   </div>}<p className="hint">التاريخ مطلوب لكشوف الرصيد فقط: الختامي بنهاية اليوم، والافتتاحي قبل أول حركة في اليوم. تاريخ الرفع مستقل ولا يُستخدم بدل تاريخ الرصيد. التصنيف يعتمد الأعمدة الفعلية.</p>
   <details><summary>لصق كشف SAP بدل إرفاق ملف</summary><SapPaste disabled={busy} onFile={file=>{void upload({currentTarget:{files:[file],value:''}} as unknown as ChangeEvent<HTMLInputElement>);}}/></details>
   </section>
