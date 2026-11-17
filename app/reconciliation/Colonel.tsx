@@ -10,13 +10,14 @@ import type {CancellationDecision} from '../lib/lieutenant-cancellation-decision
 
 type Event={event_type:string;entity_no:string;note:string;created_at:string};
 type ProjectEdit={id:string;branch:string;updated:string};
+type Signoff={day:string;fingerprint:string;source_key:string;signed_at:string};
 type Control={days:ColonelDayState[];assignments:ColonelAssignment[];
- decisions:CancellationDecision[];events:Event[];recentProjectEdits:ProjectEdit[]};
+ decisions:CancellationDecision[];events:Event[];recentProjectEdits:ProjectEdit[];signoffs:Signoff[]};
 const currentMonth=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit'})
  .format(new Date()).slice(0,7);
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'})
  .format(new Date());
-const empty:Control={days:[],assignments:[],decisions:[],events:[],recentProjectEdits:[]};
+const empty:Control={days:[],assignments:[],decisions:[],events:[],recentProjectEdits:[],signoffs:[]};
 const stateLabels:Record<string,string>={
  normal:'ترحيل وارد',reversed:'عكسي مطابق',reverse:'حركة عكسية',
  'sap-canceled':'ملغى رسميًا في SAP','sap-cancel-doc':'مستند إلغاء SAP',
@@ -68,6 +69,8 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
  const [sap,setSap]=useState<LieutenantTransfer[]>([]);
  const [control,setControl]=useState<Control>(empty);
  const [sourceName,setSourceName]=useState('');
+ const [sourceKey,setSourceKey]=useState('');
+ const [fingerprint,setFingerprint]=useState('');
  const [sourceIssues,setSourceIssues]=useState<string[]>([]);
  const [loaded,setLoaded]=useState(false);
  const [busy,setBusy]=useState(false);
@@ -86,7 +89,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
    const source=await restoreLieutenantSource(files,branches,readSapArchive,readSavedSapImport);
    setRecords(project);setControl(admin);setSap(source?.scan.transfers||[]);
    setSourceIssues(source?.scan.issues||[]);
-   setSourceName(source?.name||'');
+   setSourceName(source?.name||'');setSourceKey(source?.key||'');
    setLoaded(true);
   }catch(cause){
    setError(cause instanceof Error?cause.message:'تعذّر تحميل بيانات العقيد.');
@@ -98,12 +101,32 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
   !!sourceName&&!sourceIssues.length,
  ):null,[month,records,sap,control,loaded,sourceName,sourceIssues.length]);
  const current=report?.days.find(day=>day.day===selectedDay)||report?.days[0];
- const missingPaper=current?.invoices.filter(inv=>!inv.complete||!inv.number||inv.number==='بدون رقم')||[];
+ const missingPaper=current?.invoices.filter(inv=>!inv.complete||!/^\d{8,20}$/.test(inv.number))||[];
+
+ // A signoff is valid only while its invoice/transfer snapshot and SAP source
+ // exactly match what was displayed when the operator approved the day.
+ const auditSnapshot=useMemo(()=>JSON.stringify({
+  sourceKey,issues:sourceIssues,day:current?.day||'',
+  invoices:current?.invoices.map(i=>[i.number,i.date,i.amount,i.branch,i.complete,i.recordId,i.dateSource,i.transfers])||[],
+  transfers:current?.transfers.map(t=>[t.number,t.state,t.postingDate,t.invoiceDay,t.needsAction,t.counterparts,t.note])||[],
+  globalOpen:report?.unassigned.filter(t=>t.needsAction).map(t=>[t.number,t.state,t.note])||[],
+ }),[current,report,sourceKey,sourceIssues]);
+ useEffect(()=>{
+  let active=true;setFingerprint('');
+  void crypto.subtle.digest('SHA-256',new TextEncoder().encode(auditSnapshot)).then(bytes=>{
+   if(active)setFingerprint(Array.from(new Uint8Array(bytes),value=>value.toString(16).padStart(2,'0')).join(''));
+  }).catch(()=>{if(active)setFingerprint('')});
+  return ()=>{active=false};
+ },[auditSnapshot]);
+ const signoff=control.signoffs.find(s=>s.day===current?.day);
+ const signoffCurrent=!!current?.ready&&!!fingerprint&&signoff?.fingerprint===fingerprint&&
+  signoff?.source_key===sourceKey;
  const unmatched=report?.unassigned.filter(t=>t.needsAction)||[];
  const activities=useMemo(()=>{
   const actions=control.events.map(e=>({when:e.created_at,title:
    e.event_type==='complete-day'?'اعتماد إدخال فواتير اليوم':
    e.event_type==='reopen-day'?'إعادة فتح اليوم':
+   e.event_type==='signoff-day'?'اعتماد اليوم جاهز بعد مراجعة SAP':
    e.event_type==='assign-transfer'?'تحديد تاريخ فاتورة للترحيل':'إلغاء ربط يوم الترحيل',
    description:e.entity_no+' — '+e.note}));
   const edits=control.recentProjectEdits.map(e=>({when:e.updated,title:'آخر حفظ لمجموعة فواتير في المشروع',
@@ -179,6 +202,12 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
        onClick={()=>void action({action:'complete-day',day:current.day})}>
        <CheckCircle2 size={17}/> فواتير {current.day} مكتملة</button>}
      <span className="hint">هذا تأكيد إدخال الورق، وليس إلغاء SAP أو إغلاق المخزون.</span>
+     {current.ready&&!signoffCurrent&&<button className="button primary"
+       disabled={busy||!fingerprint||!sourceKey}
+       onClick={()=>void action({action:'signoff-day',day:current.day,fingerprint,sourceKey})}>
+       <CalendarCheck size={17}/> اعتماد يوم {current.day} جاهز</button>}
+     {signoffCurrent&&<strong style={{color:'var(--theme-success-text)'}}>تم اعتماد اليوم جاهز بعد مراجعة كشف SAP المحفوظ.</strong>}
+     {!!signoff&&!signoffCurrent&&<strong className="amber">تغيّرت حالة اليوم أو مصدر SAP بعد آخر اعتماد؛ يحتاج إعادة تدقيق.</strong>}
     </div>
     {missingPaper.length>0&&<p className="amber">يوجد {missingPaper.length} فاتورة غير مؤكدة أو ناقصة الرقم؛ يجب تصحيحها في سجل المشروع قبل اعتماد اليوم.</p>}
     <label>بحث داخل اليوم <input value={search} onChange={e=>setSearch(e.target.value)}
