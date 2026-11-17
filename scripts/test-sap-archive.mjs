@@ -29,6 +29,12 @@ async function upload(kind,date=''){
 }
 const opening=await upload('opening','2026-11-01'),closing=await upload('balance','2026-11-15');assert.notEqual(opening.key,closing.key);
 const duplicate=await upload('balance','2026-11-15');assert.equal(duplicate.duplicate,true);assert.equal(duplicate.key,closing.key);assert.equal(originals.size,2);
+
+const guardedDb={prepare:()=>({bind:()=>({first:async()=>({total:3,done:1})})})};
+const blocked=await handleInstitution(request('/api/lieutenant-files','DELETE',JSON.stringify({key:closing.key})),{...env,DB:guardedDb});
+assert.equal(blocked.status,409,'An original with 1/3 completed SAP batches must be undeletable');
+assert.equal(originals.size,2,'Protected SAP originals remain in Supabase');
+
 const list=await (await handleInstitution(request('/api/lieutenant-files?page=0'),env)).json();assert.equal(list.files.length,2);assert.deepEqual(list.files.map(x=>[x.kind,x.snapshotDate]),[['opening','2026-11-01'],['balance','2026-11-15']]);
 for(const file of list.files){const opened=await handleInstitution(request('/api/lieutenant-files?key='+encodeURIComponent(file.key)),env);assert.deepEqual(new Uint8Array(await opened.arrayBuffer()),bytes);assert.ok(opened.headers.get('Content-Disposition').includes('filename*='));}
 const invalidDate=await handleInstitution(request('/api/lieutenant-files','POST',bytes,{'X-File-Name':'stock.txt','X-File-Kind':'balance','X-Snapshot-Date':'2026-02-30'}),env);assert.equal(invalidDate.status,400);
@@ -44,6 +50,17 @@ globalThis.fetch=async(path,init)=>String(path).startsWith('https://storage.test
 assert.equal((await listSapFiles()).length,205);
 globalThis.fetch=previousFetch;
 // Cloudflare edge/gateway sometimes responds with HTML or bad JSON for HTTP 503.
+const sapScreen=fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8');
+assert.ok(sapScreen.includes('await verifyArchivedSource(saved.key,bytes)'),
+ 'Original is read back from Supabase before D1 processing');
+assert.ok(sapScreen.indexOf('await verifyArchivedSource(saved.key,bytes)')<sapScreen.indexOf('await processFile(stored,text)'),
+ 'Persist and verify immutable original before starting costly SAP import');
+assert.ok(sapScreen.includes('archiveUnlistedJobs')&&sapScreen.includes('verifyUnlistedOriginal'),
+ 'Expose D1 processing records missing from the Supabase archive listing');
+assert.ok(sapScreen.includes('state.done<state.total'),
+ 'Do not allow UI to delete incomplete originals');
+console.log('PASS: verified source upload order, D1 orphan reconciliation and protected partial-job originals.');
+
 // The UI must show the failing operation, not a raw JSON.parse SyntaxError.
 const {readSapJson}=load('app/lib/sap-files-client.ts');
 const html503=new Response('<!DOCTYPE html><html><title>Service unavailable</title></html>',{
