@@ -37,6 +37,8 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
   const [filter,setFilter]=useState('candidate');
   const [checkedAt,setCheckedAt]=useState('');
   const request=useRef(0);
+  const lastArchiveCheck=useRef(0);
+  const reloadRef=useRef<()=>Promise<void>>(async()=>{});
   const valid=!!from&&!!to&&from<=to&&to<=today();
   const report=useMemo<ReassuranceReport|null>(()=>loaded&&valid?reassure({...loaded,from,to}):null,[loaded,from,to,valid]);
   const query=digits(search).trim().toLowerCase();
@@ -45,6 +47,9 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
       filter==='all'||filter==='action'&&row.state!=='match'||row.state===filter)&&
     digits(row.code+' '+row.name+' '+row.candidates.map(doc=>doc.number).join(' ')).toLowerCase().includes(query))||[];
   const candidateCount=report?.rows.filter(row=>row.candidates.length>0).length||0;
+  const transferLookup=/^\d{4,20}$/.test(query)?query:'';
+  const matchedSettlements=transferLookup?report?.settlements.filter(item=>
+    item.number.includes(transferLookup)||item.counterparts.some(number=>number.includes(transferLookup)))||[]:[];
   const openCandidate=(number:string)=>{
     const source=loaded?.transfers.find(item=>item.transfer.number===number);
     if(source)onOpenTransfer(source.transfer,source.branch);
@@ -53,6 +58,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
   for(const row of report?.rows||[])counts[row.state]++;
 
   async function reload(){
+    lastArchiveCheck.current=Date.now();
     const id=++request.current;
     setLoaded(null);setError('');setBusy(true);
     if(!valid){setBusy(false);return;}
@@ -79,7 +85,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
       const shared=sharedResult.status==='fulfilled'?sharedResult.value:undefined;
       const sourceErrors:string[]=[];
       if(filesResult.status==='rejected')sourceErrors.push('تعذّر تحميل أرشيف كشوف 011. أعد المحاولة أو حدّث الكشوف من الملازم أول.');
-      if(sharedResult.status==='rejected')sourceErrors.push('تعذّر قراءة كشف SAP المشترك في هذه النسخة. راجع إعداد مصدر الكشوف أو حدّثه من الملازم أول.');
+      if(sharedResult.status==='rejected'&&!files.some(file=>file.kind==='transfers'))sourceErrors.push('تعذّر قراءة كشف SAP المشترك الاحتياطي. لا يوجد مصدر محفوظ مؤكد في الملازم أول.');
       if(!Array.isArray(data.records)||!Array.isArray(data.reference)||!Array.isArray(data.openingStock))
         throw Error('خادم الفحص يحتاج آخر تحديث. أعد تحميل الصفحة بعد اكتمال النشر.');
       const cache=new Map<string,Promise<string>>();
@@ -121,7 +127,22 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
     }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر إجراء الفحص.');}
     finally{if(id===request.current)setBusy(false);}
   }
-  useEffect(()=>{void reload();return()=>{request.current++};},[from,to,branches]); // Read-only; refreshes when the screen opens or dates change.
+  reloadRef.current=reload;
+  useEffect(()=>{void reload();return()=>{request.current++};},[from,to,branches]); // Read-only; refreshes on screen opening and date changes.
+  useEffect(()=>{
+    const syncOnReturn=()=>{
+      // Another tab or the lieutenant may have uploaded a newer immutable SAP
+      // source while this tab was inactive. Recheck when the user returns.
+      if(document.visibilityState==='visible'&&Date.now()-lastArchiveCheck.current>30_000)
+        void reloadRef.current();
+    };
+    window.addEventListener('focus',syncOnReturn);
+    document.addEventListener('visibilitychange',syncOnReturn);
+    return ()=>{
+      window.removeEventListener('focus',syncOnReturn);
+      document.removeEventListener('visibilitychange',syncOnReturn);
+    };
+  },[]);
 
   const settled=report?.state==='match';
   const closingUnavailable=!!report&&(!loaded?.closing||loaded.closing.date!==to);
@@ -150,15 +171,24 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
         ['match','مطابقة',CheckCircle2],['transfer','نقص',ArrowDownToLine],['return','زيادة',RotateCcw],['review','تحتاج تحقق',Search],
       ] as const).map(([key,label,Icon])=><button type="button" className={'stat '+(filter===key?'selected':'')} key={key} onClick={()=>setFilter(filter===key?'action':key)} aria-pressed={filter===key}><Icon size={20}/><span>{label}</span><strong>{closingUnavailable&&key!=='review'?'—':counts[key]}</strong></button>)}</div>
       <section className="panel">
-        <p className="hint">كشف الترحيلات: {loaded?.sourceName||'غير متاح'} · آخر حركة ظاهرة: <b dir="ltr">{report.sourceLastDate||'—'}</b> · رصيد 011 بتاريخ <b dir="ltr">{loaded?.closing?.date||'غير متاح'}</b>.</p>
+        <p className="hint">مصدر الترحيلات من أرشيف الملازم أول في Supabase: {loaded?.sourceName||'غير متاح'} · آخر حركة ظاهرة: <b dir="ltr">{report.sourceLastDate||'—'}</b> · رصيد 011 بتاريخ <b dir="ltr">{loaded?.closing?.date||'غير متاح'}</b>. يتم تحديث المصدر عند فتح الشاشة، وعند الرجوع إليها بعد تحديث الملفات، وبزر «طمني الآن».</p>
+        <p className="hint"><b>{report.settlements.length}</b> ترحيل أصلي مسوّى بعكسي كامل أو تصحيح سالب مطابق حسب فحص الملازم أول؛ لا يظهر ضمن اقتراحات الإلغاء. هذا لا يُلغي الحاجة إلى مطابقة الرصيد الفعلي للصنف.</p>
         {loaded?.closing&&loaded.closing.date!==to&&<button type="button" className="button secondary no-print" onClick={()=>{setFrom(loaded.closing!.date.slice(0,8)+'01');setTo(loaded.closing!.date)}}>افحص بتاريخ آخر رصيد محفوظ ({loaded.closing.date})</button>}
         {!!report.issues.length&&<div className="banner error" role="alert"><b>الفحص غير مكتمل</b><ul>{report.issues.map((issue,i)=><li key={i}>{issue}</li>)}</ul><p>المصدر المعتمد للرصيد هو كشف SAP الفعلي بتاريخ الفحص. يُقرأ من الملف الشامل عندما تتوفر أقسام الأرصدة وتواريخها الصحيحة، وإلا يلزم رفع كشف رصيد مؤرّخ. الترحيلات وحدها لا تثبت رصيد 011.</p><a href="/reconciliation?view=sap-files">فتح ملفات SAP للتحقق من كشف الرصيد</a></div>}
         <p className="hint">دليل الكميات: {report.paperGroups} مجموعة من بنود الفواتير الورقية · {report.approvedGroups} مجموعة من ترحيلات SAP المعتمدة سابقًا. الاعتماد المالي مستقل عن دليل الكميات.</p>
         {report.financialPending>0&&<div className="banner info" role="status">هناك {report.financialPending} سجل لم يعتمد ماليًا بعد. نتيجة الكميات لا تُعد اعتمادًا ماليًا، وراجع حالة كل فاتورة قبل إغلاقها.</div>}
         {report.approvedGroups>0&&<p className="hint">استُخدمت كميات {report.approvedGroups} مجموعة من نسخة الترحيلات المحفوظة وقت اعتمادها، مرة واحدة لكل مجموعة. يظهر مصدر الكمية في تفاصيل الصنف.</p>}
         {!!report.pendingRecords.length&&<details className="reassurance-details"><summary>{report.pendingRecords.length} سجل يحتاج استكمالًا أو مراجعة</summary>{report.pendingRecords.map(record=><div key={record.id}><button type="button" className="button secondary" onClick={()=>onOpenRecord(record.id)}>فتح {record.numbers.join('، ')}</button><p>{record.branch} · {record.note}</p></div>)}</details>}
-        <div className="table-controls no-print"><div className="search"><Search size={17}/><input type="search" aria-label="بحث في نتيجة طمني" placeholder="كود الصنف، اسمه أو رقم ترحيل" value={search} onChange={event=>setSearch(event.target.value)}/></div>
+        <div className="table-controls no-print"><div className="search"><Search size={17}/><input type="search" aria-label="بحث في نتيجة طمني" placeholder="كود الصنف، اسمه أو رقم ترحيل (بما فيها المسوّاة)" value={search} onChange={event=>setSearch(event.target.value)}/></div>
           <label>العرض<select value={filter} onChange={event=>setFilter(event.target.value)}><option value="candidate">ترحيلات محددة مرشحة للفحص</option><option value="action">كل الفروقات غير المحسومة</option><option value="all">كل الأصناف</option>{Object.entries(labels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label></div>
+        {matchedSettlements.map(item=><div className="banner info" key={item.number} role="status">
+          <b>الترحيل {item.number} مسوّى لدى الملازم أول، وليس مرشحًا للإلغاء مجددًا.</b>
+          <p>{item.note}</p>
+          <p>المستند المقابل: <b dir="ltr">{item.counterparts.join('، ')||'غير متاح'}</b> · تاريخ الأصل <b dir="ltr">{item.date}</b> · {item.branch||'الفرع غير مثبت'}.</p>
+          <button type="button" className="button secondary" onClick={()=>openCandidate(item.number)}>فتح الترحيل الأصلي</button>
+          {item.counterparts.map(number=><button type="button" className="button secondary" key={number} onClick={()=>openCandidate(number)}>فتح العكسي {number}</button>)}
+          <small>صافي الحركة المسوّاة صفر؛ هذا لا يثبت أن باقي حركات الصنف ورصيد 011 متطابقة.</small>
+        </div>)}
         {visible.length?<div className="table-scroll"><table className="reassurance-table"><thead><tr><th>الصنف</th><th>كميات الفواتير</th><th>الافتتاحي</th><th>المتوقع في 011</th><th>رصيد 011 الفعلي</th><th>الفرق</th><th>المطلوب</th></tr></thead>
           <tbody>{visible.map(row=><tr key={row.code}><td><b dir="ltr">{row.code}</b><div>{row.name}</div><small>حبة</small></td>
             <td dir="ltr">{quantity(row.invoices)}</td><td dir="ltr">{quantity(row.opening)}</td><td dir="ltr">{quantity(row.expected)}</td><td dir="ltr">{quantity(row.actual)}</td>
@@ -192,7 +222,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
                 if(source)onOpenTransfer(source.transfer,source.branch);
               }}>الترحيل {doc.number}</button><span dir="ltr">{doc.date} · {doc.direction} · {quantity(doc.quantity)} {doc.unit}</span><small>{doc.remarks}</small></div>)}</div>:<p>لا توجد حركة لهذا الصنف في فترة كشف الترحيلات.</p>}
               </details>
-            </details></td></tr>)}</tbody></table></div>:<p className="reassurance-empty">{query?'لا توجد ترحيلات مرشحة تطابق البحث.':filter==='candidate'?'لم يثبت ترحيل واحد يفسّر الفروقات كلها بشروط الفحص. افتح «كل الفروقات غير المحسومة» للتدقيق، ولا تُلغِ مستندًا بالتخمين.':filter==='action'&&settled?'كل الأصناف مطابقة ضمن الفترة.':'لا توجد أصناف ضمن هذا العرض.'}</p>}
+            </details></td></tr>)}</tbody></table></div>:<p className="reassurance-empty">{query&&matchedSettlements.length?'الترحيل المطلوب مسوّى حسب الملازم أول ولا يظهر ضمن المرشحين للإلغاء.':query?'لا توجد ترحيلات مرشحة تطابق البحث.':filter==='candidate'?'لم يثبت ترحيل واحد يفسّر الفروقات كلها بشروط الفحص. افتح «كل الفروقات غير المحسومة» للتدقيق، ولا تُلغِ مستندًا بالتخمين.':filter==='action'&&settled?'كل الأصناف مطابقة ضمن الفترة.':'لا توجد أصناف ضمن هذا العرض.'}</p>}
       </section>
     </>}
   </div>;
