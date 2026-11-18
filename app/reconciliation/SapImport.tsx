@@ -44,13 +44,14 @@ function compareWithSaved(groups:SapImportGroup[],records:SavedRecord[]):Preview
 const searchText=(value:string)=>digits(value).trim().toLowerCase().replace(/[أإآٱ]/g,'ا').replace(/[\u064B-\u065F\u0670ـ]/g,'');
 const keyOf=(group:SapImportGroup)=>group.draft.transfers[0].number;
 const isReady=(group:PreviewGroup)=>!group.reversal&&!group.issues.length&&!group.savedIds.length;
-export default function SapImport({branches,records,readRecords,saveDraft,openDraft,openSaved,onPreview}:{
+export default function SapImport({branches,records,readRecords,saveDraft,openDraft,openSaved,onReviewBranch,onPreview}:{
   branches:string[];
   records:SavedRecord[];
   readRecords:()=>Promise<SavedRecord[]>;
   saveDraft:(draft:Draft)=>Promise<string>;
   openDraft:(draft:Draft)=>void;
   openSaved:(id:string)=>void;
+  onReviewBranch:(transferNo:string)=>void;
   onPreview:(groups:SapImportGroup[],records:SavedRecord[])=>void;
 }){
   const [paste,setPaste]=useState('');
@@ -323,7 +324,11 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
               {errors[key]&&<p className="red">{errors[key]}</p>}</td>
             <td>{group.savedIds.map((id,index)=><button key={id} type="button" className="button secondary small"
               disabled={busy} onClick={()=>openSaved(id)}>فتح المحفوظ {index+1}</button>)}
-              {!group.savedIds.length&&<button type="button" className="button secondary small" disabled={busy} onClick={()=>openDraft(group.draft)}>فتح للمراجعة</button>}</td>
+              {!group.savedIds.length&&group.members.length===1&&group.members[0].issues.length>0&&
+                group.members[0].issues.every(issue=>issue.startsWith('تعارض فرع SAP:'))
+                ?<button type="button" className="button secondary small" disabled={busy}
+                  onClick={()=>onReviewBranch(group.members[0].transfer.number)}>تصحيح فرع الترحيل</button>
+                :!group.savedIds.length&&<button type="button" className="button secondary small" disabled={busy} onClick={()=>openDraft(group.draft)}>فتح للمراجعة</button>}</td>
           </tr>;
         })}</tbody>
       </table></div>
