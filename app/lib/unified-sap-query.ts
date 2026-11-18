@@ -137,7 +137,9 @@ export function splitUnifiedSapSource(text:string):UnifiedSapSections{
   const lines=text.replace(/^\uFEFF/,'').replace(/\r/g,'').split('\n').filter(Boolean);
   const header=lines[0].split('\t');
   if(new Set(header).size!==header.length)throw Error('كشف SAP الشامل يحتوي أعمدة مكررة.');
-  const missing=fields.filter(col=>!header.includes(col));
+  // Historical 30-column unified exports remain readable after introducing
+  // the optional second Remarks field. Never discard archived originals.
+  const missing=fields.filter(col=>col!=='BlueInvoiceRemarks'&&!header.includes(col));
   if(missing.length)throw Error('كشف SAP الشامل ناقص أعمدة: '+missing.join('، '));
   const positions=Object.fromEntries(header.map((key,index)=>[key,index]));
   const groups:Record<string,string[][]>={WINDOW:[],TRANSFER:[],OPENING:[],CLOSING:[],OFFICIAL:[],OINM:[]};
