@@ -74,7 +74,21 @@ assert.equal(originalChecks,beforeAccidentalRecheck,'Recheck of a partial job mu
 assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM sap_job_history WHERE key=?').get(key).n,0,
  'Accidental recheck must not create a new job generation');
 assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n,snapshot);
+// A new daily SAP extract may reuse the same original filename while an
+// earlier (different-hash) upload has only 1/18 completed batches.
+const dailyText=text+'\n'+['2619999','2026-11-15','21','السرو','','DAR00005','كريمة',1,'Piece','001','011'].join('\t');
+const dailyKey=archiveKey('transfers',dailyText,'fixture.txt');
+assert.notEqual(dailyKey,key,'daily snapshots have independent immutable SHA-256 keys');
+const dailyJob=await call({action:'start',key:dailyKey,text:dailyText});
+assert.equal(dailyJob.count,868,'new daily document must be visible in the snapshot plan');
+assert.ok(dailyJob.total>0,'new snapshot must have its own pending work');
+assert.equal((await read()).done,1,'old completed batches must remain intact');
+assert.equal((await read()).failed,1,'old failed batches must remain recoverable');
+assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM lieutenant_queue').get().n,snapshot,
+ 'planning new daily snapshots cannot duplicate transfers');
 const sapFilesScreen=fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8');
+assert.doesNotMatch(sapFilesScreen,/if\(otherPartial\)/,
+ 'same-name earlier jobs must not prevent processing daily SAP exports');
 assert.match(sapFilesScreen,/state\.kind!=='unified'&&state\.done===state\.total/,
  'Avoid showing full recheck for huge unified SAP exports');
 const checksBefore=originalChecks;job=await call({action:'start',key,text});assert.equal(job.done,1);assert.equal(originalChecks,checksBefore,'same file never reparses or redownloads source');
