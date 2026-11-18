@@ -42,6 +42,10 @@ jobs:
         run: node scripts/test-sap-source-integrity.mjs
       - name: Blue invoice and SAP transfer lookup regressions
         run: node scripts/test-blue-invoice-lookup.mjs
+      - name: TypeScript validation
+        run: pnpm exec tsc --noEmit
+      - name: Production build
+        run: pnpm run build
       - name: First lieutenant 011 regression tests
         run: |
           node scripts/test-lieutenant-import.mjs
@@ -65,9 +69,5 @@ jobs:
         run: |
           node scripts/test-aqaba.mjs
           node scripts/test-aqaba-price-edit.mjs
-      - name: TypeScript validation
-        run: pnpm exec tsc --noEmit
       - name: Appearance, print and login checks
         run: node scripts/test-theme.mjs
-      - name: Production build
-        run: pnpm run build
