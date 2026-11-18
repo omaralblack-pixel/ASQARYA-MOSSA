@@ -41,4 +41,11 @@ for(const name of scopes){
  const source=fs.readFileSync('app/reconciliation/'+name+'.tsx','utf8');
  assert.match(source,/syncVersion/,'missing sync subscription: '+name);
 }
+const cancellation=fs.readFileSync('app/reconciliation/CancelledTransferReview.tsx','utf8');
+assert.match(cancellation,/syncVersion/);
+assert.match(cancellation,/dirty\.current/);
+assert.match(cancellation,/تغيّر القرار المحفوظ/);
+const monthly=fs.readFileSync('app/reconciliation/page.tsx','utf8');
+assert.match(monthly,/monthlyEditorText\.current!==monthlyLoadedText\.current/,
+ 'remote SAP changes cannot overwrite a manually pasted monthly source');
 console.log('PASS: central authenticated sync stream, version conflict guard, all mounted screens, Saja remains output-only');
