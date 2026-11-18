@@ -223,11 +223,12 @@ function MovementSummary({transfers,from,to}:{transfers:LieutenantTransfer[];fro
   </details>;
 }
 
-export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpenRecord}:{
+export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpenRecord,section='transfers'}:{
   branches:string[];
   reference:Item[];
   onOpenTransfer:(transfer:Transfer,branch:string)=>void;
   onOpenRecord:(id:string)=>void;
+  section?:'transfers'|'day'|'balance'|'opening'|'query'|'cashvan'|'cancellations';
 }){
   const [files,setFiles]=useState<StoredFile[]>([]);
   const [selectedTransfer,setSelectedTransfer]=useState('');
@@ -482,9 +483,10 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
 
   return <div>
     <div className="page-title"><div><p className="eyebrow">رقابة المستودع 011</p>
-      <h1>الملازم أول — مراقبة الترحيلات والفواتير</h1>
+      <h1>{({transfers:'تدقيق الترحيلات',day:'فحص يوم الفواتير الزرقاء',balance:'مطابقة رصيد 011',opening:'الأرصدة الافتتاحية',query:'كويري وأرشيف الرصيد',cashvan:'الكاش فان والترحيلات العكسية',cancellations:'قرارات الإلغاء'} as const)[section]}</h1>
       <p>كل ملفات SAP محفوظة في أرشيف Supabase؛ يرسل الترحيلات غير المسجلة للجندي دون إنشاء فاتورة أو اعتمادها.</p></div>
       <ShieldCheck size={32}/></div>
+    {(section==='transfers'||section==='balance')&&<>
     <section className="panel" aria-label="مراقبة مؤسسة العقبة في المستودع المشترك">
       <div className="section-title"><div><h2>مؤسسة العقبة — المستودع 011 المشترك</h2>
         <p>فواتير العقبة الرسمية وترحيلاتها منفصلة عن عمّان. الفاتورة أو التسليم قد يكون سبب خروج البضاعة، لكن لا يجوز خصم أيهما مرة أخرى فوق حركة OINM الفعلية.</p></div></div>
@@ -492,6 +494,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       <p className="hint">الربط هنا للمراجعة فقط، ولا يغير معادلة رصيد 011 ولا المطابقات السابقة. يجب توثيق خروج العقبة من OINM وتحديد المستند المقابل قبل إغلاق الفرق.</p>
       <a className="button secondary" href="/reconciliation?view=aqaba">فتح مطابقة مؤسسة العقبة</a>
     </section>
+    </>}
     <section className="panel" aria-label="فترة رقابة المستودع 011">
       <div className="section-title"><div><h2>الفترة المطلوبة للمقارنة</h2>
         <p>ابدأ من أول الشهر، واختر نهاية الفترة بنفس تاريخ كشف رصيد SAP. تتحدث الترحيلات والمقارنة حسب هذه الفترة.</p></div></div>
@@ -509,9 +512,14 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         {busy||autoLoading?'جارٍ قراءة أرشيف SAP...':'تحديث كشف SAP المستخدم في الرقابة من أحدث الأرشيف'}
       </button>
     </div>
+    {(section==='cashvan')&&<>
     <CashVanAudit transfers={transfers} sourceName={transferSourceName||files.find(file=>file.key===selectedTransfer)?.name||''}/>
+    </>}
+    {(section==='cancellations')&&<>
     <CancelledTransferReview transfers={transfers} from={from} to={to}
       onOpenTransfer={source=>onOpenTransfer(source.transfer,source.branch)}/>
+    </>}
+    {(section==='day')&&<>
     <section className="panel" aria-label="مطابقة الفواتير الزرقاء حسب تاريخ الفاتورة">
       <div className="section-title"><div>
         <h2>فحص يوم الفواتير الزرقاء — هل ترحّلت الكميات على SAP؟</h2>
@@ -625,6 +633,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         <p className="hint">الفحص للقراءة فقط ويحترم اعتمادك المحفوظ، ولا يعدّل الفواتير أو أرشيف SAP. الفواتير غير المعتمدة تُفحص حسب الأصناف والكميات المتاحة. حركة SAP بتاريخ الترحيل، وليس بتاريخ الفاتورة.</p>
       </>}
     </section>
+    </>}
+    {(section==='opening')&&<>
     <section className="panel" aria-label="الأرصدة الافتتاحية المعتمدة">
       <div className="section-title"><div><h2>الأرصدة الافتتاحية المعتمدة — المستودع 011</h2>
         <p>الرصيد المسجل قبل أول حركة في تاريخ البداية. اعتماد رصيد صنف منفرد يخص ذلك الصنف فقط. لا يُفترض صفر لبقية الأصناف إلا عند توفر كشف افتتاحي كامل ومعتمد لنفس التاريخ.</p></div></div>
@@ -640,6 +650,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         <p className="hint">لم تظهر أرصدة افتتاحية معتمدة من قاعدة البيانات بعد.</p>}
       <p className="hint">الرصيد الافتتاحي وحده لا يثبت مطابقة SAP؛ يجب إضافة جميع حركات الفترة والرصيد الفعلي بنهايتها.</p>
     </section>
+    </>}
+    {(section==='query')&&<>
     <section className="panel sap-stock-query no-print" aria-labelledby="sap-stock-query-title">
       <div className="section-title"><div><h2 id="sap-stock-query-title">كويري SAP — رصيد المستودع 011</h2>
         <p>رصيد نهاية اليوم من جميع حركات المخزون في OINM حتى التاريخ المحدد، بما فيها الحركات السابقة للشهر. تبقى الأصناف ذات الرصيد الصفري في النتيجة.</p>
@@ -661,10 +673,14 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       <p className="sap-stock-query-instructions">انسخ الكويري إلى SAP، شغّله، صدّر النتيجة إلى Excel، ثم ارفعها في «ملفات SAP» تحت نوع الملف: رصيد 011 الفعلي في نهاية الفترة.</p>
       <p className="hint">هذا رصيد فعلي بنهاية اليوم المختار، ويشمل حركات ذلك اليوم. الرصيد الافتتاحي في 01/11 هو الرصيد قبل أول حركة في ذلك اليوم؛ لا ترفع نتيجة هذا الكويري كرصيد افتتاحي.</p>
     </section>
+    </>}
+    {(section==='query')&&<>
     <section className="panel no-print"><a className="button secondary" href="/reconciliation?view=sap-files">فتح ملفات SAP — الرفع والأرشيف والمعالجة</a>
       {error&&<p role="alert" className="banner error">{error}</p>}{message&&<p role="status" className="banner info">{message}</p>}
       {opening&&<p className="hint">كشف افتتاحي محفوظ: {opening.items.length} صنفًا · تاريخ الرصيد: {opening.date||'غير محدد'}</p>}
     </section>
+    </>}
+    {(section==='balance')&&<>
     <section className="panel" aria-label="مقارنة رصيد 011 الفعلي">
       <div className="section-title"><div><h2>رصيد 011 الفعلي — مقارنة الترحيلات والفواتير</h2>
         <p>اختر الفترة من أول الشهر حتى تاريخ الرصيد. تُقارن الترحيلات بالفواتير المشيّكة والمعتمدة، ويظهر رصيد SAP الفعلي لكل صنف بشكل مستقل.</p></div></div>
@@ -807,6 +823,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         </details>
       </>}
     </section>
+    </>}
+    {(section==='transfers')&&<>
     <section className="panel">
       <div className="section-title"><div><h2>تدقيق الفترة المطلوبة</h2>
         <p>الفترة تحدد نتائج التقرير، ولا تحذف أو تخفي أي ترحيل من قاعدة البيانات.</p></div></div>
@@ -869,6 +887,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       {selectedTransfer&&transfers.length>0&&!visible.length&&<p className="hint">لا توجد ترحيلات بهذه الفلاتر.</p>}
       {counts.review>0&&<p className="hint">هناك {counts.review} حركة تحتاج تدقيق العكسي أو الإلغاء أو بيانات المصدر. العكسي المطابق ليس إلغاء SAP؛ لا يُرسل كاش فان للجندي لمجرد عدم وجود فاتورة زرقاء.</p>}
     </section>
+    </>}
     <MovementSummary transfers={transfers} from={from} to={to}/>
   </div>;
 }

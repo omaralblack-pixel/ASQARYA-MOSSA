@@ -1,5 +1,5 @@
 'use client';
-import {useEffect,useMemo,useRef,useState} from 'react';
+import {Fragment,useEffect,useMemo,useRef,useState} from 'react';
 import {readAqabaOfficial,readAqabaBlue,readAqabaTransfers,readAqabaJournal,auditAqabaJournal,compareAqaba,reviewAqabaTransfers,AQABA_CUSTOMER,
  type AqabaLine,type BlueLine,type AqabaTransfer,type AqabaMovement} from '../lib/aqaba';
 import {sapReferences,money,type Item} from '../lib/reconcile';
@@ -22,7 +22,7 @@ async function request(body?:unknown,query=''):Promise<any>{
  if(!res.ok)throw Error(data.error||'تعذّر الاتصال بشاشة العقبة.');
  return data;
 }
-export default function AqabaWorkspace({catalog,onEditPrice}:{catalog:Item[];onEditPrice:(sapCode:string,name:string)=>void}){
+export default function AqabaWorkspace({catalog,onEditPrice,section='invoices'}:{catalog:Item[];onEditPrice:(sapCode:string,name:string)=>void;section?:'invoices'|'prices'|'stock'|'documents'|'queries'}){
  const [from,F]=useState(initial.from),[to,T]=useState(initial.to);
  const loadRevision=useRef(0);
  const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState(''),[journalPaste,JP]=useState('');
@@ -168,12 +168,13 @@ export default function AqabaWorkspace({catalog,onEditPrice}:{catalog:Item[];onE
  const matched=partial?0:results.filter(x=>!x.differences.length&&!x.issues.length).length;
  return <div dir="rtl" className="aqaba-workspace">
   <div className="page-title"><div><p className="eyebrow">الزبون {AQABA_CUSTOMER} · المستودع 011</p>
-   <h1>مؤسسة العقبة — الفواتير والمطابقة</h1><p>من 01/11/2026؛ فصل كامل عن بيانات مؤسسة عمّان. لا يُعتبر أي مستند سببًا لخصم المخزون ما لم تثبته حركات SAP.</p></div>
+   <h1>{({invoices:'مؤسسة العقبة — الفواتير والمطابقة',prices:'مرجع أسعار العقبة',stock:'حركات مخزون العقبة',documents:'المستندات الرسمية للعقبة',queries:'كويريات SAP للعقبة'} as const)[section]}</h1><p>من 01/11/2026؛ فصل كامل عن بيانات مؤسسة عمّان. لا يُعتبر أي مستند سببًا لخصم المخزون ما لم تثبته حركات SAP.</p></div>
    <button type="button" className="button secondary" onClick={()=>{E('');void load().then(()=>M('تم تحديث سجل العقبة.')).catch(e=>E(e.message))}}><RefreshCw size={16}/>تحديث السجل</button>
   </div>
   {error&&<div className="banner error" role="alert">{error}</div>}
   {partial&&<div className="banner error" role="alert">عدد سطور SAP يتجاوز حد العرض في هذه الفترة. النتائج جزئية؛ ضيّق الفترة ولا تعتمد المطابقة قبل تحميل جميع المستندات.</div>}
   {message&&<div className="banner info" role="status">{message}</div>}
+   {section==='queries'&&<>
   <section className="panel">
    <div className="section-title"><FileText size={20}/><div><h2>كويريات SAP للعقبة</h2>
     <p>غيّر الفترة ثم انسخ كويري الفواتير أو الترحيلات. كليهما يظهر الإلغاءات ولا يستبعدها.</p></div></div>
@@ -186,8 +187,10 @@ export default function AqabaWorkspace({catalog,onEditPrice}:{catalog:Item[];onE
    </div>
    <p className="hint">كويري الفواتير يشمل IN وCN وDN وRE بحالات N وY وC، وكويري الترحيلات يشمل كل دخول وخروج من 011. لا تحذف المستند الملغي؛ نحتاجه لتفسير المقابل. الترحيل لا يُصنّف للعقبة إلا إذا ثبت من Remarks أو من الربط اليدوي.</p>
   </section>
+   </>}
 
 
+   {section==='invoices'&&<>
   <section className="panel">
    <div className="section-title"><FileText size={20}/><div><h2>لصق الفواتير الزرقاء وأسعار العقبة</h2>
     <p>ألصق بنود الزرقاء بالأعمدة المطلوبة؛ سعر العقبة يُحفظ مع الفاتورة والتاريخ ولا يغير أسعار مؤسسة عمّان.</p></div></div>
@@ -200,6 +203,8 @@ export default function AqabaWorkspace({catalog,onEditPrice}:{catalog:Item[];onE
     <button type="button" className="button primary" disabled={working||!blue?.items.length} onClick={()=>save('blue')}><Save size={16}/>حفظ الزرقاء وأسعارها</button></div>
    {!!blue?.issues.length&&<details><summary>ملاحظات قراءة الزرقاء</summary>{blue.issues.slice(0,80).map((e,i)=><p key={i} className="red">{e}</p>)}</details>}
   </section>
+   </>}
+   {section==='prices'&&<>
   <section className="panel" aria-label="مرجع أسعار العقبة">
    <div className="section-title"><FileText size={20}/><div>
      <h2>مرجع أسعار العقبة — السعر المعتمد للمطابقة</h2>
@@ -224,6 +229,8 @@ export default function AqabaWorkspace({catalog,onEditPrice}:{catalog:Item[];onE
    </table></div>}
 
   </section>
+   </>}
+   {section==='invoices'&&<>
   <section className="panel">
    <div className="section-title"><CheckCircle2 size={20}/><div><h2>مراجعة الربط والمطابقة الجزئية</h2>
     <p>نتيجة الزرقاء ↔ الفواتير الرسمية فقط؛ الترحيلات وOINM لا تزال تحتاج فحصًا مستقلًا. اختلاف الوحدة يظل فرقًا حتى تثبت الشدّة.</p></div></div>
@@ -235,6 +242,8 @@ export default function AqabaWorkspace({catalog,onEditPrice}:{catalog:Item[];onE
     <tbody>{results.map(x=><tr key={x.invoice}><td>{x.invoice}</td><td>{x.officialNumbers.join('، ')||'غير مربوط'}</td><td>{x.transferNumbers.join('، ')||'غير مربوط'}</td><td>{x.status}</td><td>{x.issues.map((v,i)=><p key={i} className="red">{v}</p>)}{x.differences.map(d=><p key={d.key}>{d.key}: الزرقاء {d.blue} / الرسمية {d.official} / الفرق {d.difference}</p>)}</td></tr>)}</tbody>
    </table></div>}
   </section>
+   </>}
+   {section==='invoices'&&<>
   <section className="panel">
    <div className="section-title"><AlertTriangle size={20}/><div><h2>مطابقة مجموعات الترحيل والزرقاء</h2>
     <p>إذا أكثر من فاتورة زرقاء مرتبطة بنفس الترحيل، تُجمع فواتير المجموعة قبل التدقيق. كل فرق بالوحدة يبقى ظاهرًا، ولا نعتمد حركة المخزون دون OINM.</p></div></div>
@@ -244,6 +253,8 @@ export default function AqabaWorkspace({catalog,onEditPrice}:{catalog:Item[];onE
       <td>{t.issues.map((issue,j)=><p key={j} className="red">{issue}</p>)}{t.differences.map(d=><p key={d.key}>{d.key}: الزرقاء {d.blue} / الترحيل {d.transferred} / الفرق {d.difference}</p>)}</td></tr>)}</tbody>
     </table></div>}
   </section>
+   </>}
+   {section==='stock'&&<>
   <section className="panel">
    <div className="section-title"><AlertTriangle size={20}/><div><h2>حركات المخزون الفعلية من OINM</h2>
     <p>ارفع كشف OINM للمستودع 011 في «ملفات SAP»، بما فيه حركات عمّان والأصناف غير المصنفة. لا نخصم AR Invoice فوق OINM مرة أخرى.</p></div></div>
@@ -261,20 +272,23 @@ export default function AqabaWorkspace({catalog,onEditPrice}:{catalog:Item[];onE
    </table></div>}
    {journalAudit.issues.map((issue,i)=><p className="amber" key={i}>{issue}</p>)}
   </section>
+   </>}
+   {section==='documents'&&<>
   <section className="panel">
    <div className="section-title"><AlertTriangle size={20}/><div><h2>سجل جميع المستندات الرسمية</h2>
     <p>حالات الإلغاء Y وC لا تُخفى. رقم المستند المرجعي معروض، لكن الربط لم يُثبت تلقائيًا دون بيانات SAP المقابلة.</p></div></div>
    <input type="search" placeholder="ابحث برقم المستند أو كود الصنف" aria-label="بحث مستندات العقبة" value={search} onChange={e=>Q(e.target.value)}/>
    <div style={{overflowX:'auto'}}><table><thead><tr><th>المستند</th><th>تاريخ</th><th>حالة SAP</th><th>بنود</th><th>المبلغ قبل/بعد الضريبة</th><th>مرجع</th></tr></thead>
-    <tbody>{invoices.slice(0,120).map(x=><>
+    <tbody>{invoices.slice(0,120).map(x=><Fragment key={x.key}>
      <tr key={x.key} onClick={()=>EXP(expanded===x.key?'':x.key)} style={{cursor:'pointer'}}>
       <td>{x.first.kind} {x.first.document}</td><td>{x.first.date}</td><td>{x.first.canceled}</td>
       <td>{x.lines.length}</td><td>{x.amount.toFixed(3)}</td>
       <td>{[...new Set(x.lines.map(l=>l.baseRef).filter(Boolean))].join('، ')||'غير مثبت'}</td>
      </tr>{expanded===x.key&&<tr key={x.key+'-detail'}><td colSpan={6}><div>{x.lines.map(line=><p key={line.key} dir="auto">{line.item} · {line.description} · {line.quantity} {line.unit||'وحدة غير مذكورة'} × {line.unitPrice.toFixed(3)} — مستند مرجعي {line.baseRef||'غير مثبت'}</p>)}</div></td></tr>}
-    </>)}</tbody></table></div>
+    </Fragment>)}</tbody></table></div>
    {invoices.length>120&&<p className="hint">يعرض أول 120 مستندًا؛ استخدم البحث للوصول للبقية.</p>}
   </section>
+   </>}
   <p className="hint">تدقيق المخزون الفعلي يستمر من الملازم أول مع كشف OINM. الشاشة لا تعتبر أي خصم افتراضيًا ولا تمنح اعتمادًا نهائيًا بلا ترحيلات مثبتة.</p>
  </div>;
 }
