@@ -68,7 +68,8 @@ async function readColonelControls(from:string,to:string):Promise<ReassuranceCou
     '/api/colonel?month='+encodeURIComponent(month))));
 }
 
-export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavigate}:{branches:string[];
+export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavigate,syncVersion=0,syncScope='all'}:{branches:string[];
+  syncVersion?:number;syncScope?:string;
   onOpenRecord:(id:string)=>void;onOpenTransfer:(transfer:Transfer,branch:string)=>void;
   onNavigate:(view:'serial-soldier'|'lieutenant'|'colonel')=>void}){
   const [from,setFrom]=useState(()=>today().slice(0,8)+'01');
@@ -81,6 +82,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
   const [checkedAt,setCheckedAt]=useState('');
   const request=useRef(0);
   const lastArchiveCheck=useRef(0);
+  const lastSync=useRef(syncVersion);
   const reloadRef=useRef<()=>Promise<void>>(async()=>{});
   const valid=!!from&&!!to&&from<=to&&to<=today();
   const report=useMemo<ReassuranceReport|null>(()=>loaded&&valid?reassure({...loaded,from,to}):null,[loaded,from,to,valid]);
@@ -185,6 +187,11 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
     finally{if(id===request.current)setBusy(false);}
   }
   reloadRef.current=reload;
+  useEffect(()=>{
+    if(lastSync.current===syncVersion)return;
+    lastSync.current=syncVersion;
+    if(['reconcile','colonel','sap','all'].includes(syncScope))void reloadRef.current();
+  },[syncVersion,syncScope]);
   useEffect(()=>{void reload();return()=>{request.current++};},[from,to,branches]); // Read-only; refreshes on screen opening and date changes.
   useEffect(()=>{
     const syncOnReturn=()=>{
