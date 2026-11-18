@@ -21,7 +21,7 @@ globalThis.fetch=async(input,init={})=>{
  const key=decodeURIComponent(url.pathname.split('/institution-sap/')[1]||'');
  if(method==='POST'){
   // Supabase rejects Unicode in object storage key with HTTP 400 InvalidKey.
-  if(/[^\\x20-\\x7e]/.test(key))return Response.json({code:'InvalidKey',error:'InvalidKey',message:'Invalid storage key'},{status:400});
+  if([...key].some(ch=>ch.charCodeAt(0)>127))return Response.json({code:'InvalidKey',error:'InvalidKey',message:'Invalid storage key'},{status:400});
   if(originals.has(key))return Response.json({error:'already exists'},{status:409});
   originals.set(key,String(init.body));return Response.json({ok:true});
  }
@@ -34,8 +34,8 @@ async function upload(kind,date='',name='رصيد SAP.txt'){
 }
 const opening=await upload('opening','2026-11-01'),closing=await upload('balance','2026-11-15');
 assert.notEqual(opening.key,closing.key);
-assert.match(opening.key,/saputf8-[A-Za-z0-9.\\-]+$/);
-assert.match(opening.key,/^[\\x20-\\x7e]+$/,'Supabase path contains ASCII only');
+assert.match(opening.key,/saputf8-[A-Za-z0-9.-]+$/);
+assert.ok([...opening.key].every(ch=>ch.charCodeAt(0)<128),'Supabase path contains ASCII only');
 const duplicate=await upload('balance','2026-11-15');assert.equal(duplicate.duplicate,true);assert.equal(duplicate.key,closing.key);assert.equal(originals.size,2);
 
 const guardedDb={prepare:()=>({bind:()=>({first:async()=>({total:3,done:1})})})};
@@ -72,7 +72,7 @@ assert.deepEqual(new Uint8Array(await restoredUnified.arrayBuffer()),bytes);
 // Exact user regression: Arabic name previously returned HTTP 502 for a
 // Supabase Storage 400 InvalidKey; preserve bytes, display name and idempotence.
 const arabic=await upload('unified','','كويري 18.txt');
-assert.match(arabic.key,/^[\\x20-\\x7e]+$/);
+assert.ok([...arabic.key].every(ch=>ch.charCodeAt(0)<128));
 assert.ok(!arabic.key.includes('كويري'));
 const again=await upload('unified','','كويري 18.txt');
 assert.equal(again.key,arabic.key);
