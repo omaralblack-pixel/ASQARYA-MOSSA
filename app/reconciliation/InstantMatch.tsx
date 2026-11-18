@@ -82,6 +82,17 @@ function matchingDocuments(rows:Summary[], groups:SapImportGroup[], query:string
     b.number.localeCompare(a.number,'en',{numeric:true}));
 }
 
+// Missing SAP metadata is not proof that a document was canceled. Explain
+// the exact affected transfer and keep automatic approval blocked.
+function sapMemberReviewReasons(member:SapImportGroup['members'][number]):string[]{
+  const number=member.transfer.number;
+  return [
+    ...(member.reversal?['إلغاء أو تصحيح/كمية سالبة؛ يلزم التحقق من حالة المستند في SAP']:[]),
+    ...(member.reverseMovement?['حركة عكسية صادرة من المستودع 011']:[]),
+    ...member.issues
+  ].map(reason=>'الترحيل '+number+': '+reason);
+}
+
 function fromSap(group:SapImportGroup, number:string, kind:SearchKind):Draft {
   const imported = group.draft;
   const originals = imported.invoices.filter(item=>invoiceDocumentNo(item.number));
@@ -274,8 +285,14 @@ export default function InstantMatch({
         }
       }
       if (candidate) {
-        if (candidate.issues.length || candidate.reversal || candidate.members.some(member=>member.reversal || member.issues.length)) {
-          throw Error('أحد ترحيلات هذا المستند ملغى أو فيه مشكلة قراءة من SAP. افتح المطابقة الأساسية لمراجعته قبل اعتماد أي مبلغ.');
+        const reviewReasons=[...new Set([
+          ...candidate.members.flatMap(sapMemberReviewReasons),
+          ...candidate.issues
+        ])];
+        if (reviewReasons.length) {
+          throw Error('لا يمكن اعتماد المستند تلقائيًا: '+reviewReasons.slice(0,4).join('؛ ')+
+            (reviewReasons.length>4?'؛ توجد ملاحظات أخرى.':'.')+
+            ' افتح المطابقة الأساسية للمراجعة. خطأ القراءة لا يعني أن الترحيل ملغى.');
         }
         const proposed = fillSearchedAmount(fromSap(candidate,searched,searchKind),searched,searchKind);
         const occupied = proposed.transfers.flatMap(item=>rows
@@ -364,8 +381,9 @@ export default function InstantMatch({
         member=linked?.members.find(item=>item.transfer.number===searched);
         if(linked?.issues.length)throw Error(linked.issues.join(' · '));
       }
-      if (member && (member.reversal || member.issues.length)) {
-        throw Error('الترحيل '+searched+' ملغى أو فيه ملاحظات قراءة من SAP. راجعه في شاشة المطابقة الأساسية قبل إضافته.');
+      if (member && (member.reversal || member.reverseMovement || member.issues.length)) {
+        throw Error(sapMemberReviewReasons(member).join('؛ ')+
+          '. راجع الترحيل في المطابقة الأساسية قبل إضافته؛ نقص البيانات ليس إثباتًا للإلغاء.');
       }
       if (draft.transfers.length>0 && member?.invoices.length && !matchesInvoiceNumbers(draft.invoices,member.invoices)) {
         throw Error('فواتير الترحيل '+searched+' في SAP ('+member.invoices.join('، ')+') لا تطابق فواتير الكشف المفتوح.');
