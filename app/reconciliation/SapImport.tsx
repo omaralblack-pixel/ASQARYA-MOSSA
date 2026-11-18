@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import {Search} from 'lucide-react';
 import {digits,invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
@@ -62,7 +62,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
   const [selected,setSelected]=useState<string[]>([]);
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState('');
-  const [notification,setNotification]=useState<{text:string;error:boolean}|null>(null);
+  const importPanelRef=useRef<HTMLDetailsElement>(null);
   const [errors,setErrors]=useState<Record<string,string>>({});
   const [filter,setFilter]=useState('pending');
   const [query,setQuery]=useState('');
@@ -111,9 +111,11 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
     return ()=>{active=false};
   },[branches]);
 
-  useEffect(()=>{if(fileError)setNotification({text:fileError,error:true})},[fileError]);
-  useEffect(()=>{if(issues.length)setNotification({text:issues.join(' · '),error:true})},[issues]);
-  useEffect(()=>{if(message)setNotification({text:message,error:message.startsWith('تعذّر')})},[message]);
+  // A saved SAP TXT can be a balance or a different report type.
+  // Parser diagnostics must not block navigation to unrelated screens.
+  useEffect(()=>{
+    if(fileError||issues.length)importPanelRef.current?.setAttribute('open','');
+  },[fileError,issues]);
 
   async function preview(text=paste,isActive=()=>true){
     let parsedTransferCount=0;
@@ -231,7 +233,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
     }
   }
 
-  return <><details className="panel sap-import">
+  return <details ref={importPanelRef} className="panel sap-import">
     <summary>استيراد ترحيلات SAP دفعة واحدة</summary>
     <p className="hint">تُقرأ نتيجة كويري المؤسسة من الكشف المحفوظ في ملفات SAP. المعاينة تجمع البنود حسب الترحيل وتقرأ أرقام الفواتير من Remarks.</p>
     <p><a className="button secondary" href="/reconciliation?view=sap-files">ملفات SAP — رفع وإدارة الكشوف المشتركة</a></p>
@@ -259,6 +261,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
       {paperError&&<p className="red" role="alert">{paperError}</p>}
     </details>
     {issues.length>0&&<div className="banner error" role="alert">{issues.join(' · ')}</div>}
+    {message&&<p className={message.startsWith('تعذّر')?'red':'hint'} role={message.startsWith('تعذّر')?'alert':'status'}>{message}</p>}
     {groups.length>0&&<>
       <div className="table-controls">
         <div className="search"><Search size={16}/><input type="search" aria-label="بحث في نتائج استيراد SAP" placeholder="ابحث برقم الترحيل أو الفاتورة أو الفرع" value={query} onChange={event=>{setQuery(event.target.value);setSelected([])}}/></div>
@@ -298,7 +301,6 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
       </div>
       {hiddenSelected>0&&<p className="hint">المحدد يشمل {hiddenSelected} كشف خارج النتائج الظاهرة.</p>}
       <p className="hint">الترحيل بلا رقم فاتورة يُحفظ لوحده. بعد ما توصلك الفاتورة الزرقاء، افتح الترحيل وسجّل رقمها. لإضافة ترحيل أو عكسي استخدم «إضافة ترحيل» من الكشف المفتوح.</p>
-      {message&&<p role="status">{message}</p>}
       <div className="table-scroll"><table>
         <thead><tr><th>تحديد</th><th>الترحيلات</th><th>الفرع</th><th>الفواتير الزرقاء</th><th>البنود</th><th>الحالة</th><th>فتح</th></tr></thead>
         <tbody>{shown.map(group=>{
@@ -328,5 +330,5 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
       {!shown.length&&<p className="hint">{search?'الرقم غير ظاهر في Remarks أو سجل الفواتير المرتبطة بالكشف الحالي. إذا موجود على ورقة SAP المطبوعة، استخدم «ربط فاتورة ورقية برقم ترحيل» أدناه.':filter==='pending'?'كل الترحيلات في هذه القائمة محفوظة بالسجل.':'ما في كشوف بهالحالة.'}</p>}
       </>}
     </>}
-  </details>{notification&&<div className="modal-backdrop notification-backdrop"><section className="modal panel notification-dialog" role="alertdialog" aria-modal="true" aria-label={notification.error?'تنبيه':'إشعار'}><h2>{notification.error?'تنبيه':'إشعار'}</h2><p>{notification.text}</p><div className="notification-actions"><button type="button" className="button primary" onClick={()=>setNotification(null)}>حسنًا</button></div></section></div>}</>;
+  </details>;
 }
