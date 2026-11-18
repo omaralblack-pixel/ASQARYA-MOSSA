@@ -34,6 +34,43 @@ function load(file){
 }
 const {searchArchivedSapEvidence,groupSapEvidence}=load('app/lib/sap-document-lookup.ts');
 const branches=['21 — السرو'];
+const {parseSapImport,readSapImportRows}=load('app/lib/sap-import.ts');
+// Instant Match uses the same SAP originals; English column names must never
+// cause false "missing Arabic columns" errors.
+const englishImported=parseSapImport(archives.get(files[0].key),branches);
+assert.deepEqual(englishImported.issues,[]);
+assert.equal(englishImported.groups.length,1);
+assert.equal(englishImported.groups[0].members.length,2);
+assert.deepEqual(englishImported.groups[0].draft.invoices.map(row=>row.number),['2623224070']);
+assert.ok(englishImported.groups[0].members.every(row=>!row.issues.length));
+// The unified 011 query deliberately omits the branch columns. Its transfer
+// remains readable but cannot be silently accepted without verified branch.
+const unifiedHeader=['Document Number','Document Date','Item No.','Item Description',
+ 'Quantity','UoM Code','From Warehouse','To Warehouse','Journal Remarks','CANCELED'].join('\t');
+const unifiedRow=['2616487','2026-11-14','DAR00005','Cream','1','Piece','001','011',
+ 'Blue invoice 2623224070','N'].join('\t');
+const unifiedText=unifiedHeader+'\n'+unifiedRow;
+assert.deepEqual(readSapImportRows(unifiedText).issues,[]);
+const noBranch=parseSapImport(unifiedText,branches);
+assert.equal(noBranch.groups.length,1);
+assert.equal(noBranch.groups[0].members[0].branch,'');
+assert.deepEqual(noBranch.groups[0].members[0].issues,['الفرع غير معروف']);
+assert.equal(noBranch.groups[0].draft.invoices[0].number,'2623224070');
+// Explicit canceled status must always block instant matching, even with
+// positive quantity and no cancellation phrase in Remarks.
+const canceled=parseSapImport(unifiedHeader+'\n'+unifiedRow.replace(/\tN$/,'\tY'),branches);
+assert.equal(canceled.groups[0].members[0].reversal,true);
+assert.deepEqual(canceled.groups[0].members[0].invoices,[]);
+assert.equal(canceled.groups[0].reversal,true);
+// Both Remarks columns contribute evidence; repeated export headers are data
+// separators, never invalid transfer numbers.
+const journalHeader=header+'\tJournal Remarks\tCANCELED';
+const journalRow=row('2616488','2623224070').replace('Blue invoice 2623224070','Branch reference')+
+ '\tBlue invoice 2623224070\tN';
+const journal=parseSapImport([journalHeader,journalRow,journalHeader,journalRow.replace('2616488','2616489')].join('\n'),branches);
+assert.equal(journal.issues.length,0);
+assert.equal(journal.groups[0].members.length,2);
+assert.deepEqual(journal.groups[0].draft.invoices.map(row=>row.number),['2623224070']);
 const report=await searchArchivedSapEvidence('2623224070','invoice',branches);
 assert.equal(report.unreadable,0);
 assert.deepEqual(report.hits.map(row=>row.transfer.number).sort(),['2616485','2616486']);
