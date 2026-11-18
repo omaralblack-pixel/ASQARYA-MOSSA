@@ -425,7 +425,7 @@ async function approveBranchMismatch(){
  setSearchTransferError('');
  setSearchTransferBusy(true);
  setBranchExceptionSaving(true);
- const verified=(rows:BranchException[])=
+ const verified=(rows:BranchException[])=>
    unmatchedBranchSources(rows,transferNo,targetBranch,sourceBranches).length===0;
  const savedMessage='تم التأكد من حفظ استثناء الفرع للترحيل '+transferNo+
    ' في سجل القرارات. اضغط «بحث وإضافة» لإكمال الربط، ثم احفظ الكشف.';
