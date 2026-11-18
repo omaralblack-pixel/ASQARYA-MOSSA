@@ -34,7 +34,7 @@ function load(file){
 }
 const {searchArchivedSapEvidence,groupSapEvidence}=load('app/lib/sap-document-lookup.ts');
 const branches=['21 — السرو'];
-const {parseSapImport,readSapImportRows}=load('app/lib/sap-import.ts');
+const {parseSapImport,readSapImportRows,sapBranchFromRemarks}=load('app/lib/sap-import.ts');
 // Instant Match uses the same SAP originals; English column names must never
 // cause false "missing Arabic columns" errors.
 const englishImported=parseSapImport(archives.get(files[0].key),branches);
@@ -71,6 +71,35 @@ const journal=parseSapImport([journalHeader,journalRow,journalHeader,journalRow.
 assert.equal(journal.issues.length,0);
 assert.equal(journal.groups[0].members.length,2);
 assert.deepEqual(journal.groups[0].draft.invoices.map(row=>row.number),['2623224070']);
+// Regression from SAP Inventory Transfer 2616675 (16 Nov 2026):
+// upper Remarks = صويلح, lower Remarks = blue invoice 2623908380.
+const branchList=[...branches,'22 — صويلح'];
+assert.equal(sapBranchFromRemarks('صويلح\n2623908380',branchList),'22 — صويلح');
+assert.equal(sapBranchFromRemarks('صويلح\nالسرو',branchList),'',
+ 'Two branch names are ambiguous: do not assign either automatically');
+const dualRemarksHeader=['Document Number','Document Date','Item No.','Item Description',
+ 'Quantity','UoM Code','From Warehouse','To Warehouse','Remarks','Remarks 2'].join('\t');
+const dualRemarksRow=['2616675','2026-11-16','FVL00012','Vegetables','1','Carton','001','011',
+ 'صويلح','2623908380'].join('\t');
+const screenshot=parseSapImport(dualRemarksHeader+'\n'+dualRemarksRow,branchList);
+assert.equal(screenshot.issues.length,0);
+assert.equal(screenshot.groups.length,1);
+assert.equal(screenshot.groups[0].draft.branch,'22 — صويلح');
+assert.deepEqual(screenshot.groups[0].draft.invoices.map(x=>x.number),['2623908380']);
+assert.equal(screenshot.groups[0].members[0].transfer.number,'2616675');
+const queuedScreenshot=groupSapEvidence([{
+ transfer:screenshot.groups[0].members[0].transfer,branch:'',
+ remarks:'صويلح\n2623908380',invoiceNumbers:['2623908380'],reverse:false,
+ cancellationState:'unknown',sourceFile:'old-file'
+}], '2623908380','invoice',branchList);
+assert.equal(queuedScreenshot?.draft.branch,'22 — صويلح');
+assert.equal(queuedScreenshot?.issues.length,0);
+// If the SAP export lacks its lower Remarks column, the invoice must not be
+// invented from a screenshot or synthesized from the transfer number.
+const missingSecond=parseSapImport(dualRemarksHeader.replace('\tRemarks 2','')+'\n'+
+ dualRemarksRow.replace('\t2623908380',''),branchList);
+assert.equal(missingSecond.groups[0].draft.branch,'22 — صويلح');
+assert.deepEqual(missingSecond.groups[0].members[0].invoices,[]);
 const report=await searchArchivedSapEvidence('2623224070','invoice',branches);
 assert.equal(report.unreadable,0);
 assert.deepEqual(report.hits.map(row=>row.transfer.number).sort(),['2616485','2616486']);
