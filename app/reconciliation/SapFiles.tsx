@@ -5,6 +5,7 @@ import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {classifySapFile,sapKinds,type SapKind,type SapJob} from '../lib/sap-processing';
 import {maxSapFileBytes,readSavedSapImport,saveSapImport} from '../lib/saved-sap-import';
 import {listSapFiles,readSapArchive,readSapJson,sapRequest,type SapArchiveFile} from '../lib/sap-files-client';
+import {fromSapStorageFilename} from '../lib/sap-archive-filename';
 import {parseLieutenantTransfers} from '../lib/lieutenant';
 import {isUnifiedSapSource,splitUnifiedSapSource,unifiedSapQuery} from '../lib/unified-sap-query';
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -149,7 +150,7 @@ export default function SapFiles(){
    // Filename equality is NOT source equality. Do not spawn a new D1 import
    // when a same-name but different-hash source is partially processed.
    const otherPartial=Object.values(jobs).find(row=>
-    row.done<row.total&&row.key!==saved.key&&row.key.split('__').at(-1)===file.name);
+    row.done<row.total&&row.key!==saved.key&&row.fromSapStorageFilename(key.split('__').at(-1)||'')===file.name);
    const sameSource=!!otherPartial&&otherPartial.key.split('__')[1]===saved.key.split('__')[1];
    if(otherPartial){
     const checked:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
@@ -209,7 +210,7 @@ export default function SapFiles(){
   const bytes=await response.arrayBuffer();
   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
   if(hash.slice(0,32)!==match[2])throw Error('بصمة أصل SAP لا تطابق مفتاح سجل D1؛ أوقفت الاستكمال.');
-  const restored:SapArchiveFile={key:source.key,name:match[4],kind:match[1],
+  const restored:SapArchiveFile={key:source.key,name:fromSapStorageFilename(match[4]),kind:match[1],
    snapshotDate:match[3]||'',created:source.updated,size:bytes.byteLength};
   F(prev=>[restored,...prev.filter(file=>file.key!==restored.key)]);
   M('تم التحقق من وجود ملف SAP وسلامة بصمته في Supabase: '+restored.name+'. يمكن فتحه واستكمال دفعاته.');
@@ -272,12 +273,12 @@ export default function SapFiles(){
     <strong>{orphanActive.length} معالجة غير مكتملة بلا أصل ظاهر في Supabase؛ {orphanHistory.length} سجل تاريخي مكتمل أو بلا دفعات</strong>
     <p>الملفات ذات المعالجة غير المكتملة هي أولوية الاسترجاع. سجل D1 ليس إثباتًا أن الأصل محفوظ، ولا نربط الملفات بالاسم وحده.</p>
     {orphanActive.slice(0,20).map(row=><p key={row.key}>
-     <b dir="auto">{row.key.split('__').at(-1)}</b> <small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done} من {row.total} دفعة
+     <b dir="auto">{row.fromSapStorageFilename(key.split('__').at(-1)||'')}</b> <small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done} من {row.total} دفعة
      {' '}<button type="button" className="button secondary small" disabled={busy}
        onClick={()=>void exclusive(()=>verifyUnlistedOriginal(row))}>تحقق من الأصل</button>
     </p>)}
     {orphanHistory.length>0&&<details><summary>{orphanHistory.length} سجلات معالجة تاريخية — للعرض فقط</summary>
-     {orphanHistory.map(row=><p key={row.key}><span dir="auto">{row.key.split('__').at(-1)}</span>
+     {orphanHistory.map(row=><p key={row.key}><span dir="auto">{row.fromSapStorageFilename(key.split('__').at(-1)||'')}</span>
        {' '}<small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done}/{row.total}</p>)}
     </details>}
    </div></div>}
