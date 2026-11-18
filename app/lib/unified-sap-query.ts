@@ -7,7 +7,7 @@ const fields = [
   'LineNumber','ItemCode','ItemName','Unit','Quantity','FromWarehouse',
   'ToWarehouse','Warehouse','InQty','OutQty','StockQuantity','TransNum',
   'TransType','CardCode','CardName','CancellationStatus','Remarks',
-  'JournalRemarks','ExtraSapRemarks','Price','LineTotal','VatSum','BaseType','BaseEntry',
+  'JournalRemarks','ExtraSapRemarks','BranchName','Price','LineTotal','VatSum','BaseType','BaseEntry',
   'BaseLine','BaseRef',
 ] as const;
 type Field = typeof fields[number];
@@ -25,7 +25,10 @@ const select=(values:Expressions,source:string,where:string)=>
 const wh011='\'011\'';
 // Discover the actual field in CUFD first. UI labels are not SQL column names.
 export const sapTransferUdfDiscoveryQuery='SELECT \'U_\' || "AliasID" AS "SAP Column", "Descr" AS "Field Label" FROM "CUFD" WHERE "TableID" = \'OWTR\' ORDER BY "FieldID"';
-export function unifiedSapQuery(from:string,to:string,extraRemarksUdf=''):string{
+// Field names verified against this company's OWTR/CUFD metadata.
+// Comments holds the blue invoice; U_ST_Remarks holds supplemental notes;
+// U_Branch is the dedicated branch field. Keep override for future SAP changes.
+export function unifiedSapQuery(from:string,to:string,extraRemarksUdf='U_ST_Remarks'):string{
   if(!dateOk(from)||!dateOk(to)||from>to)throw Error('تاريخ البداية والنهاية غير صالحين.');
   if(extraRemarksUdf&&!/^U_[A-Za-z][A-Za-z0-9_]{0,49}$/.test(extraRemarksUdf))
     throw Error('اسم حقل الملاحظات السفلي يجب أن يبدأ بـ U_ ويتبعه اسم عمود SAP صحيح.');
@@ -40,6 +43,7 @@ export function unifiedSapQuery(from:string,to:string,extraRemarksUdf=''):string
     ToWarehouse:'L."WhsCode"',CancellationStatus:'H."CANCELED"',
     Remarks:'H."Comments"',JournalRemarks:'H."JrnlMemo"',
     ExtraSapRemarks:extraRemarksUdf?nz('H."'+extraRemarksUdf+'"'):"''",
+    BranchName:nz('H."U_Branch"'),
   },'FROM "OWTR" H INNER JOIN "WTR1" L ON H."DocEntry" = L."DocEntry"',
   'WHERE (L."FromWhsCod" = '+wh011+' OR L."WhsCode" = '+wh011+
   ') AND H."DocDate" BETWEEN '+first+' AND '+last);
@@ -96,7 +100,8 @@ const transferHeaders=[
   ['اسم الصنف','ItemName'],
   ['From Warehouse','FromWarehouse'],['To Warehouse','ToWarehouse'],
   ['Remarks','Remarks'],['Journal Remarks','JournalRemarks'],
-  ['Extra SAP Remarks','ExtraSapRemarks'],['CANCELED','CancellationStatus'],
+  ['Extra SAP Remarks','ExtraSapRemarks'],['Branch Name','BranchName'],
+  ['CANCELED','CancellationStatus'],
 ] as const;
 const stockHeaders=[
   ['رقم الصنف','ItemCode'],['اسم الصنف','ItemName'],
@@ -137,9 +142,10 @@ export function splitUnifiedSapSource(text:string):UnifiedSapSections{
   const lines=text.replace(/^\uFEFF/,'').replace(/\r/g,'').split('\n').filter(Boolean);
   const header=lines[0].split('\t');
   if(new Set(header).size!==header.length)throw Error('كشف SAP الشامل يحتوي أعمدة مكررة.');
-  // Historical 30-column unified exports remain readable after introducing
-  // the optional second Remarks field. Never discard archived originals.
-  const missing=fields.filter(col=>col!=='ExtraSapRemarks'&&!header.includes(col));
+  // Historical unified exports without the optional branch/second Remarks
+  // columns remain readable, but cannot manufacture missing branch evidence.
+  const optional=new Set<Field>(['ExtraSapRemarks','BranchName']);
+  const missing=fields.filter(col=>!optional.has(col)&&!header.includes(col));
   if(missing.length)throw Error('كشف SAP الشامل ناقص أعمدة: '+missing.join('، '));
   const positions=Object.fromEntries(header.map((key,index)=>[key,index]));
   const groups:Record<string,string[][]>={WINDOW:[],TRANSFER:[],OPENING:[],CLOSING:[],OFFICIAL:[],OINM:[]};
