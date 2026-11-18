@@ -31,7 +31,7 @@ export default function SapFiles(){
  const [opened,OPEN]=useState<{file:SapArchiveFile;text:string}|null>(null);
  const [olderSnapshotNotice,OSN]=useState('');
  const [fromDate,FROM]=useState(()=>today().slice(0,8)+'01'),[toDate,TO]=useState(today());
- const [extraRemarksUdf,SET_EXTRA_REMARKS_UDF]=useState('');
+ const [extraRemarksUdf,SET_EXTRA_REMARKS_UDF]=useState('U_ST_Remarks');
  const queryRef=useRef<HTMLTextAreaElement>(null);
  const extraRemarksStorageKey='asqarya-sap-extra-remarks-column';
  useEffect(()=>{
@@ -301,7 +301,7 @@ export default function SapFiles(){
    </div>
    <div className="table-controls">
      <label>اسم عمود Remarks الإضافي من SAP (اختياري)
-       <input type="text" dir="ltr" value={extraRemarksUdf} placeholder="U_YourFieldName" spellCheck={false}
+       <input type="text" dir="ltr" value={extraRemarksUdf} placeholder="U_ST_Remarks" spellCheck={false}
          onChange={e=>changeExtraRemarks(e.target.value)} />
      </label>
      <button type="button" className="button secondary" onClick={()=>void copySapUdfDiscovery()}>
@@ -314,7 +314,7 @@ export default function SapFiles(){
    </details>
    <textarea ref={queryRef} aria-label="كويري SAP الشامل" dir="ltr" readOnly rows={4} value={unifiedSql} />
    {queryError&&<p className="red" role="alert">{queryError}</p>}
-   <p className="hint">شغّل الكويري في SAP، وصدّر النتائج إلى Excel أو TXT، ثم اضغط «رفع الملف الموحد». إذا كان أحد حقلي Remarks مخصصًا ويحتوي اسم الفرع أو رقم الفاتورة، حدّد اسم عموده U_ من SAP ليقرأه الكويري بجانب Comments وJournal Remarks. لا تعتمد على مكان الحقل في الصورة لتحديد عموده، واترك الاسم فارغًا حتى يتأكد من SAP.</p>
+   <p className="hint">تم تأكيد الحقول من SAP: رقم الفاتورة الزرقاء من OWTR.Comments، الملاحظات الإضافية من OWTR.U_ST_Remarks، والفرع من OWTR.U_Branch. الكويري يقرأها كلها تلقائيًا. لا تغيّر اسم U_ST_Remarks إلا إذا تغيّر تعريف الحقل في SAP. تُحفظ النسخ السابقة كما هي.</p>
   </div>}<p className="hint">التاريخ مطلوب لكشوف الرصيد فقط: الختامي بنهاية اليوم، والافتتاحي قبل أول حركة في اليوم. تاريخ الرفع مستقل ولا يُستخدم بدل تاريخ الرصيد. التصنيف يعتمد الأعمدة الفعلية.</p>
   <details><summary>لصق كشف SAP بدل إرفاق ملف</summary><SapPaste disabled={busy} onFile={file=>{void upload({currentTarget:{files:[file],value:''}} as unknown as ChangeEvent<HTMLInputElement>);}}/></details>
   </section>
