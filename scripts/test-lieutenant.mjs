@@ -146,9 +146,11 @@ assert.equal(normalScan.transfers[0].cancellationState,'unknown','No CANCELED co
 
 const stockUrl='data:text/javascript;base64,'+Buffer.from(stockCode).toString('base64');
 const lieutenantUrl='data:text/javascript;base64,'+Buffer.from(lieutenantCode).toString('base64');
+const unifiedUrl='data:text/javascript;base64,'+Buffer.from(compile('app/lib/unified-sap-query.ts')).toString('base64');
 const sourceCode=compile('app/lib/lieutenant-source.ts')
   .replace(/from ['"]\.\/lieutenant-stock['"]/, 'from "'+stockUrl+'"')
-  .replace(/from ['"]\.\/lieutenant['"]/, 'from "'+lieutenantUrl+'"');
+  .replace(/from ['"]\.\/lieutenant['"]/, 'from "'+lieutenantUrl+'"')
+  .replace(/from ['"]\.\/unified-sap-query['"]/, 'from "'+unifiedUrl+'"');
 const {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey}=await import('data:text/javascript;base64,'+Buffer.from(sourceCode).toString('base64'));
 const savedText=en+'\n'+normal;
 
