@@ -90,8 +90,9 @@ assert.ok(sapScreen.includes('await verifyArchivedSource(saved.key,bytes)'),
  'Original is read back from Supabase before D1 processing');
 assert.ok(sapScreen.indexOf('await verifyArchivedSource(saved.key,bytes)')<sapScreen.indexOf('await processFile(stored,text)'),
  'Persist and verify immutable original before starting costly SAP import');
-assert.ok(sapScreen.includes('otherPartial')&&sapScreen.includes('sameSource'),
- 'Do not auto-process another same-name SAP file without checking its fingerprint');
+assert.ok(sapScreen.includes('olderPartial')&&sapScreen.includes('olderSnapshotNotice')&&
+ !sapScreen.includes('if(otherPartial)'),
+ 'A newer daily SAP snapshot must process independently of unfinished older same-name jobs');
 assert.ok(sapScreen.includes('orphanActive')&&sapScreen.includes('orphanHistory'),
  'Incomplete orphan sources must be prioritized over completed historical D1 jobs');
 assert.ok(sapScreen.includes("file.kind==='other'&&opened?.file.key===file.key&&isUnifiedSapSource(opened.text)"),
