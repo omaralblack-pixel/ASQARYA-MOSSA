@@ -447,8 +447,10 @@ async function approveBranchMismatch(){
  setBranchExceptionSaving(true);
  const verified=(rows:BranchException[])=>
    unmatchedBranchSources(rows,transferNo,targetBranch,sourceBranches).length===0;
+ const reviewOnly=!!draft?.transfers.some(row=>transferNumbers(row.number).includes(transferNo));
  const savedMessage='تم التأكد من حفظ استثناء الفرع للترحيل '+transferNo+
-   ' في سجل القرارات. اضغط «بحث وإضافة» لإكمال الربط، ثم احفظ الكشف.';
+   (reviewOnly?' في سجل القرارات. اضغط «التحقق من تصحيح الفرع» ثم احفظ الكشف المفتوح.':
+     ' في سجل القرارات. اضغط «بحث وإضافة» لإكمال الربط، ثم احفظ الكشف.');
  try{
    const response=await apiTimed({action:'approveBranchException',transferNo,targetBranch,sourceBranches,reason},'',16000) as {exceptions?:BranchException[]};
    if(!Array.isArray(response.exceptions)||!verified(response.exceptions))
@@ -483,6 +485,34 @@ function stageTransfer(transfer: Transfer, branch: string, source?: TransferSour
     return {...next,branchExceptions:[...(current.branchExceptions||[]).filter(row=>row.transferNo!==transfer.number),...exceptions]};
   });
   if (source) setTransferSources(current => ({...current, [cardId]: source}));
+}
+async function reviewDraftTransferBranch(){
+  if(!draft||searchTransferBusy)return;
+  const number=digits(searchTransferNumber).trim();
+  if(!draft.transfers.some(row=>transferNumbers(row.number).includes(number))){
+    setSearchTransferError('الترحيل غير موجود داخل هذا الكشف؛ استخدم «بحث وإضافة» أولًا.');
+    return;
+  }
+  setSearchTransferBusy(true);setSearchTransferError('');
+  try{
+    const saved=await lookupSavedTransfer(number);
+    const candidate=await findTransferForAddition(number,saved,draft);
+    if(!candidate)throw Error('الترحيل غير متاح في كشف SAP المحفوظ.');
+    if(candidate.branchExceptions.length){
+      D(current=>current?{...current,branchExceptions:[
+        ...(current.branchExceptions||[]).filter(row=>row.transferNo!==number),
+        ...candidate.branchExceptions,
+      ]}:current);
+      setSearchTransferError('تم التحقق من تصحيح الفرع للترحيل '+number+' في سجل القرارات. احفظ الكشف المفتوح لتثبيت الفرع في بيانات المشروع؛ لا حاجة لرفع ملف SAP من جديد.');
+    }else{
+      setSearchTransferError('لا يوجد استثناء فرع مطلوب لهذا الترحيل. راجع الفرع المختار قبل الحفظ.');
+    }
+    setBranchMismatch(null);
+  }catch(error){
+    if(error instanceof BranchExceptionRequired)setBranchMismatch(error);
+    else setBranchMismatch(null);
+    setSearchTransferError(error instanceof Error?error.message:'تعذّر التحقق من تصحيح الفرع.');
+  }finally{setSearchTransferBusy(false);}
 }
 async function addTransferFromSavedFile() {
   if (!draft || busy || searchTransferBusy) return;
@@ -759,7 +789,13 @@ return <div className="recon-app"><header className="topbar"><a className="brand
  </div>}
  {draft?.branchExceptions?.some(row=>row.targetBranch===draft.branch&&draft.transfers.some(t=>transferNumbers(t.number).includes(row.transferNo)))&&
 <div className="banner info"><b>استثناءات فرع معتمدة:</b> {draft.branchExceptions.filter(row=>row.targetBranch===draft.branch&&draft.transfers.some(t=>transferNumbers(t.number).includes(row.transferNo))).map(row=>row.transferNo+' ('+row.sourceBranch+' ← '+row.targetBranch+'؛ '+row.reason+')').join('، ')}. لم تتغير بيانات SAP الأصلية.</div>}
-<div className="page-title"><div><p className="eyebrow">{draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'مطابقة الفاتورة الزرقاء':draft.id?'ترحيل محفوظ':'ترحيل جديد'}</p><h1>ألصق الترحيلات. ووزّع الأصناف على الفواتير الزرقاء.</h1><p>كشف بأكواد المؤسسة وتسمياتها وأسعارها، جاهز للمطابقة اليدوية.</p></div><button className="button secondary" onClick={()=>{if(draft.transfers.some(t=>t.paste.trim())&&!confirm('فتح ترحيل جديد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;setTransferSources({});D(blank());PAGE('all');Q('');N('');E('')}}><Plus size={16}/>ترحيل جديد</button></div>{draft.id&&!draft.useCurrentReference&&<div className="banner info">تُستخدم الأسعار والشدّات المسجلة وقت الحفظ، وتُستكمل التعريفات الناقصة من المرجع المعتمد.<button className="text-button" onClick={()=>change({useCurrentReference:true})}>إعادة المطابقة بالمرجع الحالي</button></div>}<div className="stats"><div className={'stat status-stat '+result.status}><span>نتيجة المطابقة</span><strong><Badge state={result.status} label={acceptedDifference?'مطابق باعتمادك':undefined}/></strong><small>{result.differences} فروقات أصناف · {result.review} بحاجة مراجعة</small></div><div className="stat"><span>مجموع مبالغ الفواتير</span><strong>{money(result.total)} <small>د.أ</small></strong><small>{draft.invoices.length} فواتير مرتبطة</small></div><div className="stat"><span>{aqabaWork?'قيمة الترحيلات حسب أسعار العقبة':'قيمة الترحيلات حسب أسعار المؤسسة'}</span><strong>{money(result.expected)} <small>د.أ</small></strong><small>{draft.transfers.length} ترحيلات مرتبطة</small></div><div className={'stat '+(result.priceDifference?'warn':'')}><span>فرق القيمة</span><strong dir="ltr">{money(result.priceDifference)} <small>د.أ</small></strong><small>الفواتير − قيمة الترحيلات</small></div></div><SapImport records={sapPreview.records} onPreview={(groups,records)=>setSapPreview({groups,records})} branches={branches} readRecords={async()=>{const data=await api(undefined,'?records=1');return data.records}} saveDraft={async imported=>{const data=await api({action:'save',draft:imported});return data.id}} openSaved={id=>loadRecord({id})} openDraft={imported=>{
+<div className="page-title"><div><p className="eyebrow">{draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'مطابقة الفاتورة الزرقاء':draft.id?'ترحيل محفوظ':'ترحيل جديد'}</p><h1>ألصق الترحيلات. ووزّع الأصناف على الفواتير الزرقاء.</h1><p>كشف بأكواد المؤسسة وتسمياتها وأسعارها، جاهز للمطابقة اليدوية.</p></div><button className="button secondary" onClick={()=>{if(draft.transfers.some(t=>t.paste.trim())&&!confirm('فتح ترحيل جديد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;setTransferSources({});D(blank());PAGE('all');Q('');N('');E('')}}><Plus size={16}/>ترحيل جديد</button></div>{draft.id&&!draft.useCurrentReference&&<div className="banner info">تُستخدم الأسعار والشدّات المسجلة وقت الحفظ، وتُستكمل التعريفات الناقصة من المرجع المعتمد.<button className="text-button" onClick={()=>change({useCurrentReference:true})}>إعادة المطابقة بالمرجع الحالي</button></div>}<div className="stats"><div className={'stat status-stat '+result.status}><span>نتيجة المطابقة</span><strong><Badge state={result.status} label={acceptedDifference?'مطابق باعتمادك':undefined}/></strong><small>{result.differences} فروقات أصناف · {result.review} بحاجة مراجعة</small></div><div className="stat"><span>مجموع مبالغ الفواتير</span><strong>{money(result.total)} <small>د.أ</small></strong><small>{draft.invoices.length} فواتير مرتبطة</small></div><div className="stat"><span>{aqabaWork?'قيمة الترحيلات حسب أسعار العقبة':'قيمة الترحيلات حسب أسعار المؤسسة'}</span><strong>{money(result.expected)} <small>د.أ</small></strong><small>{draft.transfers.length} ترحيلات مرتبطة</small></div><div className={'stat '+(result.priceDifference?'warn':'')}><span>فرق القيمة</span><strong dir="ltr">{money(result.priceDifference)} <small>د.أ</small></strong><small>الفواتير − قيمة الترحيلات</small></div></div><SapImport records={sapPreview.records} onPreview={(groups,records)=>setSapPreview({groups,records})} branches={branches} readRecords={async()=>{const data=await api(undefined,'?records=1');return data.records}} saveDraft={async imported=>{const data=await api({action:'save',draft:imported});return data.id}} openSaved={id=>loadRecord({id})} onReviewBranch={number=>{
+  if((draft.id||draft.transfers.some(transfer=>transfer.paste.trim()))&&!confirm('فتح مراجعة فرع الترحيل؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;
+  setTransferSources({});D(blank());PAGE('all');Q('');E('');
+  setSearchTransferNumber(number);
+  setSearchTransferError('الترحيل موجود في كشف SAP القديم. اختر الفرع الصحيح، ثم سجّل استثناء الفرع مع سبب المراجعة؛ لن تُرفع ملفات SAP مرة ثانية.');
+  setSearchTransferMissing(false);setBranchMismatch(null);setBranchExceptionReason('');setSearchTransferOpen(true);
+}} openDraft={imported=>{
   if((draft.id||draft.transfers.some(transfer=>transfer.paste.trim()))&&!confirm('فتح كشف الاستيراد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;
   setTransferSources({});D(imported);PAGE('all');Q('');E('');
   document.getElementById('reconciliation-group')?.scrollIntoView({block:'start'});
@@ -874,6 +910,9 @@ return <div className="recon-app"><header className="topbar"><a className="brand
       </div>}
       {searchTransferMissing&&<p role="alert">الترحيل غير موجود في السجل أو ملف TXT. يمكنك إدخال بنوده يدويًا.</p>}
       <div className="save-actions">
+        {draft?.transfers.some(row=>transferNumbers(row.number).includes(digits(searchTransferNumber).trim()))&&
+          <button type="button" className="button secondary" disabled={searchTransferBusy}
+            onClick={()=>void reviewDraftTransferBranch()}>التحقق من تصحيح الفرع دون إضافة مكررة</button>}
         <button type="submit" className="button primary" disabled={searchTransferBusy}>
           {searchTransferBusy?(branchExceptionSaving?'جارٍ حفظ الاستثناء…':'جارٍ البحث…'):'بحث وإضافة'}
         </button>
