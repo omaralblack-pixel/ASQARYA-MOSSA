@@ -28,6 +28,7 @@ export default function SapFiles(){
  const [kind,K]=useState<SapKind>('unified'),[date,D]=useState(today()),[busy,B]=useState(false),[loading,L]=useState(true),[error,E]=useState(''),[message,M]=useState('');
  const [query,Q]=useState(''),[filter,FL]=useState('all'),[balanceFrom,BF]=useState(''),[balanceTo,BT]=useState(''),[uploadFrom,UF]=useState(''),[uploadTo,UT]=useState('');
  const [opened,OPEN]=useState<{file:SapArchiveFile;text:string}|null>(null);
+ const [olderSnapshotNotice,OSN]=useState('');
  const [fromDate,FROM]=useState(()=>today().slice(0,8)+'01'),[toDate,TO]=useState(today());
  const queryRef=useRef<HTMLTextAreaElement>(null);
  const lock=useRef(false),mounted=useRef(true);
@@ -58,13 +59,13 @@ export default function SapFiles(){
  }
 
  const remember=(value:SapJob)=>{if(!mounted.current)return;SJ(value);J(old=>({...old,[value.key]:value}));};
- async function refresh(){
+ async function refresh(preferredKey?:string){
   const [archive,processing]=await Promise.allSettled([listSapFiles(),sapRequest<{jobs:SapJob[]}>('/api/sap-processing')]);
   if(!mounted.current)return;
   if(archive.status==='fulfilled')F(archive.value);
   if(processing.status==='fulfilled'){
    J(Object.fromEntries(processing.value.jobs.map(x=>[x.key,x])));
-   const selected=job?.key||processing.value.jobs.find(x=>['pending','running','failed'].includes(x.status))?.key;
+   const selected=preferredKey||job?.key||processing.value.jobs[0]?.key;
    if(selected){const result=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(selected));if(result.job)remember(result.job);}
   }
   const failures=[archive,processing].filter((x):x is PromiseRejectedResult=>x.status==='rejected');
@@ -137,6 +138,7 @@ export default function SapFiles(){
   const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(!file)return;
   await exclusive(async()=>{
    if(!file.size||file.size>maxSapFileBytes)throw Error('اختر ملفًا بحجم من 1 بايت إلى 16 ميغابايت.');
+   OSN('');
    const bytes=await file.arrayBuffer();let text='',detected:SapKind='other',issue='';
    try{text=decodeLieutenantFile(bytes,file.name);detected=classifySapFile(text);}catch(e){issue=e instanceof Error?e.message:'تعذّر قراءة الملف.';}
    const needsDate=detected==='balance'||detected==='opening';
@@ -147,24 +149,13 @@ export default function SapFiles(){
    if(!saved.key)throw Error('لم يؤكد الخادم حفظ الملف الأصلي.');
    // Save, verify and display the archive before any CPU-heavy processing.
    await verifyArchivedSource(saved.key,bytes);
-   // Filename equality is NOT source equality. Do not spawn a new D1 import
-   // when a same-name but different-hash source is partially processed.
-   const otherPartial=Object.values(jobs).find(row=>
+   // Same filename is expected for daily SAP exports. Immutable source hashes,
+   // document receipts and unique transfer numbers prevent duplicate imports.
+   // Keep older incomplete jobs available for recovery without blocking today.
+   const olderPartial=Object.values(jobs).filter(row=>
     row.done<row.total&&row.key!==saved.key&&fromSapStorageFilename(row.key.split('__').at(-1)||'')===file.name);
-   const sameSource=!!otherPartial&&otherPartial.key.split('__')[1]===saved.key.split('__')[1];
-   if(otherPartial){
-    const checked:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
-     created:new Date().toISOString(),size:file.size};
-    F(prev=>[checked,...prev.filter(entry=>entry.key!==checked.key)]);
-    OPEN({file:checked,text});
-    K(detected);
-    E('الملف الحالي محفوظ ومؤكد، لكن يوجد سجل معالجة غير مكتمل لنفس الاسم ('+
-      otherPartial.done+'/'+otherPartial.total+' دفعات). '+
-      (sameSource?'محتواه مطابق لكن نوع الأرشفة/مفتاح الحفظ مختلف. ':
-       'محتواه مختلف حسب بصمة SHA-256. ')+
-      'لن أبدأ معالجة ثانية تلقائيًا؛ تحقق من أصل السجل السابق قبل الاستكمال.');
-    return;
-   }
+   if(olderPartial.length)OSN('تم قبول نسخة SAP الأحدث رغم وجود '+olderPartial.length+
+    ' معالجة سابقة غير مكتملة بالاسم نفسه. النسخ القديمة محفوظة ويمكن استكمالها من الأرشيف، ولن تُعاد الدفعات المكتملة.');
    const stored:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
     created:new Date().toISOString(),snapshotDate:needsDate?date:'',size:file.size};
    F(prev=>[stored,...prev.filter(item=>item.key!==stored.key)]);
@@ -174,7 +165,7 @@ export default function SapFiles(){
    if(!text){E('الأصل محفوظ ومؤكد؛ تعذّر قراءة محتواه: '+issue);return;}
    try{await processFile(stored,text)}
    finally{
-    await refresh().catch(e=>E('الأصل محفوظ ومؤكد، لكن تحديث المعالجة/قائمة الأرشيف فشل: '+(e instanceof Error?e.message:'خطأ غير معروف')));
+    await refresh(stored.key).catch(e=>E('الأصل محفوظ ومؤكد، لكن تحديث المعالجة/قائمة الأرشيف فشل: '+(e instanceof Error?e.message:'خطأ غير معروف')));
    }
   });
  }
@@ -224,7 +215,7 @@ export default function SapFiles(){
    (filter==='all'||actual===filter)&&(!balanceFrom||!!snapshot&&snapshot>=balanceFrom)&&(!balanceTo||!!snapshot&&snapshot<=balanceTo)&&(!uploadFrom||uploaded>=uploadFrom)&&(!uploadTo||uploaded<=uploadTo);
  });
  return <div className="sap-files">
-  <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع الكشف مرة واحدة. تبقى النسخة الأصلية محفوظة وتستخدم الشاشات المرتبطة البيانات المشتركة.</p></div><FileArchive size={32}/></div>
+  <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع نسخة SAP الجديدة كل يوم حتى تبقى البيانات محدّثة. يحفظ النظام كل نسخة أصلية مستقلة ببصمتها، دون تكرار الترحيلات.</p></div><FileArchive size={32}/></div>
   <section className="panel"><h2>رفع ملف SAP جديد</h2><div className="table-controls">
    <label>نوع الملف المتوقع (يُصحّح تلقائيًا)<select value={kind} disabled={busy} onChange={e=>K(e.target.value as SapKind)}>{Object.entries(sapKinds).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></label>
    {kind!=='unified'&&<><label>تاريخ الرصيد الفعلي<input type="date" max={today()} value={date} disabled={busy} onChange={e=>D(e.target.value)}/></label>
@@ -245,7 +236,7 @@ export default function SapFiles(){
   <section className="panel" aria-label="حالة معالجة ملفات SAP"><div className="section-title"><h2>حالة التحديث والمعالجة</h2><button className="button secondary" disabled={busy||loading} onClick={()=>void exclusive(refresh)}><RefreshCw size={16}/>تحديث الحالة والأرشيف</button></div>
    {loading&&<p role="status">جارٍ قراءة الأرشيف والحالات المحفوظة…</p>}
    {busy&&<p role="status">جارٍ حفظ الملف أو معالجة الدفعات. يمكن استكمال الدفعات المحفوظة بعد تحديث الصفحة.</p>}
-   {error&&<p className="banner error" role="alert"><AlertTriangle size={16}/>{error}</p>}{message&&<p className="banner info" role="status">{message}</p>}
+   {error&&<p className="banner error" role="alert"><AlertTriangle size={16}/>{error}</p>}{message&&<p className="banner info" role="status">{message}</p>}{olderSnapshotNotice&&<p className="hint" role="status">{olderSnapshotNotice}</p>}
    {job?<><p role="status"><b>{statusNames[job.status]}</b> · {job.done} من {job.total} دفعة · {job.count} مستند/بند · وقت الدفعات: {(job.duration/1000).toFixed(2)} ثانية</p>
     <progress aria-label="الدفعات المكتملة" value={job.total?job.done:['complete','review'].includes(job.status)?1:0} max={job.total||1} style={{width:'100%'}}/>
     {job.batches.filter(x=>x.state!=='complete').map(x=><p key={x.idx} className={x.error?'red':'hint'}>دفعة {x.idx+1}: {x.state==='failed'?'فشلت':x.state==='running'?'قيد المعالجة':'بانتظار المعالجة'} {x.error}</p>)}
