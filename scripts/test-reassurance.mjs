@@ -118,14 +118,18 @@ test('Blank undated transfer-only placeholders do not count as missing invoices'
   const emptyRecord={id:'empty',branch:'23 — خالد',status:'review',payload:JSON.stringify({invoices:[{id:'blank',number:'0',date:'',amount:'',quantities:{}}],transfers:[]})};
   const report=reassure(fixture({records:[record(),emptyRecord]}));assert.equal(report.state,'match');assert.equal(report.invoiceCount,1);
 });
-test('New shared source keeps recovered archive originals and newest document versions',()=>{
+test('Lieutenant Supabase archive is authoritative over a newer-dated legacy shared export',()=>{
   const archive={key:'a',name:'archive',scan:{transfers:[live(100),live(20,'2617002')],issues:[]}};
   const sourceHeader='رقم الترحيل\tتاريخ الترحيل\tكود الفرع\tاسم الفرع\tRemarks\t'+header+'\tCANCELED';
   const text=sourceHeader+'\n'+['2617002','2026-11-02','23','خالد','',code,'item',-20,'Piece','001','011','N'].join('\t');
-  const result=reassuranceSource(archive,{name:'new shared',text},['23 — خالد']);
-  assert.equal(result.scan.transfers.length,2);assert.equal(result.scan.transfers.find(row=>row.transfer.number==='2617001').transfer.date,date);
-  assert.ok(result.scan.transfers.find(row=>row.transfer.number==='2617002').transfer.paste.includes('-20'));
+  const chosen=reassuranceSource(archive,{name:'shared newer posting',text},['23 — خالد']);
+  assert.equal(chosen.scan,archive.scan);
+  assert.equal(chosen.name,'archive');
+  assert.ok(chosen.scan.transfers.find(row=>row.transfer.number==='2617002').transfer.paste.includes('\t20\t'),
+    'latest immutable archive must not be silently replaced by an old shared upload');
   assert.equal(reassuranceSource(archive,undefined,[]).scan,archive.scan);
+  assert.equal(reassuranceSource(null,{name:'fallback',text},['23 — خالد']).name,'fallback',
+    'the shared export is permitted only when no lieutenant archive exists');
 });
 test('Shows the exact unlinked full-document incoming movement as a cancellation-review candidate',()=>{
   const input=fixture({qty:88,actual:100,
@@ -160,6 +164,43 @@ test('An unrelated second item prevents canceling an entire multi-item document'
     records:[record(88,{},[invoice(88)],[card(88,'2617999')])],
     transfers:[live(88,'2617999'),candidate]});
   assert.deepEqual(reassure(input).rows.find(row=>row.code===code).candidates,[]);
+});
+test('2616469 Cash Van matched by 2616571 is settled and never listed for SAP cancellation',()=>{
+  const original=live(12,'2616469','Piece','002','011',{
+    branch:'23 — خالد',remarks:'كاش فان إربد',
+    transfer:{...card(12,'2616469','Piece','002','011'),date:'2026-11-12'},
+  });
+  const reverse=live(12,'2616571','Piece','011','002',{
+    branch:'23 — خالد',remarks:'عكسي ترحيل 2616469',
+    transfer:{...card(12,'2616571','Piece','011','002'),date:'2026-11-14'},
+  });
+  const other=live(12,'2616999','Piece','001','011',{
+    transfer:{...card(12,'2616999'),date:'2026-11-18'},
+  });
+  const input=fixture({qty:100,actual:112,transfers:[live(100,'2617999'),original,reverse,other]});
+  input.to='2026-11-18';input.closing.date=input.to;
+  const report=reassure(input),row=report.rows.find(row=>row.code===code);
+  assert.equal(row.difference,12);
+  assert.equal(row.netTransfers,112,'full reversal offsets 2616469 to zero');
+  assert.deepEqual(row.candidates.map(item=>item.number),['2616999']);
+  assert.deepEqual(report.settlements.find(item=>item.number==='2616469')?.counterparts,['2616571']);
+  assert.match(report.settlements.find(item=>item.number==='2616469')?.note||'',/صافي الحركة صفر/);
+  assert.ok(!report.settlements.some(item=>item.number==='2616571'),'reverse must not create a duplicate settlement');
+  input.to='2026-11-13';input.closing.date=input.to;
+  const earlier=reassure(input);
+  assert.ok(!earlier.settlements.some(item=>item.number==='2616469'),
+    'a reversal posted after the selected date cannot settle an earlier snapshot');
+});
+test('Partial Cash Van reverse does not authorize canceling the complete original',()=>{
+  const original=live(12,'2616469','Piece','002','011',{remarks:'كاش فان إربد'});
+  const partial=live(6,'2616571','Piece','011','002',{remarks:'عكسي ترحيل 2616469'});
+  const input=fixture({qty:88,actual:100,
+    records:[record(88,{},[invoice(88)],[card(88,'2617999')])],
+    transfers:[live(88,'2617999'),original,partial,live(6,'2616888')]});
+  const report=reassure(input);
+  assert.deepEqual(report.rows[0].candidates.map(item=>item.number),[],
+    'no full original cancellation from partially reversed Cash Van');
+  assert.deepEqual(report.settlements,[]);
 });
 console.log(`${passed} reassurance business-rule tests passed.`);
 

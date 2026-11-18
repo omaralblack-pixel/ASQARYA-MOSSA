@@ -1,13 +1,16 @@
 import {collectInvoicesByDate,type CollectedInvoiceResult} from './invoice-collector';
 import {auditLieutenantStock,completeOpeningSnapshot,type StockItem} from './lieutenant-stock';
 import {stockMovementSources} from './lieutenant-stock';
+import {analyzeLieutenantMovements} from './lieutenant-counterparts';
 import {digits,invoiceDocumentNo,numeric,parseTransfer,readReconciliationRecord,sapReferences,signedNumeric,transferNumbers,
   type Draft,type Item} from './reconcile';
 import {parseLieutenantTransfers,type LieutenantTransfer} from './lieutenant';
-import {mergeLieutenantScans,type RestoredLieutenantSource} from './lieutenant-source';
+import type {RestoredLieutenantSource} from './lieutenant-source';
 import type {SavedSapImport} from './saved-sap-import';
 
 export type ReassuranceRecord={id:string;branch:string;status:string;payload:string};
+export type ReassuranceSettlement={number:string;date:string;branch:string;counterparts:string[];
+  kind:'reversed'|'signed-correction';note:string};
 export type OpeningApproval={snapshot_date:string;warehouse:string;sap_code:string;item_name:string;unit:string;quantity:number};
 export type ReassuranceData=CollectedInvoiceResult&{records:ReassuranceRecord[];reference:Item[];openingStock:OpeningApproval[]};
 export type ReassuranceStock={date:string;items:StockItem[];issues:string[]};
@@ -20,20 +23,18 @@ export type ReassuranceRow={code:string;name:string;unit:'Piece';invoices:number
   actual:number|null;difference:number|null;netTransfers:number|null;stockDifference:number|null;
   state:ReassuranceState;notes:string[];records:{id:string;numbers:string[];basis:'paper'|'approved'}[];evidence:ReassuranceEvidence[];candidates:ReassuranceCancellationCandidate[]};
 export type ReassuranceReport={rows:ReassuranceRow[];issues:string[];invoiceCount:number;approvedGroups:number;
-  pendingRecords:{id:string;numbers:string[];branch:string;note:string}[];sourceLastDate:string;financialPending:number;paperGroups:number;state:ReassuranceState};
+  pendingRecords:{id:string;numbers:string[];branch:string;note:string}[];sourceLastDate:string;financialPending:number;paperGroups:number;state:ReassuranceState;settlements:ReassuranceSettlement[]};
 const epsilon=0.000001;
 const round=(n:number)=>Number(n.toFixed(6));
 const unitName=(unit:string)=>({حبة:'Piece',كرتون:'Carton',كرتونة:'Carton',كغم:'KG'}[unit]||unit);
 
-/** Prefer the dated newest source without losing recovered cancellation originals.
- * On equal posting dates the archive's newest upload remains authoritative. */
+/** The lieutenant's immutable Supabase archive is authoritative. A legacy
+ * shared SAP export is only a fallback when the lieutenant has no archive,
+ * never a competing current source based on its document posting date. */
 export function reassuranceSource(archive:RestoredLieutenantSource|null,shared:SavedSapImport|undefined,branches:string[]){
-  const last=(rows:LieutenantTransfer[])=>rows.reduce((day,row)=>row.transfer.date>day?row.transfer.date:day,'');
-  const current=shared?parseLieutenantTransfers(shared.text,branches):null;
-  if(current?.transfers.length&&(!archive||last(current.transfers)>last(archive.scan.transfers)))
-    return {scan:archive?mergeLieutenantScans(current,archive.scan):current,
-      name:shared!.name+(archive?' + مستندات SAP المحفوظة':'')};
-  return {scan:archive?.scan,name:archive?.name||''};
+  if(archive)return {scan:archive.scan,name:archive.name};
+  const scan=shared?parseLieutenantTransfers(shared.text,branches):null;
+  return {scan:scan?.transfers.length?scan:null,name:scan?.transfers.length?shared!.name:''};
 }
 
 /** Convert only with one agreed factor. A missing factor is never a quantity of zero. */
@@ -78,11 +79,19 @@ function cancellationCandidates(rows:ReassuranceRow[],transfers:LieutenantTransf
   const byCode=new Map(rows.map(row=>[row.code,row]));
   const result=new Map<string,ReassuranceCancellationCandidate[]>();
   const sources=stockMovementSources(transfers);
+  const movements=analyzeLieutenantMovements(transfers,to);
   const counts=new Map<string,number>();
   for(const source of sources)counts.set(source.transfer.number,(counts.get(source.transfer.number)||0)+1);
   const warehouse=(raw:string)=>/^\d+$/.test(raw.trim())?raw.trim().padStart(3,'0'):raw.trim();
   for(const source of sources){
     const number=source.transfer.number;
+    const movement=movements.get(number);
+    // Use the same settlement decision as the lieutenant's Cash Van screen.
+    // Neither a fully reversed source nor its counterpart can be a new
+    // cancellation candidate; an unmatched partial reverse also requires review.
+    if(movement&&(movement.kind==='reversed'||movement.kind==='reverse'||
+      movement.kind==='sap-canceled'||movement.kind==='sap-cancel-doc'||
+      movement.verifiedOffset||movement.counterpart||movement.counterparts?.length))continue;
     if(!number||counts.get(number)!==1||linked.has(number)||source.issues.length||
       source.signedAdjustment||source.cancellationMentioned||
       source.cancellationState==='canceled'||source.cancellationState==='cancellation'||
@@ -267,11 +276,25 @@ export function reassure(input:{data:ReassuranceData;transfers:LieutenantTransfe
     return {code,name:total?.name||target?.name||code,unit:'Piece',invoices,opening:start,expected,actual,difference,
       netTransfers:net,stockDifference,state,notes,records:total?.records||[],evidence:evidence.get(code)||[],candidates:[]};
   });
+  // This report uses the identical movement classification as "الملازم أول".
+  // A verified reverse has a zero NET stock effect but is not CANCELED=Y in SAP.
+  const movements=analyzeLieutenantMovements(transfers,to);
+  const settlements:ReassuranceSettlement[]=transfers.filter(source=>{
+    const movement=movements.get(source.transfer.number);
+    return source.transfer.date>=from&&source.transfer.date<=to&&!source.reverse&&
+      !source.signedAdjustment&&!!movement&&
+      (movement.kind==='reversed'||movement.verifiedOffset===true);
+  }).map((source):ReassuranceSettlement=>{
+    const movement=movements.get(source.transfer.number)!;
+    return {number:source.transfer.number,date:source.transfer.date,branch:source.branch,
+      counterparts:movement.counterparts||[movement.counterpart].filter((id):id is string=>!!id),
+      kind:movement.verifiedOffset?'signed-correction':'reversed',note:movement.note};
+  }).sort((a,b)=>b.date.localeCompare(a.date)||b.number.localeCompare(a.number));
   const candidates=cancellationCandidates(rows,transfers,data.records,data.reference,from,to);
   for(const row of rows)row.candidates=candidates.get(row.code)||[];
   if(!rows.length)issues.push('لا توجد كميات كافية لإجراء المقارنة.');
   const state:ReassuranceState=issues.length||rows.some(row=>row.state==='review')?'review':
     rows.some(row=>row.state==='transfer')?'transfer':rows.some(row=>row.state==='return')?'return':'match';
   return {rows,issues:[...new Set(issues)],invoiceCount:collected.rows.filter(row=>invoiceDocumentNo(row.number)).length,
-    approvedGroups,paperGroups,financialPending:financiallyUnapproved.size,pendingRecords,sourceLastDate,state};
+    approvedGroups,paperGroups,financialPending:financiallyUnapproved.size,pendingRecords,sourceLastDate,state,settlements};
 }
