@@ -1,13 +1,15 @@
 'use client';
 
 import {useEffect,useMemo,useRef,useState} from 'react';
-import {AlertTriangle,ArrowDownToLine,CheckCircle2,HeartPulse,Printer,RefreshCw,RotateCcw,Search} from 'lucide-react';
+import {AlertTriangle,ArrowDownToLine,CheckCircle2,HeartPulse,Printer,RefreshCw,RotateCcw,Search,ShieldCheck} from 'lucide-react';
 import {readSapArchive} from '../lib/sap-files-client';
 import type {LieutenantTransfer} from '../lib/lieutenant';
 import {restoreLieutenantSource,restoreLieutenantStock,restoreUnifiedStockSnapshots,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {reassure,reassuranceSource,type ReassuranceData,type ReassuranceReport,type ReassuranceStock,type ReassuranceState} from '../lib/reassurance';
 import {digits,type Transfer} from '../lib/reconcile';
+import {buildReassuranceCouncil,type ReassuranceCouncilControl,type ReassuranceCouncilFinding} from '../lib/reassurance-council';
+import type {ColonelRecord} from '../lib/colonel-core';
 
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
 const format=new Intl.NumberFormat('en-US',{maximumFractionDigits:6});
@@ -15,7 +17,8 @@ const quantity=(n:number|null)=>n===null?'—':format.format(n);
 const labels:Record<ReassuranceState,string>={match:'مطابق',transfer:'نقص يحتاج تفسير',return:'زيادة تحتاج تفسير',review:'يحتاج تحقق'};
 const badge=(state:ReassuranceState)=>state==='match'?'match':state==='review'?'review':'difference';
 type Loaded={data:ReassuranceData;transfers:LieutenantTransfer[];sourceIssues:string[];sourceName:string;
-  closing:ReassuranceStock|null;opening:ReassuranceStock|null};
+  closing:ReassuranceStock|null;opening:ReassuranceStock|null;
+  councilRecords:ColonelRecord[]|null;councilControls:ReassuranceCouncilControl[]|null;councilWarnings:string[]};
 
 async function checkedJson<T>(url:string):Promise<T>{
   const response=await fetch(url,{cache:'no-store',redirect:'manual'});
@@ -26,8 +29,48 @@ async function checkedJson<T>(url:string):Promise<T>{
   return data;
 }
 
-export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{branches:string[];
-  onOpenRecord:(id:string)=>void;onOpenTransfer:(transfer:Transfer,branch:string)=>void}){
+/** The serial soldier and colonel use the same paged project projection.
+ * Read all records before judging a cross-system audit; never use the first
+ * page as if it were the complete invoice registry. */
+async function readAuditRecords():Promise<ColonelRecord[]>{
+  const records:ColonelRecord[]=[];
+  const seen=new Set<string>();
+  let cursor:{updated:string;id:string}|null=null;
+  for(let page=0;page<250;page++){
+    const params=new URLSearchParams({serialExport:'1'});
+    if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id);}
+    const result=await checkedJson<{records:ColonelRecord[];hasMore:boolean;
+      nextCursor:{updated:string;id:string}|null}>('/api/reconcile?'+params.toString());
+    if(!Array.isArray(result.records))throw Error('سجل الجندي غير مكتمل.');
+    for(const record of result.records){
+      if(!record||typeof record.id!=='string'||typeof record.payload!=='string'||seen.has(record.id))
+        throw Error('سجل الجندي يحتوي تكرارًا أو ملفًا غير مقروء؛ أُلغي الفحص الشامل.');
+      seen.add(record.id);records.push(record);
+    }
+    if(result.hasMore===false)return records;
+    if(result.hasMore!==true||!result.nextCursor||!result.records.length)
+      throw Error('تسلسل صفحات الجندي انقطع؛ لا يمكن تأكيد اكتمال السجل.');
+    cursor=result.nextCursor;
+  }
+  throw Error('سجل الجندي تجاوز عدد صفحات القراءة المسموح.');
+}
+async function readColonelControls(from:string,to:string):Promise<ReassuranceCouncilControl[]>{
+  const periods:string[]=[];
+  let month=from.slice(0,7),end=to.slice(0,7);
+  for(let i=0;month<=end&&i<14;i++){
+    periods.push(month);
+    const next=new Date(month+'-01T00:00:00Z');
+    next.setUTCMonth(next.getUTCMonth()+1);
+    month=next.toISOString().slice(0,7);
+  }
+  if(month<=end)throw Error('الفترة أطول من سنة؛ لا يمكن قراءة قرارات العقيد كاملة.');
+  return Promise.all(periods.map(month=>checkedJson<ReassuranceCouncilControl>(
+    '/api/colonel?month='+encodeURIComponent(month))));
+}
+
+export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavigate}:{branches:string[];
+  onOpenRecord:(id:string)=>void;onOpenTransfer:(transfer:Transfer,branch:string)=>void;
+  onNavigate:(view:'serial-soldier'|'lieutenant'|'colonel')=>void}){
   const [from,setFrom]=useState(()=>today().slice(0,8)+'01');
   const [to,setTo]=useState(today);
   const [loaded,setLoaded]=useState<Loaded|null>(null);
@@ -41,6 +84,12 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
   const reloadRef=useRef<()=>Promise<void>>(async()=>{});
   const valid=!!from&&!!to&&from<=to&&to<=today();
   const report=useMemo<ReassuranceReport|null>(()=>loaded&&valid?reassure({...loaded,from,to}):null,[loaded,from,to,valid]);
+  const council=useMemo(()=>{
+    if(!loaded?.councilRecords||!loaded.councilControls||!valid)return null;
+    return buildReassuranceCouncil({from,to,records:loaded.councilRecords,
+      transfers:loaded.transfers,controls:loaded.councilControls,
+      sourceReady:loaded.transfers.length>0&&!loaded.sourceIssues.length});
+  },[loaded,from,to,valid]);
   const query=digits(search).trim().toLowerCase();
   const visible=report?.rows.filter(row=>
     (filter==='candidate'?row.candidates.length>0:
@@ -75,15 +124,20 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
         }
         return files;
       };
-      const [dataResult,filesResult,sharedResult]=await Promise.allSettled([
+      const [dataResult,filesResult,sharedResult,recordsResult,controlsResult]=await Promise.allSettled([
         checkedJson<ReassuranceData>('/api/reconcile?stockInvoiceFrom='+encodeURIComponent(from)+'&stockInvoiceTo='+encodeURIComponent(to)+'&reassurance=1'),
-        archive(),readSavedSapImport(),
+        archive(),readSavedSapImport(),readAuditRecords(),readColonelControls(from,to),
       ]);
       if(dataResult.status==='rejected')throw dataResult.reason;
       const data=dataResult.value;
       const files=filesResult.status==='fulfilled'?filesResult.value:[];
       const shared=sharedResult.status==='fulfilled'?sharedResult.value:undefined;
       const sourceErrors:string[]=[];
+      const councilWarnings:string[]=[];
+      if(recordsResult.status==='rejected')councilWarnings.push('تعذّر قراءة سجل الجندي كاملًا: '+
+        (recordsResult.reason instanceof Error?recordsResult.reason.message:'خطأ غير معروف'));
+      if(controlsResult.status==='rejected')councilWarnings.push('تعذّر قراءة قرارات العقيد والملازم: '+
+        (controlsResult.reason instanceof Error?controlsResult.reason.message:'خطأ غير معروف'));
       if(filesResult.status==='rejected')sourceErrors.push('تعذّر تحميل أرشيف كشوف 011. أعد المحاولة أو حدّث الكشوف من الملازم أول.');
       if(sharedResult.status==='rejected'&&!files.some(file=>file.kind==='transfers'))sourceErrors.push('تعذّر قراءة كشف SAP المشترك الاحتياطي. لا يوجد مصدر محفوظ مؤكد في الملازم أول.');
       if(!Array.isArray(data.records)||!Array.isArray(data.reference)||!Array.isArray(data.openingStock))
@@ -122,7 +176,10 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
         ...(scan?.issues||[]),
       ],sourceName,
         closing:actualClosing?{date:actualClosing.file.snapshotDate!,...actualClosing.stock}:null,
-        opening:actualOpening?{date:actualOpening.file.snapshotDate!,...actualOpening.stock}:null});
+        opening:actualOpening?{date:actualOpening.file.snapshotDate!,...actualOpening.stock}:null,
+        councilRecords:recordsResult.status==='fulfilled'?recordsResult.value:null,
+        councilControls:controlsResult.status==='fulfilled'?controlsResult.value:null,
+        councilWarnings});
       setCheckedAt(new Date().toLocaleTimeString('ar-JO',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit'}));
     }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر إجراء الفحص.');}
     finally{if(id===request.current)setBusy(false);}
@@ -145,6 +202,28 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
   },[]);
 
   const settled=report?.state==='match';
+  const crossChecked=!!council&&!loaded?.councilWarnings.length;
+  const councilFindings=council?.findings||[];
+  const sourceMeta=[
+    {id:'soldier',name:'الجندي السيريل',view:'serial-soldier' as const,
+      detail:council?'فواتير '+council.soldier.invoices+' · ورق غير مؤكد '+council.soldier.paperPending+
+        ' · تكرار '+council.soldier.duplicates+
+        ' · ربط غير محسوم '+council.soldier.unlinked:'سجل الجندي غير متاح'},
+    {id:'lieutenant',name:'الملازم أول',view:'lieutenant' as const,
+      detail:council?'حركات SAP '+council.lieutenant.transfers+' · عكسي مسوّى '+council.lieutenant.reversed+
+        ' · كاش فان مفتوح '+council.lieutenant.cashVanPending:'حالة رقابة SAP غير متاحة'},
+    {id:'colonel',name:'العقيد',view:'colonel' as const,
+      detail:council?'أيام جاهزة '+council.colonel.readyDays+'/'+council.colonel.invoiceDays+
+        ' · ترحيلات مفتوحة '+council.colonel.openTransfers:'رقابة أيام العقيد غير متاحة'},
+  ];
+  const openCouncilFinding=(finding:ReassuranceCouncilFinding)=>{
+    if(finding.recordId){onOpenRecord(finding.recordId);return}
+    if(finding.transferNo){
+      const source=loaded?.transfers.find(item=>item.transfer.number===finding.transferNo);
+      if(source){onOpenTransfer(source.transfer,source.branch);return}
+    }
+    onNavigate(finding.source==='soldier'?'serial-soldier':finding.source==='lieutenant'?'lieutenant':'colonel');
+  };
   const closingUnavailable=!!report&&(!loaded?.closing||loaded.closing.date!==to);
   return <div className="reassurance-screen">
     <div className="page-title"><div><p className="eyebrow">الفواتير × المستودع 011</p><h1><HeartPulse size={30}/> طمني</h1><p>افحص الفرق، وشوف الترحيل المحدد الذي قد يفسّره بالكامل. لا يُقترح إلغاء مستند بناءً على تطابق كمية صنف واحد فقط.</p></div>
@@ -160,8 +239,10 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
     {!busy&&report&&<>
       <section className={'reassurance-summary '+(settled?'is-matched':'needs-action')} role="status">
         {settled?<CheckCircle2 size={38}/>:<AlertTriangle size={38}/>}
-        <div><h2>{settled?'اطمّن، الكميات مطابقة':report.state==='review'?'في بيانات بدها تحقق': 'في فروقات بدها متابعة'}</h2>
-        <p>{settled?'كميات الفواتير والافتتاحي تساوي رصيد 011 حسب الكشوف المحفوظة للفترة.':
+        <div><h2>{settled&&crossChecked&&councilFindings.length===0?'كميات 011 مطابقة حسب المصادر المحفوظة':
+          settled?'الرصيد مطابق، لكن باقي مصادر الرقابة تحتاج تحقق':
+          report.state==='review'?'في بيانات بدها تحقق':'في فروقات بدها متابعة'}</h2>
+        <p>{settled?'الكميات متطابقة حسب SAP والفواتير المحفوظة. لا يُعد ذلك تأكيدًا لوصول كشف سجى غير المحفوظ في المشروع.':
           closingUnavailable?'رصيد 011 الفعلي غير متاح بتاريخ الفحص؛ لا يمكن تحديد عدد الترحيلات أو المرتجعات بعد. '+counts.review+' صنف ينتظر التحقق.':
           `${candidateCount} صنف له ترحيل مرشح للفحص · ${counts.transfer+counts.return+counts.review} صنف غير محسوم (لا يعني وجود ترحيل يجب إلغاؤه)`}</p>
         <small>الفترة <b dir="ltr">{from} — {to}</b> · {report.invoiceCount} فاتورة · آخر فحص {checkedAt}</small></div>
@@ -170,6 +251,38 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
         onClick={()=>setFilter('candidate')} aria-pressed={filter==='candidate'}><Search size={20}/><span>ترحيلات مرشحة للفحص</span><strong>{candidateCount}</strong></button>{([
         ['match','مطابقة',CheckCircle2],['transfer','نقص',ArrowDownToLine],['return','زيادة',RotateCcw],['review','تحتاج تحقق',Search],
       ] as const).map(([key,label,Icon])=><button type="button" className={'stat '+(filter===key?'selected':'')} key={key} onClick={()=>setFilter(filter===key?'action':key)} aria-pressed={filter===key}><Icon size={20}/><span>{label}</span><strong>{closingUnavailable&&key!=='review'?'—':counts[key]}</strong></button>)}</div>
+      <section className="panel reassurance-council">
+        <div className="section-title"><ShieldCheck size={22}/><h2>مصادر طمني — الجندي والملازم أول والعقيد</h2></div>
+        <p className="hint">فحص قراءة فقط من سجلات المشروع وقرارات الملازم والعقيد المحفوظة، ومع كل تحديث جديد في الأرشيف. لا يعدّل فواتيرك، ولا يكتب في SAP، ولا يحوّل قرارًا إداريًا إلى دليل على رصيد المستودع.</p>
+        {!crossChecked&&<div className="banner error" role="alert"><b>الفحص الشامل غير مكتمل</b>
+          {(loaded?.councilWarnings||[]).map((warning,i)=><p key={i}>{warning}</p>)}
+          {!loaded?.councilWarnings.length&&<p>تعذّر تحميل أحد مصادر الجندي أو الملازم أو العقيد.</p>}
+        </div>}
+        <div className="stats reassurance-stats">{sourceMeta.map(source=><button type="button" key={source.id} className="stat"
+          onClick={()=>onNavigate(source.view)} title={'افتح '+source.name}>
+          <span>{source.name}</span><small>{source.detail}</small><b>فتح المصدر</b>
+        </button>)}</div>
+        {crossChecked&&<>
+          <p className="hint">قرارات الملازم المحفوظة: <b>{council?.lieutenant.savedDecisions||0}</b> · مستندات SAP تحتاج تحقق: <b>{council?.lieutenant.review||0}</b> · فواتير بتاريخ مستنتج من SAP: <b>{council?.soldier.inferredDates||0}</b>.</p>
+          <div className="banner info">
+            <b>وصول فواتير سجى غير مثبت تلقائيًا:</b> الجندي يراجع ملف Excel عند رفعه داخل شاشته، لكن آخر ملف سجى ونتائج فحصه غير محفوظين كمصدر يمكن لـ«طمني» قراءته. لذلك لا يوجد حكم نهائي على وصول الورق من مقارنة SAP وحدها.
+          </div>
+          {councilFindings.length>0?<details className="reassurance-details" open>
+            <summary>معلومات ناقصة أو تحتاج حسمًا ({councilFindings.length}) — افتح مصدر كل ملاحظة</summary>
+            {(['soldier','lieutenant','colonel'] as const).map(group=>{
+              const list=councilFindings.filter(finding=>finding.source===group);
+              return list.length?<div key={group} className="reassurance-council-group">
+                <h3>{group==='soldier'?'الجندي السيريل':group==='lieutenant'?'الملازم أول':'العقيد'} · {list.length} ملاحظة</h3>
+                {list.slice(0,4).map((finding,i)=><p key={i}><b>{finding.title}: </b>{finding.details}
+                  <button type="button" className="button secondary small" onClick={()=>openCouncilFinding(finding)}>فتح المصدر</button></p>)}
+                {list.length>4&&<button type="button" className="button secondary" onClick={()=>onNavigate(group==='soldier'?'serial-soldier':group==='lieutenant'?'lieutenant':'colonel')}>
+                  عرض بقية حالات هذا المصدر ({list.length-4})
+                </button>}
+              </div>:null;
+            })}
+          </details>:<p className="hint">لم تظهر تنبيهات إضافية من سجلات الجندي والملازم والعقيد للفترة المختارة. فحص ملف سجى الخارجي يبقى مستقلًا.</p>}
+        </>}
+      </section>
       <section className="panel">
         <p className="hint">مصدر الترحيلات من أرشيف الملازم أول في Supabase: {loaded?.sourceName||'غير متاح'} · آخر حركة ظاهرة: <b dir="ltr">{report.sourceLastDate||'—'}</b> · رصيد 011 بتاريخ <b dir="ltr">{loaded?.closing?.date||'غير متاح'}</b>. يتم تحديث المصدر عند فتح الشاشة، وعند الرجوع إليها بعد تحديث الملفات، وبزر «طمني الآن».</p>
         <p className="hint"><b>{report.settlements.length}</b> ترحيل أصلي مسوّى بعكسي كامل أو تصحيح سالب مطابق حسب فحص الملازم أول؛ لا يظهر ضمن اقتراحات الإلغاء. هذا لا يُلغي الحاجة إلى مطابقة الرصيد الفعلي للصنف.</p>
