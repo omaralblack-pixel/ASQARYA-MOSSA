@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { maxSapFileBytes, type SavedSapImport } from "../app/lib/saved-sap-import";
 import { themeRuntimeScript } from "../lib/theme";
+import { toSapStorageFilename, fromSapStorageFilename } from "../app/lib/sap-archive-filename";
 
 const sessionCookie = "__Host-institution";
 const sessionSeconds = 8 * 60 * 60;
@@ -236,7 +237,7 @@ export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
           ...privateHeaders,
           "Content-Type": "application/octet-stream",
           "X-Content-Type-Options": "nosniff",
-          "Content-Disposition": "attachment; filename*=UTF-8\'\'" + encodeURIComponent(key.split("__").pop() || "SAP.txt"),
+          "Content-Disposition": "attachment; filename*=UTF-8\'\'" + encodeURIComponent(fromSapStorageFilename(key.split("__").pop() || "SAP.txt")),
         },
       });
     }
@@ -262,7 +263,7 @@ export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
           const parsed = item.name.match(/^(transfers|opening|balance|unified|other)__[a-f0-9]{32}__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
           return {
             key: "lieutenant/" + item.name,
-            name: parsed?.[3] || item.name,
+            name: fromSapStorageFilename(parsed?.[3] || item.name),
             kind: parsed?.[1] || "other",
             snapshotDate: parsed?.[2] || "",
             size: item.metadata?.size || 0,
@@ -292,8 +293,15 @@ export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
       return reply(413, "الملف فارغ أو يتجاوز 16 ميغابايت.");
     const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
       byte => byte.toString(16).padStart(2, "0")).join("");
+    const storageFilename = toSapStorageFilename(filename);
+    // Preserve the original human-readable name on the API and downloads,
+    // while the immutable Supabase key uses its safe reversible encoding.
+    // The archive reader limits keys to 240 characters; do not produce one
+    // that the same application cannot subsequently read back.
+    if (storageFilename.length > 170)
+      return reply(400, "اسم ملف SAP طويل جدًا للتخزين الآمن. اختصر الاسم ثم أعد اختيار نفس الملف.");
     const key = "lieutenant/" + kind + "__" + digest.slice(0, 32) + "__" +
-      (snapshotDate ? snapshotDate + "__" : "") + filename;
+      (snapshotDate ? snapshotDate + "__" : "") + storageFilename;
     // Preserve bytes exactly, using JSON envelope because the existing bucket is
     // explicitly restricted to application/json (and is intentionally kept unchanged).
     const body = JSON.stringify({
@@ -310,11 +318,22 @@ export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
       body,
     });
     let duplicate = saved.status === 409;
-    if (!saved.ok && saved.status === 400) {
-      const detail = await saved.text();
-      duplicate = /already exists|resourcealreadyexists|asset already exists/i.test(detail);
+    if (!saved.ok) {
+      const rawError = (await saved.text()).slice(0, 2000);
+      let code = '';
+      try {
+        const parsed = JSON.parse(rawError) as {code?:string;error?:string;message?:string};
+        code = String(parsed.code || parsed.error || '').slice(0, 70);
+      } catch {/* Upstream may return plain text. */}
+      duplicate ||= /already exists|resourcealreadyexists|asset already exists/i.test(rawError);
+      if (!duplicate) {
+        if (/invalidkey|invalid key|invalid file name/i.test(code + ' ' + rawError))
+          return reply(400, "رفض Supabase اسم ملف SAP (InvalidKey). جرّب اسمًا مختصرًا؛ لم تُحفظ نسخة أصلية جديدة.");
+        return reply(saved.status===413?413:502,
+          "رفض Supabase حفظ ملف SAP (رمز المصدر HTTP " + saved.status +
+          (code ? "، " + code : "") + "). لم تُؤكَّد كتابة الملف الأصلي؛ راجع الأرشيف قبل إعادة الرفع.");
+      }
     }
-    if (!saved.ok && !duplicate) return reply(502, "تعذّر حفظ الملف في قاعدة بيانات Supabase.");
     return Response.json({ key, name: filename, duplicate, size: bytes.byteLength },
       { headers: privateHeaders });
   } catch {
