@@ -86,5 +86,61 @@ assert.match(notes.get('2618888'),/تجاوز إداري فقط/);
 assert.doesNotMatch(notes.get('2618888'),/ملغى رسميًا/);
 const archivedDecision=colonelSerialNotes([],manualBypass,'2026-11-17');
 assert.match(archivedDecision.get('2618888'),/حالة SAP غير مثبتة/);
+
+const blank=(id,number,day='2026-11-01')=>record(id,[{id:'blank-'+id,number:'0',
+ date:day,amount:'',complete:false}], [number]);
+const cashOrig=(number,posting,from='001')=>sapRow(number,posting,{
+ branch:'12 — عجلون',remarks:'كاش فان عجلون',
+ transfer:{number,date:posting,paste:paste('DAR00001',from,'011')},
+});
+const reverseOf=(number,original,posting,to='001')=>sapRow(number,posting,{
+ branch:'12 — عجلون',remarks:'عكسي ترحيل '+original,reverse:true,
+ transfer:{number,date:posting,paste:paste('DAR00001','011',to)},
+});
+const actualBlue=record('blue',[invoiceRow('2621609885','2026-11-01')],['2615801']);
+const linkedPlaceholders=[
+ blank('cash1','2615767'),blank('cash2','2615768'),blank('unknown','2615837'),
+];
+const sapWithSettlement=[
+ sapRow('2615801','2026-11-02'),
+ cashOrig('2615767','2026-11-02'),reverseOf('2615918','2615767','2026-11-03'),
+ cashOrig('2615768','2026-11-02','002'),reverseOf('2616541','2615768','2026-11-12','002'),
+ sapRow('2615837','2026-11-02'),
+];
+const dayWithSettlement=buildColonelReport('2026-11',
+ [actualBlue,...linkedPlaceholders],sapWithSettlement,[],[],[],true)
+ .days.find(row=>row.day==='2026-11-01');
+assert.equal(dayWithSettlement.invoices.length,1,
+ 'only genuine numbered blue invoices count; transfer-only placeholder cards do not');
+assert.equal(dayWithSettlement.nonInvoices.length,3,
+ 'three unnumbered cards remain visible separately with SAP evidence');
+assert.equal(dayWithSettlement.invoices.filter(row=>!row.complete).length,0);
+assert.deepEqual(dayWithSettlement.nonInvoices.find(row=>row.transfers.includes('2615767')).counterparts,['2615918']);
+assert.deepEqual(dayWithSettlement.nonInvoices.find(row=>row.transfers.includes('2615768')).counterparts,['2616541']);
+assert.equal(dayWithSettlement.nonInvoices.find(row=>row.transfers.includes('2615767')).state,'settled');
+assert.equal(dayWithSettlement.nonInvoices.find(row=>row.transfers.includes('2615768')).state,'settled');
+assert.equal(dayWithSettlement.nonInvoices.find(row=>row.transfers.includes('2615837')).state,'unverified',
+ 'no known counterpart for 2615837; do not make up a settlement');
+assert.equal(dayWithSettlement.ready,false,'unresolved 2615837 still blocks final day closure');
+const withOfficialCancel=buildColonelReport('2026-11',
+ [actualBlue,...linkedPlaceholders],
+ sapWithSettlement.map(s=>s.transfer.number==='2615837'?{...s,cancellationState:'canceled'}:s),
+ [],[],[{day:'2026-11-01',invoices_complete:1,confirmed_at:'',confirmed_by:'operator'}],true)
+ .days.find(row=>row.day==='2026-11-01');
+assert.equal(withOfficialCancel.nonInvoices.find(row=>row.transfers.includes('2615837')).state,'settled',
+ 'an actual Y flag from SAP can settle this non-paper entry');
+const premature=buildColonelReport('2026-11',
+ [actualBlue,...linkedPlaceholders],sapWithSettlement,[],[],[],true,'2026-11-01')
+ .days.find(row=>row.day==='2026-11-01');
+assert.notEqual(premature.nonInvoices.find(row=>row.transfers.includes('2615768')).state,'settled',
+ 'a Nov 12 reverse must not be treated as present at Nov 1 stock snapshot');
+const fakeManualProof=[{transfer_no:'2615837',decision:'linked',related_type:'transfer',
+ related_number:'2615918',note:'مستند مرتبط',revision:1,updated_at:'2026-11-18'}];
+const notManuallyCovered=buildColonelReport('2026-11',
+ [actualBlue,...linkedPlaceholders],sapWithSettlement,fakeManualProof,[],[],true);
+assert.equal(notManuallyCovered.days.find(row=>row.day==='2026-11-01')
+ .nonInvoices.find(row=>row.transfers.includes('2615837')).state,'unverified',
+ 'a saved lieutenant administrative link is not evidence of physical SAP offset');
+
 assert.throws(()=>buildColonelReport('2026-13',[],[]),/شهر/);
 console.log('PASS: Colonel uses blue-invoice date, preserves SAP posting, flags mismatches and does not assert fake cancellations.');
