@@ -1,7 +1,7 @@
 import {parseLieutenantTransfers} from './lieutenant';
 import {listSapFiles,readSapArchive} from './sap-files-client';
 import {dateValue,digits,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
-import type {SapImportGroup} from './sap-import';
+import {sapBranchFromRemarks,type SapImportGroup} from './sap-import';
 
 export type SapEvidence={
  transfer:Transfer;branch:string;remarks:string;invoiceNumbers:string[];
@@ -14,9 +14,11 @@ export function matchesSapEvidence(item:SapEvidence,number:string,kind:'invoice'
 }
 
 /** Construct a temporary, unsaved invoice proposal from verifiable SAP evidence. */
-export function groupSapEvidence(items:SapEvidence[],number:string,kind:'invoice'|'transfer'):SapImportGroup|null{
+export function groupSapEvidence(items:SapEvidence[],number:string,kind:'invoice'|'transfer',officialBranches:string[]=[]):SapImportGroup|null{
  const chosen=[...new Map(items.filter(item=>matchesSapEvidence(item,number,kind))
-   .map(item=>[item.transfer.number,item] as const)).values()];
+   .map(item=>[item.transfer.number,item] as const)).values()].map(item=>({
+     ...item,branch:item.branch||sapBranchFromRemarks(item.remarks,officialBranches)
+   }));
  if(!chosen.length)return null;
  const branches=new Set(chosen.map(item=>item.branch).filter(Boolean));
  const invoiceNumbers=[...new Set(chosen.flatMap(item=>item.invoiceNumbers))];
