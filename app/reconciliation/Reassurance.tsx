@@ -12,7 +12,7 @@ import {digits,type Transfer} from '../lib/reconcile';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
 const format=new Intl.NumberFormat('en-US',{maximumFractionDigits:6});
 const quantity=(n:number|null)=>n===null?'—':format.format(n);
-const labels:Record<ReassuranceState,string>={match:'مطابق',transfer:'يحتاج ترحيل',return:'زيادة — مراجعة مرتجع',review:'يحتاج تحقق'};
+const labels:Record<ReassuranceState,string>={match:'مطابق',transfer:'نقص يحتاج تفسير',return:'زيادة تحتاج تفسير',review:'يحتاج تحقق'};
 const badge=(state:ReassuranceState)=>state==='match'?'match':state==='review'?'review':'difference';
 type Loaded={data:ReassuranceData;transfers:LieutenantTransfer[];sourceIssues:string[];sourceName:string;
   closing:ReassuranceStock|null;opening:ReassuranceStock|null};
@@ -34,14 +34,21 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
   const [busy,setBusy]=useState(true);
   const [error,setError]=useState('');
   const [search,setSearch]=useState('');
-  const [filter,setFilter]=useState('action');
+  const [filter,setFilter]=useState('candidate');
   const [checkedAt,setCheckedAt]=useState('');
   const request=useRef(0);
   const valid=!!from&&!!to&&from<=to&&to<=today();
   const report=useMemo<ReassuranceReport|null>(()=>loaded&&valid?reassure({...loaded,from,to}):null,[loaded,from,to,valid]);
   const query=digits(search).trim().toLowerCase();
-  const visible=report?.rows.filter(row=>(filter==='all'||filter==='action'&&row.state!=='match'||row.state===filter)&&
-    digits(row.code+' '+row.name+' '+row.evidence.map(doc=>doc.number).join(' ')).toLowerCase().includes(query))||[];
+  const visible=report?.rows.filter(row=>
+    (filter==='candidate'?row.candidates.length>0:
+      filter==='all'||filter==='action'&&row.state!=='match'||row.state===filter)&&
+    digits(row.code+' '+row.name+' '+row.candidates.map(doc=>doc.number).join(' ')).toLowerCase().includes(query))||[];
+  const candidateCount=report?.rows.filter(row=>row.candidates.length>0).length||0;
+  const openCandidate=(number:string)=>{
+    const source=loaded?.transfers.find(item=>item.transfer.number===number);
+    if(source)onOpenTransfer(source.transfer,source.branch);
+  };
   const counts={match:0,transfer:0,return:0,review:0};
   for(const row of report?.rows||[])counts[row.state]++;
 
@@ -119,7 +126,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
   const settled=report?.state==='match';
   const closingUnavailable=!!report&&(!loaded?.closing||loaded.closing.date!==to);
   return <div className="reassurance-screen">
-    <div className="page-title"><div><p className="eyebrow">الفواتير × المستودع 011</p><h1><HeartPulse size={30}/> طمني</h1><p>افحص كميات الفواتير ورصيد 011، واعرف ما يحتاج ترحيلًا أو مراجعة مرتجع.</p></div>
+    <div className="page-title"><div><p className="eyebrow">الفواتير × المستودع 011</p><h1><HeartPulse size={30}/> طمني</h1><p>افحص الفرق، وشوف الترحيل المحدد الذي قد يفسّره بالكامل. لا يُقترح إلغاء مستند بناءً على تطابق كمية صنف واحد فقط.</p></div>
       <div className="save-actions no-print"><button type="button" className="button secondary" disabled={busy||!report} onClick={()=>window.print()}><Printer size={16}/>طباعة النتيجة</button>
       <button type="button" className="button primary" disabled={busy||!valid} onClick={()=>void reload()}><RefreshCw size={17} className={busy?'reassurance-spin':''}/>طمني الآن</button></div></div>
     <section className="panel reassurance-dates"><div className="form-grid">
@@ -135,11 +142,12 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
         <div><h2>{settled?'اطمّن، الكميات مطابقة':report.state==='review'?'في بيانات بدها تحقق': 'في فروقات بدها متابعة'}</h2>
         <p>{settled?'كميات الفواتير والافتتاحي تساوي رصيد 011 حسب الكشوف المحفوظة للفترة.':
           closingUnavailable?'رصيد 011 الفعلي غير متاح بتاريخ الفحص؛ لا يمكن تحديد عدد الترحيلات أو المرتجعات بعد. '+counts.review+' صنف ينتظر التحقق.':
-          `${counts.transfer} صنف يحتاج ترحيل · ${counts.return} صنف فيه زيادة لمراجعة المرتجع · ${counts.review} صنف يحتاج تحقق`}</p>
+          `${candidateCount} صنف له ترحيل مرشح للفحص · ${counts.transfer+counts.return+counts.review} صنف غير محسوم (لا يعني وجود ترحيل يجب إلغاؤه)`}</p>
         <small>الفترة <b dir="ltr">{from} — {to}</b> · {report.invoiceCount} فاتورة · آخر فحص {checkedAt}</small></div>
       </section>
-      <div className="stats reassurance-stats">{([
-        ['match','مطابقة',CheckCircle2],['transfer','تحتاج ترحيل',ArrowDownToLine],['return','زيادة / مراجعة مرتجع',RotateCcw],['review','تحتاج تحقق',Search],
+      <div className="stats reassurance-stats"><button type="button" className={'stat '+(filter==='candidate'?'selected':'')}
+        onClick={()=>setFilter('candidate')} aria-pressed={filter==='candidate'}><Search size={20}/><span>ترحيلات مرشحة للفحص</span><strong>{candidateCount}</strong></button>{([
+        ['match','مطابقة',CheckCircle2],['transfer','نقص',ArrowDownToLine],['return','زيادة',RotateCcw],['review','تحتاج تحقق',Search],
       ] as const).map(([key,label,Icon])=><button type="button" className={'stat '+(filter===key?'selected':'')} key={key} onClick={()=>setFilter(filter===key?'action':key)} aria-pressed={filter===key}><Icon size={20}/><span>{label}</span><strong>{closingUnavailable&&key!=='review'?'—':counts[key]}</strong></button>)}</div>
       <section className="panel">
         <p className="hint">كشف الترحيلات: {loaded?.sourceName||'غير متاح'} · آخر حركة ظاهرة: <b dir="ltr">{report.sourceLastDate||'—'}</b> · رصيد 011 بتاريخ <b dir="ltr">{loaded?.closing?.date||'غير متاح'}</b>.</p>
@@ -150,23 +158,41 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
         {report.approvedGroups>0&&<p className="hint">استُخدمت كميات {report.approvedGroups} مجموعة من نسخة الترحيلات المحفوظة وقت اعتمادها، مرة واحدة لكل مجموعة. يظهر مصدر الكمية في تفاصيل الصنف.</p>}
         {!!report.pendingRecords.length&&<details className="reassurance-details"><summary>{report.pendingRecords.length} سجل يحتاج استكمالًا أو مراجعة</summary>{report.pendingRecords.map(record=><div key={record.id}><button type="button" className="button secondary" onClick={()=>onOpenRecord(record.id)}>فتح {record.numbers.join('، ')}</button><p>{record.branch} · {record.note}</p></div>)}</details>}
         <div className="table-controls no-print"><div className="search"><Search size={17}/><input type="search" aria-label="بحث في نتيجة طمني" placeholder="كود الصنف، اسمه أو رقم ترحيل" value={search} onChange={event=>setSearch(event.target.value)}/></div>
-          <label>العرض<select value={filter} onChange={event=>setFilter(event.target.value)}><option value="action">ما يحتاج متابعة</option><option value="all">كل الأصناف</option>{Object.entries(labels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label></div>
+          <label>العرض<select value={filter} onChange={event=>setFilter(event.target.value)}><option value="candidate">ترحيلات محددة مرشحة للفحص</option><option value="action">كل الفروقات غير المحسومة</option><option value="all">كل الأصناف</option>{Object.entries(labels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label></div>
         {visible.length?<div className="table-scroll"><table className="reassurance-table"><thead><tr><th>الصنف</th><th>كميات الفواتير</th><th>الافتتاحي</th><th>المتوقع في 011</th><th>رصيد 011 الفعلي</th><th>الفرق</th><th>المطلوب</th></tr></thead>
           <tbody>{visible.map(row=><tr key={row.code}><td><b dir="ltr">{row.code}</b><div>{row.name}</div><small>حبة</small></td>
             <td dir="ltr">{quantity(row.invoices)}</td><td dir="ltr">{quantity(row.opening)}</td><td dir="ltr">{quantity(row.expected)}</td><td dir="ltr">{quantity(row.actual)}</td>
             <td dir="ltr" className={row.state==='match'?'green':row.difference?'red':''}><b>{row.difference!==null&&row.difference>0?'+':''}{quantity(row.difference)}</b></td>
             <td><span className={'badge '+badge(row.state)}>{labels[row.state]}</span>
-            {row.state==='transfer'&&<p>راجع ترحيل {quantity(Math.abs(row.difference!))} حبة إلى 011 لتغطية الفواتير.</p>}
-            {row.state==='return'&&<p>زيادة {quantity(row.difference)} حبة. راجع فاتورة غير مسجلة أو مرتجعًا من 011.</p>}
-            <details className="reassurance-details"><summary>التفاصيل والمستندات</summary>
+            {row.candidates.length>0?<div className="reassurance-action">
+              <p><b>{row.candidates.length===1?'ترحيل واحد مرشح للفحص:':'أكثر من ترحيل مطابق؛ لا تختار إلغاءً قبل الحسم:'}</b></p>
+              {row.candidates.map(doc=><div key={doc.number}>
+                <button type="button" className="button secondary" onClick={()=>openCandidate(doc.number)}>
+                  فتح الترحيل {doc.number}</button>
+                <span dir="ltr"> {doc.date} · {quantity(doc.quantity)} حبة</span>
+                <p>{doc.direction} · {doc.itemCount} صنف في المستند · {doc.branch||'الفرع غير مثبت'}</p>
+                {(doc.stockUnexplained||doc.cancellationState!=='active'||doc.invoiceNumbers.length>0)&&
+                  <p className="amber">{[
+                    doc.stockUnexplained?'الرصيد أو مصدر الحركة يحتاج تدقيقًا.':'',
+                    doc.cancellationState!=='active'?'حالة إلغاء SAP غير مثبتة.':'',
+                    doc.invoiceNumbers.length?'ملاحظات SAP تشير إلى فاتورة '+doc.invoiceNumbers.join('، ')+'.':'',
+                  ].filter(Boolean).join(' ')}</p>}
+              </div>)}
+              <p className="hint">هذه ترحيلات مرشحة فقط؛ لا إلغاء تلقائي. يجب التأكد أن المستند زائد وغير مغطّى بفواتير وأن الإلغاء لا يسبب فرقًا آخر.</p>
+            </div>:row.difference!==null&&Math.abs(row.difference)>0.000001?
+              <p className="hint">لم يُحدّد ترحيل مستقل يفسّر هذا الفرق كاملًا. لا يمكن اقتراح إلغاء من قائمة حركات الصنف وحدها.</p>:null}
+            <details className="reassurance-details"><summary>بيانات التدقيق الإضافية (اختياري)</summary>
               <p>صافي الترحيلات: {quantity(row.netTransfers)} حبة · فرق الرصيد عن الافتتاحي والترحيلات: {quantity(row.stockDifference)} حبة.</p>
               {row.notes.map((note,i)=><p key={i} className="amber">{note}</p>)}
-              {row.records.map(record=><p key={record.id}><button type="button" className="button secondary" onClick={()=>onOpenRecord(record.id)}>الفواتير {record.numbers.join('، ')}</button><small>{record.basis==='paper'?'كميات الفاتورة المسجلة':'كميات المجموعة المحفوظة وقت الاعتماد'}</small></p>)}
+              <details className="reassurance-details"><summary>الفواتير المرتبطة ({row.records.length})</summary>
+              {row.records.map(record=><p key={record.id}><button type="button" className="button secondary" onClick={()=>onOpenRecord(record.id)}>الفواتير {record.numbers.join('، ')}</button><small>{record.basis==='paper'?'كميات الفاتورة المسجلة':'كميات المجموعة المحفوظة وقت الاعتماد'}</small></p>)}</details>
+              <details className="reassurance-details"><summary>كل حركات الصنف للبحث اليدوي ({row.evidence.length}) — ليست ترشيحات للإلغاء</summary>
               {row.evidence.length?<div className="reassurance-documents">{row.evidence.map((doc,i)=><div key={doc.number+'-'+i}><button type="button" className="button secondary" onClick={()=>{
                 const source=loaded?.transfers.find(item=>item.transfer.number===doc.number);
                 if(source)onOpenTransfer(source.transfer,source.branch);
               }}>الترحيل {doc.number}</button><span dir="ltr">{doc.date} · {doc.direction} · {quantity(doc.quantity)} {doc.unit}</span><small>{doc.remarks}</small></div>)}</div>:<p>لا توجد حركة لهذا الصنف في فترة كشف الترحيلات.</p>}
-            </details></td></tr>)}</tbody></table></div>:<p className="reassurance-empty">{query?'لا توجد أصناف تطابق البحث.':filter==='action'&&settled?'كل الأصناف مطابقة ضمن الفترة.':'لا توجد أصناف ضمن هذا العرض.'}</p>}
+              </details>
+            </details></td></tr>)}</tbody></table></div>:<p className="reassurance-empty">{query?'لا توجد ترحيلات مرشحة تطابق البحث.':filter==='candidate'?'لم يثبت ترحيل واحد يفسّر الفروقات كلها بشروط الفحص. افتح «كل الفروقات غير المحسومة» للتدقيق، ولا تُلغِ مستندًا بالتخمين.':filter==='action'&&settled?'كل الأصناف مطابقة ضمن الفترة.':'لا توجد أصناف ضمن هذا العرض.'}</p>}
       </section>
     </>}
   </div>;
