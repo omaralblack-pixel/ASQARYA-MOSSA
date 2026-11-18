@@ -1,5 +1,5 @@
 'use client';
-import {useCallback,useEffect,useMemo,useState} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,CalendarCheck,CheckCircle2,ClipboardCheck,FileSpreadsheet,RefreshCw,ShieldCheck,ArrowLeftRight} from 'lucide-react';
 import {listSapFiles,readSapArchive} from '../lib/sap-files-client';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -61,10 +61,12 @@ async function getRecords():Promise<ColonelRecord[]>{
 }
 const displayDate=(value:string)=>value?new Date(value).toLocaleString('ar-JO',{timeZone:'Asia/Amman'}):'—';
 
-export default function Colonel({branches,onOpenRecord,onNavigate}:{
+export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,syncScope='all'}:{
  branches:string[];onOpenRecord:(id:string)=>void;onNavigate:(view:'lieutenant'|'serial-soldier'|'sap-files')=>void;
+ syncVersion?:number;syncScope?:string;
 }){
  const [month,setMonth]=useState(currentMonth);
+ const lastSync=useRef(syncVersion);
  const [selectedDay,setSelectedDay]=useState(today());
  const [records,setRecords]=useState<ColonelRecord[]>([]);
  const [sap,setSap]=useState<LieutenantTransfer[]>([]);
@@ -99,6 +101,11 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
   }finally{setBusy(false)}
  },[month,branches]);
  useEffect(()=>{void reload()},[reload]);
+ useEffect(()=>{
+   if(lastSync.current===syncVersion)return;
+   lastSync.current=syncVersion;
+   if(['reconcile','colonel','sap','all'].includes(syncScope))void reload();
+ },[syncVersion,syncScope,reload]);
  const report=useMemo(()=>loaded?buildColonelReport(
   month,records,sap,control.decisions,control.assignments,control.days,
   !!sourceName&&!sourceIssues.length,
