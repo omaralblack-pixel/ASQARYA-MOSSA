@@ -154,7 +154,7 @@ test('Never selects a wrong-direction or already canceled transfer just because 
 });
 test('An unrelated second item prevents canceling an entire multi-item document',()=>{
   const candidate=live(12,'2617112');
-  candidate.transfer.paste+='\\n'+['CHS00012','Unrelated product',8,'Piece','001','011'].join('\\t');
+  candidate.transfer.paste+='\n'+['CHS00012','Unrelated product',8,'Piece','001','011'].join('\t');
   candidate.lineCount=2;
   const input=fixture({qty:88,actual:100,
     records:[record(88,{},[invoice(88)],[card(88,'2617999')])],
