@@ -532,7 +532,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     <CashVanAudit transfers={transfers} sourceName={transferSourceName||files.find(file=>file.key===selectedTransfer)?.name||''}/>
     </>}
     {(section==='cancellations')&&<>
-    <CancelledTransferReview syncVersion={syncVersion} syncScope={syncScope} transfers={transfers} from={from} to={to}
+    <CancelledTransferReview transfers={transfers} from={from} to={to} syncVersion={syncVersion} syncScope={syncScope}
       onOpenTransfer={source=>onOpenTransfer(source.transfer,source.branch)}/>
     </>}
     {(section==='day')&&<>
