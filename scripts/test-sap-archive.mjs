@@ -19,15 +19,23 @@ globalThis.fetch=async(input,init={})=>{
  }
  if(method==='DELETE'){const prefixes=JSON.parse(init.body).prefixes;return Response.json(prefixes.filter(key=>originals.delete(key)).map(name=>({name})));}
  const key=decodeURIComponent(url.pathname.split('/institution-sap/')[1]||'');
- if(method==='POST'){if(originals.has(key))return Response.json({error:'already exists'},{status:409});originals.set(key,String(init.body));return Response.json({ok:true});}
+ if(method==='POST'){
+  // Supabase rejects Unicode in object storage key with HTTP 400 InvalidKey.
+  if(/[^\\x20-\\x7e]/.test(key))return Response.json({code:'InvalidKey',error:'InvalidKey',message:'Invalid storage key'},{status:400});
+  if(originals.has(key))return Response.json({error:'already exists'},{status:409});
+  originals.set(key,String(init.body));return Response.json({ok:true});
+ }
  return originals.has(key)?new Response(originals.get(key),{headers:{'Content-Type':'application/json'}}):Response.json({error:'not found'},{status:404});
 };
 const bytes=Uint8Array.from([255,254,65,0,66,0,9,0,49,0]);
-async function upload(kind,date=''){
- const response=await handleInstitution(request('/api/lieutenant-files','POST',bytes,{'X-File-Name':encodeURIComponent('رصيد SAP.txt'),'X-File-Kind':kind,'X-Snapshot-Date':date}),env);
+async function upload(kind,date='',name='رصيد SAP.txt'){
+ const response=await handleInstitution(request('/api/lieutenant-files','POST',bytes,{'X-File-Name':encodeURIComponent(name),'X-File-Kind':kind,'X-Snapshot-Date':date}),env);
  assert.equal(response.status,200,await response.clone().text());return response.json();
 }
-const opening=await upload('opening','2026-11-01'),closing=await upload('balance','2026-11-15');assert.notEqual(opening.key,closing.key);
+const opening=await upload('opening','2026-11-01'),closing=await upload('balance','2026-11-15');
+assert.notEqual(opening.key,closing.key);
+assert.match(opening.key,/saputf8-[A-Za-z0-9.\\-]+$/);
+assert.match(opening.key,/^[\\x20-\\x7e]+$/,'Supabase path contains ASCII only');
 const duplicate=await upload('balance','2026-11-15');assert.equal(duplicate.duplicate,true);assert.equal(duplicate.key,closing.key);assert.equal(originals.size,2);
 
 const guardedDb={prepare:()=>({bind:()=>({first:async()=>({total:3,done:1})})})};
@@ -36,7 +44,9 @@ assert.equal(blocked.status,409,'An original with 1/3 completed SAP batches must
 assert.equal(originals.size,2,'Protected SAP originals remain in Supabase');
 
 const list=await (await handleInstitution(request('/api/lieutenant-files?page=0'),env)).json();assert.equal(list.files.length,2);assert.deepEqual(list.files.map(x=>[x.kind,x.snapshotDate]),[['opening','2026-11-01'],['balance','2026-11-15']]);
-for(const file of list.files){const opened=await handleInstitution(request('/api/lieutenant-files?key='+encodeURIComponent(file.key)),env);assert.deepEqual(new Uint8Array(await opened.arrayBuffer()),bytes);assert.ok(opened.headers.get('Content-Disposition').includes('filename*='));}
+assert.ok(list.files.every(x=>x.name==='رصيد SAP.txt'),'Original Arabic filename must be displayed in file archive');
+for(const file of list.files){const opened=await handleInstitution(request('/api/lieutenant-files?key='+encodeURIComponent(file.key)),env);assert.deepEqual(new Uint8Array(await opened.arrayBuffer()),bytes);assert.ok(opened.headers.get('Content-Disposition').includes(encodeURIComponent(file.name)),
+  'Download must preserve Unicode filename in RFC 5987 header');}
 const invalidDate=await handleInstitution(request('/api/lieutenant-files','POST',bytes,{'X-File-Name':'stock.txt','X-File-Kind':'balance','X-Snapshot-Date':'2026-02-30'}),env);assert.equal(invalidDate.status,400);
 const unauth=await handleInstitution(new Request(origin+'/api/sap-processing'),env);assert.equal(unauth.status,401);
 const crossOrigin=await handleInstitution(request('/api/sap-processing','POST','{}',{Origin:'https://evil.test'}),env);assert.equal(crossOrigin.status,403);
@@ -59,6 +69,20 @@ assert.ok(unifiedList.files.some(file=>file.key===unified.key&&file.kind==='unif
 const restoredUnified=await handleInstitution(request('/api/lieutenant-files?key='+encodeURIComponent(unified.key)),env);
 assert.equal(restoredUnified.status,200);
 assert.deepEqual(new Uint8Array(await restoredUnified.arrayBuffer()),bytes);
+// Exact user regression: Arabic name previously returned HTTP 502 for a
+// Supabase Storage 400 InvalidKey; preserve bytes, display name and idempotence.
+const arabic=await upload('unified','','كويري 18.txt');
+assert.match(arabic.key,/^[\\x20-\\x7e]+$/);
+assert.ok(!arabic.key.includes('كويري'));
+const again=await upload('unified','','كويري 18.txt');
+assert.equal(again.key,arabic.key);
+assert.equal(again.duplicate,true);
+const decodedList=await (await handleInstitution(request('/api/lieutenant-files?page=0'),env)).json();
+assert.ok(decodedList.files.some(x=>x.key===arabic.key&&x.name==='كويري 18.txt'));
+const downloadedArabic=await handleInstitution(request('/api/lieutenant-files?key='+encodeURIComponent(arabic.key)),env);
+assert.equal(downloadedArabic.status,200);
+assert.deepEqual(new Uint8Array(await downloadedArabic.arrayBuffer()),bytes);
+assert.ok(downloadedArabic.headers.get('Content-Disposition').includes(encodeURIComponent('كويري 18.txt')));
 globalThis.fetch=previousFetch;
 // Cloudflare edge/gateway sometimes responds with HTML or bad JSON for HTTP 503.
 const sapScreen=fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8');
