@@ -202,6 +202,51 @@ test('Partial Cash Van reverse does not authorize canceling the complete origina
     'no full original cancellation from partially reversed Cash Van');
   assert.deepEqual(report.settlements,[]);
 });
+const {buildReassuranceCouncil}=loadTs('app/lib/reassurance-council.ts');
+const control={days:[{day:date,invoices_complete:1,confirmed_at:'',confirmed_by:'operator'}],
+  assignments:[],decisions:[],signoffs:[]};
+test('Tammeni reads the soldier project ledger and colonel day statuses without inventing Saja Excel evidence',()=>{
+  const council=buildReassuranceCouncil({from:date,to:date,
+    records:[record()],transfers:[live()],controls:[control],sourceReady:true});
+  assert.equal(council.soldier.invoices,1);
+  assert.equal(council.soldier.paperPending,0);
+  assert.equal(council.soldier.sajaAvailable,false);
+  assert.equal(council.colonel.invoiceDays,1);
+  assert.equal(council.colonel.readyDays,1);
+  assert.equal(council.colonel.openTransfers,0);
+});
+test('Repeated invoice numbers, unresolved paper and missing day confirmations stay visible from source',()=>{
+  const second={...record(),id:'r2',payload:record().payload.replace('2631000001','2631000001')};
+  const first=record();
+  const council=buildReassuranceCouncil({from:date,to:date,
+    records:[first,second],transfers:[live()],controls:[{...control,days:[]}],sourceReady:true});
+  assert.ok(council.soldier.duplicates>=2);
+  assert.ok(council.findings.some(item=>item.source==='soldier'&&item.title.includes('مكرر')));
+  assert.ok(council.findings.some(item=>item.source==='colonel'&&item.title.includes('يوم')));
+});
+test('Tammeni cross-agent council respects the lieutenant fully reversed Cash Van pair',()=>{
+  const orig=live(12,'2616469','Piece','002','011',{
+    branch:'23 — خالد',remarks:'كاش فان إربد',
+    transfer:{...card(12,'2616469','Piece','002','011'),date:'2026-11-12'},
+  });
+  const reverse=live(12,'2616571','Piece','011','002',{
+    branch:'23 — خالد',remarks:'عكسي ترحيل 2616469',
+    transfer:{...card(12,'2616571','Piece','011','002'),date:'2026-11-14'},
+  });
+  const pending=live(12,'2616702','Piece','002','011',{
+    branch:'23 — خالد',remarks:'كاش فان جرش',
+    transfer:{...card(12,'2616702','Piece','002','011'),date:'2026-11-16'},
+  });
+  const result=buildReassuranceCouncil({from:'2026-11-01',to:'2026-11-18',
+    records:[record()],transfers:[live(),orig,reverse,pending],
+    controls:[control],sourceReady:true});
+  assert.ok(result.lieutenant.reversed>=1);
+  assert.ok(result.lieutenant.cashVanPending>=1);
+  assert.ok(!result.findings.some(item=>item.title==='العقيد بحاجة حسم ترحيل'&&
+    item.transferNo==='2616469'),'do not reopen settled originals as cancellation recommendations');
+  assert.ok(result.findings.some(item=>item.transferNo==='2616702'&&item.source==='lieutenant'));
+});
+
 console.log(`${passed} reassurance business-rule tests passed.`);
 
 const {restoreUnifiedStockSnapshots}=loadTs('app/lib/lieutenant-source.ts');
