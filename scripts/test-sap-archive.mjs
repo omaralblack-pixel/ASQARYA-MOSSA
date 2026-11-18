@@ -77,7 +77,7 @@ assert.ok(!arabic.key.includes('كويري'));
 const again=await upload('unified','','كويري 18.txt');
 assert.equal(again.key,arabic.key);
 assert.equal(again.duplicate,true);
-const decodedList=await (await handleInstitution(request('/api/lieutenant-files?page=0'),env)).json();
+const decodedList=await (await handleInstitution(request('/api/lieutenant-files?page=2'),env)).json();
 assert.ok(decodedList.files.some(x=>x.key===arabic.key&&x.name==='كويري 18.txt'));
 const downloadedArabic=await handleInstitution(request('/api/lieutenant-files?key='+encodeURIComponent(arabic.key)),env);
 assert.equal(downloadedArabic.status,200);
