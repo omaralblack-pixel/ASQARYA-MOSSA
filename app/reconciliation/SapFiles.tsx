@@ -33,6 +33,21 @@ export default function SapFiles(){
  const [fromDate,FROM]=useState(()=>today().slice(0,8)+'01'),[toDate,TO]=useState(today());
  const [extraRemarksUdf,SET_EXTRA_REMARKS_UDF]=useState('');
  const queryRef=useRef<HTMLTextAreaElement>(null);
+ const extraRemarksStorageKey='asqarya-sap-extra-remarks-column';
+ useEffect(()=>{
+  try{
+   const saved=window.localStorage.getItem(extraRemarksStorageKey)||'';
+   if(/^U_[A-Za-z][A-Za-z0-9_]{0,49}$/.test(saved))SET_EXTRA_REMARKS_UDF(saved);
+  }catch{/* Browser storage is optional; never block SAP processing. */}
+ },[]);
+ function changeExtraRemarks(value:string){
+  SET_EXTRA_REMARKS_UDF(value);
+  try{
+   if(!value.trim())window.localStorage.removeItem(extraRemarksStorageKey);
+   else if(/^U_[A-Za-z][A-Za-z0-9_]{0,49}$/.test(value.trim()))
+     window.localStorage.setItem(extraRemarksStorageKey,value.trim());
+  }catch{/* Keep the current query usable even without storage. */}
+ }
  const lock=useRef(false),mounted=useRef(true);
  let unifiedSql='',queryError='';
  try{unifiedSql=unifiedSapQuery(fromDate,toDate,extraRemarksUdf.trim());}catch(e){queryError=e instanceof Error?e.message:'فترة غير صالحة.';}
@@ -287,7 +302,7 @@ export default function SapFiles(){
    <div className="table-controls">
      <label>اسم عمود Remarks الإضافي من SAP (اختياري)
        <input type="text" dir="ltr" value={extraRemarksUdf} placeholder="U_YourFieldName" spellCheck={false}
-         onChange={e=>SET_EXTRA_REMARKS_UDF(e.target.value)} />
+         onChange={e=>changeExtraRemarks(e.target.value)} />
      </label>
      <button type="button" className="button secondary" onClick={()=>void copySapUdfDiscovery()}>
        <Copy size={15}/>نسخ كويري تحديد عمود الفاتورة
