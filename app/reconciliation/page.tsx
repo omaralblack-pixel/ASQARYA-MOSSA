@@ -765,7 +765,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
  {tab==='reassurance'&&<Reassurance branches={branches} onOpenRecord={id=>{void run(()=>openRecord(id));}}
-   onOpenTransfer={(transfer,branch)=>{const next=blank();D({...next,branch,transfers:[{...transfer,id:uid()}]});setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+' من شاشة طمني.');T('work');}}/>}
+   onNavigate={view=>{E('');Q('');T(view)}} onOpenTransfer={(transfer,branch)=>{const next=blank();D({...next,branch,transfers:[{...transfer,id:uid()}]});setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+' من شاشة طمني.');T('work');}}/>}
  {tab==='sap-files'&&<SapFiles/>}
  {tab==='colonel'&&<Colonel branches={branches}
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
