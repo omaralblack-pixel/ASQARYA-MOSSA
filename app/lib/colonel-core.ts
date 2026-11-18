@@ -9,7 +9,7 @@ export type ColonelAssignment={transfer_no:string;invoice_day:string;reason:stri
 export type ColonelDayState={day:string;invoices_complete:number;confirmed_at:string;confirmed_by:string};
 export type ColonelInvoice={number:string;date:string;branch:string;amount:string;recordId:string;
   complete:boolean;dateSource:string;transfers:string[];status:string};
-export type ColonelNonInvoice={recordId:string;branch:string;date:string;transfers:string[];
+export type ColonelNonInvoice={recordId:string;invoiceId:string;branch:string;date:string;transfers:string[];
   state:'settled'|'pending'|'unverified';note:string;counterparts:string[];
   proofs:{number:string;counterparts:string[];detail:string}[]};
 export type ColonelTransfer={number:string;postingDate:string;invoiceDay:string;invoiceNumbers:string[];
@@ -47,14 +47,14 @@ function nonInvoiceEvidence(number:string,sources:Map<string,LieutenantTransfer>
 export function buildColonelReport(
  month:string,records:ColonelRecord[],sap:LieutenantTransfer[],
  decisions:CancellationDecision[]=[],assignments:ColonelAssignment[]=[],
- dayStates:ColonelDayState[]=[],sourceReady=false,
+ dayStates:ColonelDayState[]=[],sourceReady=false,asOf?:string,
 ):ColonelReport{
  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw Error('اختر شهرًا صحيحًا.');
  const end=month+'-'+String(new Date(Date.UTC(+month.slice(0,4),+month.slice(5),0)).getUTCDate()).padStart(2,'0');
  const warnings:string[]=[],allInvoices:ColonelInvoice[]=[];
  const nonInvoices:ColonelNonInvoice[]=[];
  const byNumber=new Map(sap.map(source=>[source.transfer.number,source]));
- const movement=analyzeLieutenantMovements(sap,end);
+ const movement=analyzeLieutenantMovements(sap,asOf&&asOf<end?asOf:end);
  const invoiceGroups=new Map<string,Set<string>>();
  const groupDays=new Map<string,Set<string>>();
  const fromProject=new Map<string,{records:Set<string>;invoices:Set<string>;groups:Set<string>}>();
@@ -85,7 +85,7 @@ export function buildColonelReport(
        proofs.map(item=>item.number+(item.counterparts.length?' ↔ '+item.counterparts.join('، '):' — إلغاء SAP')).join('؛ '):
        'لم تكتمل تسوية جميع الترحيلات: '+proofs.filter(item=>item.state!=='settled')
          .map(item=>item.number+' — '+item.detail).join('؛ ');
-     nonInvoices.push({recordId:record.id,branch:record.branch||draft.branch||'',date:day,
+     nonInvoices.push({recordId:record.id,invoiceId:invoice.id,branch:record.branch||draft.branch||'',date:day,
        transfers:ids,state,note,counterparts:cover,
        proofs:proofs.map(({number,counterparts,detail})=>({number,counterparts,detail}))});
      if(!day)warnings.push('سجل حركة بلا فاتورة زرقاء ولا تاريخ متابعة مثبت: '+record.id+
