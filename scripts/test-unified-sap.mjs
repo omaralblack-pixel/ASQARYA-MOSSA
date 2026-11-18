@@ -40,7 +40,7 @@ const exported=[
  row({RecordType:'TRANSFER',DocumentNumber:'2615754',DocumentDate:'2026-11-03',DocEntry:'89101',
    LineNumber:'1',ItemCode:'CHS00561',ItemName:'جبنة',Quantity:'10',Unit:'Piece',
    FromWarehouse:'001',ToWarehouse:'011',Remarks:'مؤسسة العقبة',JournalRemarks:'Inventory Transfers -',
-    BlueInvoiceRemarks:'2623000001',CancellationStatus:'Y'}),
+    ExtraSapRemarks:'2623000001',CancellationStatus:'Y'}),
  row({RecordType:'OPENING',DocumentDate:'2026-11-01',ItemCode:'CHS00561',ItemName:'جبنة',
    Unit:'Piece',Warehouse:'011',StockQuantity:'5'}),
  row({RecordType:'CLOSING',DocumentDate:'2026-11-03',ItemCode:'CHS00561',ItemName:'جبنة',
@@ -66,15 +66,15 @@ assert.ok(flagged.warnings[0].includes('262332321'));
 assert.equal(flagged.counts.TRANSFER,1,'Warning must not drop a transfer');
 assert.ok(parts.transfers.includes('2615754'));
 assert.ok(parts.transfers.includes('2623000001'));
-assert.ok(parts.transfers.includes('Blue Invoice Remarks'));
+assert.ok(parts.transfers.includes('Extra SAP Remarks'));
 assert.ok(parts.transfers.includes('Inventory Transfers -'));
 // An already-archived older unified source with 30 columns must still load.
-const oldHeaders=headers.filter(x=>x!=='BlueInvoiceRemarks');
+const oldHeaders=headers.filter(x=>x!=='ExtraSapRemarks');
 const oldSource=exported.split('\n').map(line=>line.split('\t').filter((_,index)=>
-  index!==headers.indexOf('BlueInvoiceRemarks')).join('\t')).join('\n');
+  index!==headers.indexOf('ExtraSapRemarks')).join('\t')).join('\n');
 assert.equal(oldHeaders.length,30);
 assert.equal(splitUnifiedSapSource(oldSource).counts.TRANSFER,1);
-assert.ok(splitUnifiedSapSource(oldSource).transfers.includes('Blue Invoice Remarks'));
+assert.ok(splitUnifiedSapSource(oldSource).transfers.includes('Extra SAP Remarks'));
 assert.ok(parts.transfers.includes('\tY'));
 assert.ok(parts.opening.includes('\t5'));
 assert.ok(parts.closing.includes('\t15'));
