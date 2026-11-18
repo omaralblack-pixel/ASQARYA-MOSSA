@@ -94,6 +94,9 @@ function Badge({state,label}:{state:string;label?:string}){return <span classNam
 function TransferCard({transfer,index,onChange,onRemove,onLookup}:{transfer:any,index:number,onChange:(t:any)=>void,onRemove:()=>void,onLookup:(number:string)=>void}){const parsed=useMemo(()=>parseTransfer(transfer.paste,{allowReverse:true}),[transfer.paste]);return <section className="transfer-card"><div className="card-title"><span className="number">{index+1}</span><b>الترحيل {index+1}</b>{<button className="icon-button danger" aria-label={'حذف الترحيل '+(index+1)} onClick={onRemove}><Trash2 size={16}/></button>}</div><div className="two-fields"><label>رقم الترحيل<input value={transfer.number} onChange={e=>onChange({...transfer,number:e.target.value})} onBlur={e=>{if(e.target.value.trim()&&!transfer.paste.trim())onLookup(e.target.value.trim())}} placeholder="مثال: 2615835"/></label><label>تاريخ الترحيل<input type="date" value={transfer.date} onChange={e=>onChange({...transfer,date:e.target.value})}/></label></div><label className="paste-label">جدول SAP<textarea aria-label={'جدول SAP '+(index+1)} value={transfer.paste} onChange={e=>onChange({...transfer,paste:e.target.value})} placeholder={'الصق جدول الترحيل مع العناوين هنا…\nItem No.    Quantity    UoM Name    From Warehouse    To Warehouse'} dir="ltr"/></label><div className="paste-summary">{transfer.paste?<><span><CheckCircle2 size={14}/>{parsed.lines.length} بند صالح</span>{parsed.lines.some(line=>line.from==='011')&&<span>ترحيل عكسي · يُخصم من الصافي</span>}{parsed.issues.length>0&&<span className="red">{parsed.issues.length} ملاحظات قراءة</span>}{parsed.excluded.length>0&&<span className="amber">{parsed.excluded.length} خارج مسارات المؤسسة</span>}</>:<span>نسخ من SAP ← لصق هنا. تُقرأ Quantity فقط.</span>}</div>{parsed.issues.length>0&&<details><summary>ملاحظات قراءة الترحيل</summary>{parsed.issues.map((p,i)=><p className="red" key={i}>{p}</p>)}</details>}{parsed.excluded.length>0&&<details><summary>بنود خارج نطاق المؤسسة</summary>{parsed.excluded.map((p,i)=><p key={i}>{p}</p>)}</details>}</section>}
 export default function Home(){const [reference,REF]=useState<Item[]>([]),[branches,BR]=useState<string[]>([]),[drivers,DR]=useState<string[]>([]),[draft,D]=useState<OrderedDraft|null>(null),[tab,T]=useState('work'),[loading,L]=useState(true),[busy,B]=useState(false),[error,E]=useState(''),[notice,N]=useState(''),[records,REC]=useState<any[]>([]),[query,Q]=useState(''),[onlyDiff,DIFF]=useState(false),[sort,SORT]=useState('entry'),[pageFilter,PAGE]=useState('all'),[pick,PICK]=useState(''),[edit,EDIT]=useState<Item|null>(null),[linkSap,LINK]=useState(''),[importTexts,IT]=useState<Record<string,string>>({}),[month,M]=useState(today().slice(0,7)),[serial,SERIAL]=useState(''),[columns,COLS]=useState({number:-1,date:-1,branch:-1}),[filtered,FILTERED]=useState(false),[dateFormat,DF]=useState('dmy'),[monthTab,MT]=useState('missing'),[monthReady,MR]=useState(false);
 const [monthlySource,setMonthlySource]=useState('');
+const monthlyLoadedText=useRef('');
+const monthlyEditorText=useRef('');
+monthlyEditorText.current=serial;
 const sync=useInstitutionSync();
 const [remoteConflict,setRemoteConflict]=useState('');
 const draftBaseline=useRef('');
@@ -218,11 +221,17 @@ useEffect(()=>{
   const file=candidates.find(x=>monthlyKeys.has(x.key));
   const shared=file?{name:file.name,text:await readSapArchive(file)}:await readSavedSapImport();
   if(!active)return;
-  if(shared){setSerial(shared.text);setMonthlySource(shared.name);await getRecords();if(active)MR(true);}
-  else E('لا يوجد كشف SAP محفوظ. ارفعه من شاشة ملفات SAP مرة واحدة.');
+  if(shared){
+    if(monthlyEditorText.current.trim()&&monthlyEditorText.current!==monthlyLoadedText.current){
+      E('وصل تحديث SAP جديد، لكن لديك كشف شهري معدل ولم يُحفظ. احتفظنا به؛ راجع المصدر قبل استبداله.');
+      return;
+    }
+    monthlyLoadedText.current=shared.text;
+    setSerial(shared.text);setMonthlySource(shared.name);await getRecords();if(active)MR(true);
+  }else E('لا يوجد كشف SAP محفوظ. ارفعه من شاشة ملفات SAP مرة واحدة.');
  })().catch(e=>{if(active)E(e.message)});
  return()=>{active=false};
-},[tab]);
+},[tab,sync.signal.version]);
 async function run(fn:()=>Promise<void>){B(true);E('');N('');try{await fn()}catch(e:any){E(e.message)}finally{B(false)}}
 function change(p:Partial<OrderedDraft>){
   D(d=>{
