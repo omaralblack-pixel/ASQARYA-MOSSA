@@ -150,7 +150,7 @@ export default function SapFiles(){
    // Filename equality is NOT source equality. Do not spawn a new D1 import
    // when a same-name but different-hash source is partially processed.
    const otherPartial=Object.values(jobs).find(row=>
-    row.done<row.total&&row.key!==saved.key&&row.fromSapStorageFilename(key.split('__').at(-1)||'')===file.name);
+    row.done<row.total&&row.key!==saved.key&&fromSapStorageFilename(row.key.split('__').at(-1)||'')===file.name);
    const sameSource=!!otherPartial&&otherPartial.key.split('__')[1]===saved.key.split('__')[1];
    if(otherPartial){
     const checked:SapArchiveFile={key:saved.key,name:file.name,kind:archiveKind,
@@ -273,12 +273,12 @@ export default function SapFiles(){
     <strong>{orphanActive.length} معالجة غير مكتملة بلا أصل ظاهر في Supabase؛ {orphanHistory.length} سجل تاريخي مكتمل أو بلا دفعات</strong>
     <p>الملفات ذات المعالجة غير المكتملة هي أولوية الاسترجاع. سجل D1 ليس إثباتًا أن الأصل محفوظ، ولا نربط الملفات بالاسم وحده.</p>
     {orphanActive.slice(0,20).map(row=><p key={row.key}>
-     <b dir="auto">{row.fromSapStorageFilename(key.split('__').at(-1)||'')}</b> <small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done} من {row.total} دفعة
+     <b dir="auto">{fromSapStorageFilename(row.key.split('__').at(-1)||'')}</b> <small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done} من {row.total} دفعة
      {' '}<button type="button" className="button secondary small" disabled={busy}
        onClick={()=>void exclusive(()=>verifyUnlistedOriginal(row))}>تحقق من الأصل</button>
     </p>)}
     {orphanHistory.length>0&&<details><summary>{orphanHistory.length} سجلات معالجة تاريخية — للعرض فقط</summary>
-     {orphanHistory.map(row=><p key={row.key}><span dir="auto">{row.fromSapStorageFilename(key.split('__').at(-1)||'')}</span>
+     {orphanHistory.map(row=><p key={row.key}><span dir="auto">{fromSapStorageFilename(row.key.split('__').at(-1)||'')}</span>
        {' '}<small dir="ltr">({row.key.split('__')[1]?.slice(0,10)})</small> — {row.done}/{row.total}</p>)}
     </details>}
    </div></div>}
