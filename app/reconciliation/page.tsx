@@ -21,6 +21,7 @@ import AqabaWorkspace from './AqabaWorkspace';
 import ThemeToggle from '../../components/ThemeToggle';
 import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
+import {fractionalQuantityNotes} from '../lib/fractional-quantity-notes';
 import {ArrowLeftRight,Check,CheckCircle2,AlertTriangle,Plus,Trash2,ClipboardPaste,FileText,CalendarDays,History,Settings2,Search,Save,Printer,Upload,ChevronDown,ArrowUpRight,RefreshCw,Copy,PackageCheck} from 'lucide-react';
 import {prepareReconciliation,readReconciliationRecord,withInvoiceDates,editInvoiceDate,addTransferToDraft,withSapInvoiceNumbers,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,monthlyColumns,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource, type BranchException, unmatchedBranchSources} from '../lib/reconcile';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
@@ -194,6 +195,10 @@ const expected=result?.expected??null;
 const paperAmount=result?.total??null;
 const difference=paperAmount===null||expected===null?null:paperAmount-expected;
 const acceptedDifference=!!result&&'acceptedDifference' in result&&result.acceptedDifference===true;
+const fractionalNotes=fractionalQuantityNotes(result?.rows||[]);
+const suspectedFractionalNotes=fractionalNotes.filter(row=>row.suspectedSapRounding);
+const fractionalPositiveFils=suspectedFractionalNotes.reduce((sum,row)=>sum+Math.max(0,row.amountDifferenceFils??0),0);
+const fractionalNegativeFils=suspectedFractionalNotes.reduce((sum,row)=>sum+Math.min(0,row.amountDifferenceFils??0),0);
 const comparisonStatus=difference===null?'review':difference!==0&&!acceptedDifference?'difference':'match';
 const comparisonLabel='مقارنة قيمة إجمالي المجموعة (رقم الصفحة للتشييك فقط)';
 const pageOptions=[...new Set([0,...sortedRows.map(row=>getPage(row.key))])].sort((a,b)=>a-b);const monthResult=useMemo(()=>monthly(serial,month,columns,filtered,dateFormat,records,branches),[serial,month,columns,filtered,dateFormat,records,branches]);
@@ -772,7 +777,31 @@ return <div className="recon-app"><header className="topbar"><a className="brand
     <span>{comparisonLabel}</span>
     {difference!==null?<Badge state={comparisonStatus} label={difference===0?'القيمة الإجمالية متطابقة':acceptedDifference?'فرق قيمة معتمد':undefined}/>:<small>{expected===null?'قيمة الأصناف غير مكتملة':'أدخل مبالغ الفواتير لإظهار النتيجة'}</small>}
   </div>
-</div></div><p className="hint">رقم الصفحة للتشييك الشخصي فقط؛ لا يعني أن الصنف أو الترحيل يخص فاتورة بعينها. الربط الرسمي يعتمد بيانات الفواتير والترحيلات المحفوظة.</p>{query&&<p className="amber filter-warning">البحث وفلتر أرقام التشييك يحددان البنود المعروضة والمطبوعة فقط. الإجمالي والفرق والمطابقة تُحسب على المجموعة كاملة.</p>}</section><section className="panel save-panel"><label>ملاحظات المجموعة<textarea value={draft.notes} maxLength={5000} onChange={e=>change({notes:e.target.value})} placeholder="أي ملاحظات على المستندات أو الفروقات…"/></label><div className="save-actions"><div><Badge state={result.status} label={acceptedDifference?'مطابق باعتمادك':undefined}/><small>{acceptedDifference?'تم اعتماد فرق القيمة: '+money(result.priceDifference)+' دينار. احفظ لتثبيت الاعتماد.':'يمكن حفظ مجموعة تحتاج مراجعة والعودة لإكمالها.'}</small></div>{result.status==='difference'&&result.total!==null&&result.expected!==null&&<button type="button" className="button secondary" disabled={busy} onClick={()=>{
+</div></div><p className="hint">رقم الصفحة للتشييك الشخصي فقط؛ لا يعني أن الصنف أو الترحيل يخص فاتورة بعينها. الربط الرسمي يعتمد بيانات الفواتير والترحيلات المحفوظة.</p>{query&&<p className="amber filter-warning">البحث وفلتر أرقام التشييك يحددان البنود المعروضة والمطبوعة فقط. الإجمالي والفرق والمطابقة تُحسب على المجموعة كاملة.</p>}</section><section className="panel save-panel"><label>ملاحظات المجموعة<textarea value={draft.notes} maxLength={5000} onChange={e=>change({notes:e.target.value})} placeholder="أي ملاحظات على المستندات أو الفروقات…"/></label>
+{fractionalNotes.length>0&&<div className="fractional-notes" role="region" aria-label="فروقات الكسور للمراجعة آخر الشهر">
+  <h3>فروقات الكسور — متابعة آخر الشهر ({fractionalNotes.length} صنف)</h3>
+  <p>هذه ملاحظات آلية من صافي الكمية بالحبة بعد التحويل من SAP. الفرق الموجب يعني أن قيمة SAP أعلى من قيمة أقرب عدد صحيح، والسالب يعني أقل. لا يتم تقريب الكمية أو تعديل السعر أو اعتماد المطابقة تلقائيًا.</p>
+  <div className="fractional-totals">
+    <span>زيادات مشتبه أنها تقريب: <b dir="ltr">+{money(fractionalPositiveFils)} د.أ</b></span>
+    <span>نواقص مشتبه أنها تقريب: <b dir="ltr">{money(fractionalNegativeFils)} د.أ</b></span>
+    <span>صافي أثر الكسور المحتملة: <b dir="ltr">{fractionalPositiveFils+fractionalNegativeFils>0?'+':''}{money(fractionalPositiveFils+fractionalNegativeFils)} د.أ</b></span>
+  </div>
+  <div className="table-scroll"><table className="fractional-table">
+    <thead><tr><th>الصنف</th><th>الترحيل المرتبط بالكسر</th><th>الصافي من SAP</th><th>أقرب حبة كاملة (للمقارنة فقط)</th><th>فرق الحبات</th><th>أثر القيمة</th><th>التصنيف</th></tr></thead>
+    <tbody>{fractionalNotes.map(row=><tr key={row.key}>
+      <td><b>{row.code||row.sapCode}</b><small>{row.name}</small></td>
+      <td dir="ltr">{row.transferNos.join('، ')||'—'}</td>
+      <td dir="ltr">{num(row.sapQuantity)}</td>
+      <td dir="ltr">{row.nearestWholePiece}</td>
+      <td dir="ltr">{row.pieceDifference>0?'+':''}{num(row.pieceDifference)}</td>
+      <td dir="ltr">{row.suspectedSapRounding&&row.amountDifferenceFils!==null
+        ?(row.amountDifferenceFils>0?'+':'')+money(row.amountDifferenceFils)+' د.أ':'غير محسوم'}</td>
+      <td>{row.suspectedSapRounding?'احتمال تقريب SAP':'كسر بحاجة مراجعة'}</td>
+    </tr>)}</tbody>
+  </table></div>
+  <p>الأرقام أعلاه تقديرية للمراجعة وليست تصحيحًا محاسبيًا. الكسور غير المحسومة لا تدخل في مجموع أثر التقريب. احتفظ بمرجع الترحيل وراجع فروقات الزيادة والنقص عند إقفال الشهر.</p>
+</div>}
+<div className="save-actions"><div><Badge state={result.status} label={acceptedDifference?'مطابق باعتمادك':undefined}/><small>{acceptedDifference?'تم اعتماد فرق القيمة: '+money(result.priceDifference)+' دينار. احفظ لتثبيت الاعتماد.':'يمكن حفظ مجموعة تحتاج مراجعة والعودة لإكمالها.'}</small></div>{result.status==='difference'&&result.total!==null&&result.expected!==null&&<button type="button" className="button secondary" disabled={busy} onClick={()=>{
   change({acceptedDifference:{paper:result.total!,calculated:result.expected!}});
 }}><Check size={16}/>اعتماد المطابقة رغم الفرق</button>}
 {acceptedDifference&&<button type="button" className="button secondary" disabled={busy} onClick={()=>change({acceptedDifference:undefined})}>إلغاء اعتماد الفرق</button>}
