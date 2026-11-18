@@ -1,7 +1,24 @@
 import {dateValue,digits,sapInvoiceNumbers,signedNumeric,parseTransfer,withInvoiceDates,type Draft,type Transfer} from './reconcile';
 
 const headers=['رقم الترحيل','تاريخ الترحيل','كود الفرع','اسم الفرع','Remarks','Item No.','Item Description','Quantity','UoM Code','From Warehouse','To Warehouse'];
+// SAP exports and the unified 011 query use different but equivalent headings.
+// Branch columns are optional in the unified source: missing branch evidence
+// remains a member-level review issue, never an invented branch or approval.
+const headerAliases=[
+  ['رقم الترحيل','Document Number','DocNum','Doc No','Transfer Number'],
+  ['تاريخ الترحيل','Document Date','DocDate','Posting Date','التاريخ'],
+  ['كود الفرع','Branch Code','BranchCode'],
+  ['اسم الفرع','Branch Name','Branch','الفرع'],
+  ['Remarks','Comments','Journal Remarks','JrnlMemo','Notes','ملاحظات','الملاحظات'],
+  ['Item No.','ItemCode','Item No','كود الصنف','رقم الصنف'],
+  ['Item Description','ItemName','اسم الصنف','وصف الصنف'],
+  ['Quantity','الكمية'],
+  ['UoM Code','UoM Name','UoM','الوحدة','وحدة المخزون'],
+  ['From Warehouse','FromWhsCod','من المستودع','من مستودع'],
+  ['To Warehouse','WhsCode','إلى المستودع','الى المستودع','إلى مستودع'],
+] as const;
 const normalize=(value:string)=>value.trim().toLowerCase();
+const headerKey=(value:string)=>normalize(value).replace(/[\s._\-:،]+/g,'');
 const branchCodeKey=(value:string)=>digits(value).trim().replace(/^0+(?=\d)/,'');
 const branchNameKey=(value:string)=>normalize(value).replace(/[أإآٱ]/g,'ا').replace(/ى/g,'ي')
   .replace(/[\u064B-\u065F\u0670ـ]/g,'').replace(/\s+/g,' ');
@@ -34,14 +51,20 @@ const readInvoices=sapInvoiceNumbers;
 export function readSapImportRows(paste:string):{rows:string[][];issues:string[]}{
   const rows=paste.replace(/^\uFEFF/,'').split(/\r?\n/);
   const headerIndex=rows.findIndex(line=>line.trim());
-  const columns=(rows[headerIndex]||'').split('\t').map(normalize);
+  const columns=(rows[headerIndex]||'').split('\t').map(headerKey);
   // SAP exports can have both Remarks (branch/transfer request) and Journal
   // Remarks (blue invoice); include every notes column, even repeated headers.
   const noteIndexes=columns.flatMap((name,index)=>
     /remarks?|comments?|jrnlmemo|journalmemo|notes?|ملاحظ|ريماركس/.test(name)?[index]:[]);
-  const indexes=headers.map(header=>columns.indexOf(normalize(header)));
+  const indexes=headers.map((_,i)=>columns.findIndex(name=>
+    headerAliases[i].some(alias=>headerKey(alias)===name)));
   if(indexes[4]<0&&noteIndexes.length)indexes[4]=noteIndexes[0];
-  const missing=headers.filter((_,i)=>indexes[i]<0);
+  const cancellationIndex=columns.findIndex(name=>
+    ['canceled','cancellationstatus','حالةالإلغاء'].includes(name));
+  // Branch identification and remarks are evidence, not mandatory transfer
+  // columns. Do not reject an otherwise valid source solely for lacking them.
+  const mandatory=new Set([0,1,5,6,7,8,9,10]);
+  const missing=headers.filter((_,i)=>mandatory.has(i)&&indexes[i]<0);
   if(missing.length)return {rows:[],issues:['أعمدة مفقودة: '+missing.join('، ')]};
   const data:string[][]=[];
   const issues:string[]=[];
@@ -53,7 +76,10 @@ export function readSapImportRows(paste:string):{rows:string[][];issues:string[]
     // Keep notes in separate lines so "Based On ... Request" removal never
     // removes an invoice number from the adjacent notes column.
     values[4]=[...new Set(noteIndexes.map(index=>(cells[index]||'').trim()).filter(Boolean))].join('\n');
-    if(normalize(values[0])===normalize(headers[0]))continue;
+    if(headerAliases[0].some(alias=>headerKey(values[0])===headerKey(alias)))continue;
+    // Retain SAP's explicit Y/C cancellation status for safety checks without
+    // mixing it into the six-column line-item paste.
+    values.push(cancellationIndex>=0?(cells[cancellationIndex]||'').trim():'');
     values[0]=digits(values[0]);
     if(!/^\d+$/.test(values[0])){
       issues.push('السطر '+(i+1)+' بلا رقم ترحيل صالح');
@@ -86,8 +112,10 @@ function parseSapImportUncached(paste:string,branches:string[]):{groups:SapImpor
       entry.meta[3]=[...new Set([entry.meta[3],meta[3]]
         .flatMap(value=>value.split('\n')).filter(Boolean))].join('\n');
     }
-    entry.lines.push(values.slice(5).join('\t'));
-    entry.reversal||=/has been cancel(?:ed|led)/i.test(values[4])||(signedNumeric(values[7])??0)<0;
+    entry.lines.push(values.slice(5,11).join('\t'));
+    entry.reversal||=/has been cancel(?:ed|led)/i.test(values[4])||
+      /^(?:Y|C|YES|CANCELED|CANCELLATION|ملغى)$/i.test(values[11])||
+      (signedNumeric(values[7])??0)<0;
     transfers.set(number,entry);
   }
 
