@@ -111,6 +111,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
  const auditSnapshot=useMemo(()=>JSON.stringify({
   sourceKey,issues:sourceIssues,day:current?.day||'',
   invoices:current?.invoices.map(i=>[i.number,i.date,i.amount,i.branch,i.complete,i.recordId,i.dateSource,i.transfers])||[],
+  settlementRecords:current?.nonInvoices.map(row=>[row.recordId,row.date,row.state,row.transfers,row.counterparts,row.note])||[],
   transfers:current?.transfers.map(t=>[t.number,t.state,t.postingDate,t.invoiceDay,t.needsAction,t.counterparts,t.note])||[],
   globalOpen:report?.unassigned.filter(t=>t.needsAction).map(t=>[t.number,t.state,t.note])||[],
  }),[current,report,sourceKey,sourceIssues]);
@@ -147,6 +148,8 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
   timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(e.when))===today());
  const filteredInvoices=current?.invoices.filter(inv=>!search||[
   inv.number,inv.branch,inv.recordId,...inv.transfers].some(s=>s.includes(search)))||[];
+ const filteredNonInvoices=current?.nonInvoices.filter(doc=>!search||[
+  doc.branch,doc.recordId,doc.date,...doc.transfers,...doc.counterparts].some(value=>value.includes(search)))||[];
  const filteredTransfers=current?.transfers.filter(t=>!search||[
   t.number,t.branch,...t.invoiceNumbers,...t.counterparts].some(s=>s.includes(search)))||[];
  async function sendMissingToLieutenant(){
@@ -251,7 +254,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
      {signoffCurrent&&<strong style={{color:'var(--theme-success-text)'}}>تم اعتماد اليوم جاهز بعد مراجعة كشف SAP المحفوظ.</strong>}
      {!!signoff&&!signoffCurrent&&<strong className="amber">تغيّرت حالة اليوم أو مصدر SAP بعد آخر اعتماد؛ يحتاج إعادة تدقيق.</strong>}
     </div>
-    {missingPaper.length>0&&<p className="amber">يوجد {missingPaper.length} فاتورة غير مؤكدة أو ناقصة الرقم؛ يجب تصحيحها في سجل المشروع قبل اعتماد اليوم.</p>}
+    {missingPaper.length>0&&<p className="amber">يوجد {missingPaper.length} فاتورة زرقاء حقيقية غير مؤكدة أو ناقصة الرقم؛ يجب تصحيحها في سجل المشروع قبل اعتماد اليوم. حركات الإلغاء والعكسي تظهر في قسم التسويات أدناه ولا تُحسب كفواتير ناقصة.</p>}
     <label>بحث داخل اليوم <input value={search} onChange={e=>setSearch(e.target.value)}
       placeholder="رقم فاتورة، ترحيل، فرع أو مجموعة"/></label>
     <h3>الفواتير الزرقاء ({current.invoices.length})</h3>
@@ -262,6 +265,21 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
       <td>{inv.branch}</td><td dir="ltr">{inv.amount}</td><td dir="ltr">{inv.transfers.join('، ')||'—'}</td>
       <td>{inv.complete?'مؤكد':'غير مؤكد'}</td><td>{inv.dateSource==='transfer'?'تاريخ مستنتج — بحاجة إثبات الورق':'تاريخ الفاتورة المحفوظ'}</td>
      </tr>)}</tbody></table></div>
+    {current.nonInvoices.length>0&&<>
+     <h3>حركات بلا فاتورة زرقاء — تسويات SAP ومراجعتها ({current.nonInvoices.length})</h3>
+     <p className="hint">هذه السجلات ليست فواتير ورقية ناقصة. يُعرض مقابلها من الملازم أول إن ثبت العكسي الكامل أو الإلغاء على SAP. المراجعة غير المكتملة تبقى مفتوحة، ولا تُغلق حركات 011 تلقائيًا.</p>
+     <div className="table-scroll"><table><thead><tr><th>الترحيل الأصلي</th><th>الفرع</th>
+       <th>الترحيل المقابل المثبت</th><th>نتيجة فحص الملازم</th><th>التفاصيل</th></tr></thead>
+       <tbody>{filteredNonInvoices.map((doc,i)=><tr key={doc.recordId+'-'+i}>
+         <td dir="ltr"><button type="button" className="button secondary small" onClick={()=>onOpenRecord(doc.recordId)}>{doc.transfers.join('، ')}</button></td>
+         <td>{doc.branch||'—'}</td>
+         <td dir="ltr"><b>{doc.counterparts.join('، ')||'لا يوجد مستند مقابل مثبت'}</b></td>
+         <td><span className={'badge '+(doc.state==='settled'?'match':'review')}>{doc.state==='settled'?'مسوّى — لا يحتاج فاتورة زرقاء':doc.state==='pending'?'كاش فان — يحتاج تسوية':'تسوية غير مثبتة'}</span></td>
+         <td>{doc.note}{doc.proofs.some(proof=>proof.counterparts.length>0)&&
+           <small style={{display:'block'}}>الأصول والمقابل: {doc.proofs.map(proof=>
+             proof.number+(proof.counterparts.length?' ← '+proof.counterparts.join('، '):'')).join('؛ ')}</small>}</td>
+       </tr>)}</tbody></table></div>
+    </>}
     <h3>ترحيلات هذا اليوم ({current.transfers.length})</h3>
     <div className="table-scroll"><table><thead><tr><th>رقم الترحيل</th><th>تاريخ SAP</th>
       <th>فاتورته أو مجموعته</th><th>الحالة / المقابل</th><th>ملاحظة</th></tr></thead>

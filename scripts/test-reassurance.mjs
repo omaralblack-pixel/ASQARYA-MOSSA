@@ -247,6 +247,26 @@ test('Tammeni cross-agent council respects the lieutenant fully reversed Cash Va
   assert.ok(result.findings.some(item=>item.transferNo==='2616702'&&item.source==='lieutenant'));
 });
 
+test('Tammeni does not label a settled transfer-only SAP card as missing blue paper',()=>{
+  const id='cash-card',number='2615767',reverseNo='2615918';
+  const placeholder={id,branch:'12 — عجلون',status:'review',
+    payload:JSON.stringify({id,branch:'12 — عجلون',
+      invoices:[{id:'blank1',number:'0',date:'2026-11-01',amount:'',complete:false}],
+      transfers:[{number,date:'2026-11-02',paste:paste(12,'Piece','001','011')}]})};
+  const original=live(12,number,'Piece','001','011',{branch:'12 — عجلون',remarks:'كاش فان عجلون',
+    transfer:{...card(12,number),date:'2026-11-02'}});
+  const reverse=live(12,reverseNo,'Piece','011','001',{branch:'12 — عجلون',
+    remarks:'عكسي ترحيل '+number,transfer:{...card(12,reverseNo,'Piece','011','001'),date:'2026-11-03'}});
+  const result=buildReassuranceCouncil({from:'2026-11-01',to:'2026-11-18',
+    records:[placeholder],transfers:[original,reverse],
+    controls:[{days:[],assignments:[],decisions:[]}],sourceReady:true});
+  assert.equal(result.soldier.invoices,0);
+  assert.equal(result.soldier.paperPending,0,'a verified reverse is not a missing blue invoice');
+  assert.ok(!result.findings.some(item=>item.title==='فاتورة غير مؤكدة أو رقمها غير صالح'));
+  assert.ok(!result.findings.some(item=>item.transferNo===number&&item.title.includes('تسوية')),
+    'no invented cancellation or unresolved settlement for the fully reversed original');
+});
+
 console.log(`${passed} reassurance business-rule tests passed.`);
 
 const {restoreUnifiedStockSnapshots}=loadTs('app/lib/lieutenant-source.ts');

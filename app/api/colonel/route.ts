@@ -1,5 +1,5 @@
 import {env} from 'cloudflare:workers';
-import {dateValue,invoiceDocumentNo,readReconciliationRecord} from '../../lib/reconcile';
+import {dateValue,invoiceDocumentNo,readReconciliationRecord,transferNumbers} from '../../lib/reconcile';
 import {invoiceDate} from '../../lib/invoice-collector';
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
 
@@ -63,9 +63,15 @@ export async function POST(request:Request){
      if(!draft)return json({error:'يوجد سجل مشروع غير مقروء؛ لا يمكن تأكيد اكتمال اليوم.'},409);
      for(const invoice of draft.invoices){
       if(invoiceDate(invoice,draft.transfers).date!==day)continue;
+      const raw=String(invoice.number||'').trim();
+      const linked=draft.transfers.some(row=>transferNumbers(row.number||'').length>0);
+      // Unnumbered transfer-only cards are not blue paper invoices.
+      // Settlement evidence and day closure are still checked separately
+      // against SAP by the lieutenant/colonel report.
+      if(linked&&(!raw||/^0+$/.test(raw)||raw==='بدون رقم'))continue;
       seen++;
       if(!invoiceDocumentNo(invoice.number)||invoice.complete!==true)
-       return json({error:'يوم '+day+' يحتوي فاتورة بلا رقم صحيح أو غير مؤكدة الوصول في المشروع.'},409);
+       return json({error:'يوم '+day+' يحتوي فاتورة زرقاء بلا رقم صحيح أو غير مؤكدة الوصول في المشروع.'},409);
      }
     }
     if(!seen)return json({error:'لا توجد فواتير زرقاء مثبتة بتاريخ '+day+' في سجلات المشروع.'},409);

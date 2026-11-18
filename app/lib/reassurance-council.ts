@@ -49,6 +49,16 @@ export function buildReassuranceCouncil(input:{
     if(uniqueFindings.has(key))return;
     uniqueFindings.add(key);findings.push(row);
   };
+  const combinedDays=distinct(controls.flatMap(item=>item.days).map(item=>item.day))
+    .map(day=>controls.flatMap(item=>item.days).find(row=>row.day===day)!);
+  const assignments=distinct(controls.flatMap(item=>item.assignments).map(item=>item.transfer_no))
+    .map(number=>controls.flatMap(item=>item.assignments).find(row=>row.transfer_no===number)!);
+  const decisions=distinct(controls.flatMap(item=>item.decisions).map(item=>item.transfer_no))
+    .map(number=>controls.flatMap(item=>item.decisions).find(row=>row.transfer_no===number)!);
+  const allColonel=monthsBetween(from,to).map(month=>buildColonelReport(
+    month,records,transfers,decisions,assignments,combinedDays,sourceReady,to));
+  const nonPaperKeys=new Set(allColonel.flatMap(report=>report.days.flatMap(day=>
+    day.nonInvoices.map(row=>row.recordId+'|'+row.invoiceId))));
   const collected=collectInvoicesByDate(records,from,to);
   const byRecord=new Map(records.map(record=>[record.id,readReconciliationRecord(record.payload)]));
   const invoiceOwners=new Map<string,Set<string>>();
@@ -66,6 +76,9 @@ export function buildReassuranceCouncil(input:{
     const number=invoiceDocumentNo(row.number);
     const draft=byRecord.get(row.recordId);
     const invoice=draft?.invoices.find(item=>item.id===row.invoiceId);
+    // An empty transfer-only card with verified/pending SAP evidence is
+    // tracked by the colonel, not as fictitious missing blue-invoice paper.
+    if(!number&&nonPaperKeys.has(row.recordId+'|'+row.invoiceId))continue;
     if(!invoice||!number||invoice.complete!==true){
       paperPending++;
       push({source:'soldier',title:'فاتورة غير مؤكدة أو رقمها غير صالح',
@@ -102,13 +115,6 @@ export function buildReassuranceCouncil(input:{
     push({source:'soldier',title:'فواتير بلا تاريخ مثبت',
       details:collected.undatedInvoices+' فاتورة غير مؤرخة لا يمكن نسبتها تلقائيًا إلى الفترة.'});
 
-  const combinedDays=distinct(controls.flatMap(item=>item.days).map(item=>item.day))
-    .map(day=>controls.flatMap(item=>item.days).find(row=>row.day===day)!);
-  const assignments=distinct(controls.flatMap(item=>item.assignments).map(item=>item.transfer_no))
-    .map(number=>controls.flatMap(item=>item.assignments).find(row=>row.transfer_no===number)!);
-  const decisions=distinct(controls.flatMap(item=>item.decisions).map(item=>item.transfer_no))
-    .map(number=>controls.flatMap(item=>item.decisions).find(row=>row.transfer_no===number)!);
-
   const movements=analyzeLieutenantMovements(transfers,to);
   const within=transfers.filter(row=>row.transfer.date>=from&&row.transfer.date<=to);
   let reversed=0,canceled=0,cashVanPending=0,review=0;
@@ -131,8 +137,11 @@ export function buildReassuranceCouncil(input:{
   }
   const lieutenant={transfers:within.length,reversed,canceled,cashVanPending,review,savedDecisions:decisions.length};
 
-  const allColonel=monthsBetween(from,to).map(month=>buildColonelReport(
-    month,records,transfers,decisions,assignments,combinedDays,sourceReady));
+  for(const doc of allColonel.flatMap(report=>report.days.flatMap(day=>day.nonInvoices))){
+    if(doc.date<from||doc.date>to||doc.state==='settled')continue;
+    push({source:'colonel',title:'ترحيل بلا فاتورة زرقاء يحتاج مستند تسوية',
+      details:doc.note,recordId:doc.recordId,transferNo:doc.transfers[0],day:doc.date});
+  }
   const activeDays=allColonel.flatMap(month=>month.days).filter(day=>day.day>=from&&day.day<=to&&
     (day.invoices.length>0||day.invoicesComplete));
   let readyDays=0;

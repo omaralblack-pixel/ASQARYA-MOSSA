@@ -9,10 +9,13 @@ export type ColonelAssignment={transfer_no:string;invoice_day:string;reason:stri
 export type ColonelDayState={day:string;invoices_complete:number;confirmed_at:string;confirmed_by:string};
 export type ColonelInvoice={number:string;date:string;branch:string;amount:string;recordId:string;
   complete:boolean;dateSource:string;transfers:string[];status:string};
+export type ColonelNonInvoice={recordId:string;invoiceId:string;branch:string;date:string;transfers:string[];
+  state:'settled'|'pending'|'unverified';note:string;counterparts:string[];
+  proofs:{number:string;counterparts:string[];detail:string}[]};
 export type ColonelTransfer={number:string;postingDate:string;invoiceDay:string;invoiceNumbers:string[];
   branch:string;state:string;note:string;counterparts:string[];needsAction:boolean;source:'sap'|'project';
   recordIds:string[];inProject:boolean;decision:string};
-export type ColonelDay={day:string;invoices:ColonelInvoice[];transfers:ColonelTransfer[];
+export type ColonelDay={day:string;invoices:ColonelInvoice[];nonInvoices:ColonelNonInvoice[];transfers:ColonelTransfer[];
   invoicesComplete:boolean;confirmedAt:string;openCount:number;undatedCount:number;
   ready:boolean;reason:string};
 export type ColonelReport={days:ColonelDay[];unassigned:ColonelTransfer[];undated:ColonelInvoice[];
@@ -22,15 +25,36 @@ const knownDate=(value:string)=>dateValue(value)||'';
 const cancelled=(kind:string)=>kind==='sap-canceled'||kind==='sap-cancel-doc';
 const settled=(kind:string)=>cancelled(kind)||kind==='reversed'||kind==='reverse';
 const correction=(kind:string)=>kind==='cancellation-review';
+const isEmptyInvoiceNumber=(value:string)=>!value.trim()||/^0+$/.test(value.trim())||value.trim()==='بدون رقم';
+/** A verified SAP document pair proves movement settlement, NOT paper receipt.
+ * Administrative "ignore"/"linked" decisions never satisfy this rule. */
+function nonInvoiceEvidence(number:string,sources:Map<string,LieutenantTransfer>,
+ movements:ReturnType<typeof analyzeLieutenantMovements>){
+ const source=sources.get(number), movement=movements.get(number);
+ if(!source||source.issues.length||!movement)return {state:'unverified' as const,note:'مصدر SAP أو بنوده غير مثبتة',counterparts:[] as string[]};
+ const kind=movement.kind, refs=unique([...(movement.counterparts||[]),...(movement.counterpart?[movement.counterpart]:[])]);
+ const verified=kind==='reversed'||kind==='sap-canceled'||
+   movement.verifiedOffset===true||(kind==='reverse'&&!!movement.counterpart&&
+   movements.get(movement.counterpart)?.kind==='reversed')||
+   (kind==='sap-cancel-doc'&&!!movement.counterpart&&
+     movements.get(movement.counterpart)?.kind==='sap-canceled');
+ if(verified)return {state:'settled' as const,note:movement.note||'حركة مسوّاة بمستند SAP مثبت',counterparts:refs};
+ if(kind==='cashvan-pending'||isCashVanTransfer(source))
+   return {state:'pending' as const,note:movement.note||'كاش فان يحتاج عكسي/إلغاء مثبت',counterparts:refs};
+ return {state:'unverified' as const,note:movement.note||'لم يثبت أنه مستند تسوية بدل فاتورة زرقاء',counterparts:refs};
+}
 
 export function buildColonelReport(
  month:string,records:ColonelRecord[],sap:LieutenantTransfer[],
  decisions:CancellationDecision[]=[],assignments:ColonelAssignment[]=[],
- dayStates:ColonelDayState[]=[],sourceReady=false,
+ dayStates:ColonelDayState[]=[],sourceReady=false,asOf?:string,
 ):ColonelReport{
  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw Error('اختر شهرًا صحيحًا.');
  const end=month+'-'+String(new Date(Date.UTC(+month.slice(0,4),+month.slice(5),0)).getUTCDate()).padStart(2,'0');
  const warnings:string[]=[],allInvoices:ColonelInvoice[]=[];
+ const nonInvoices:ColonelNonInvoice[]=[];
+ const byNumber=new Map(sap.map(source=>[source.transfer.number,source]));
+ const movement=analyzeLieutenantMovements(sap,asOf&&asOf<end?asOf:end);
  const invoiceGroups=new Map<string,Set<string>>();
  const groupDays=new Map<string,Set<string>>();
  const fromProject=new Map<string,{records:Set<string>;invoices:Set<string>;groups:Set<string>}>();
@@ -44,6 +68,30 @@ export function buildColonelReport(
    const actual=invoiceDate(invoice,draft.transfers);
    const day=actual.date||'';
    if(day)dates.add(day);
+   // Historical project drafts may store a transfer-only card as an empty
+   // invoice. Treat it as a SAP control document, NOT a missing blue invoice.
+   // A real malformed invoice number or an empty card without a transfer stays
+   // in the invoice review flow; neither is silently discarded.
+   if(!number&&ids.length>0&&isEmptyInvoiceNumber(String(invoice.number||''))){
+     const proofs=ids.map(number=>{
+       const evidence=nonInvoiceEvidence(number,byNumber,movement);
+       return {number,counterparts:evidence.counterparts,detail:evidence.note,state:evidence.state};
+     });
+     const settled=proofs.every(item=>item.state==='settled');
+     const pending=proofs.some(item=>item.state==='pending');
+     const state=settled?'settled':pending?'pending':'unverified';
+     const cover=unique(proofs.flatMap(item=>item.counterparts));
+     const note=settled?'ترحيلات مسوّاة بمستند SAP (وليست فواتير زرقاء): '+
+       proofs.map(item=>item.number+(item.counterparts.length?' ↔ '+item.counterparts.join('، '):' — إلغاء SAP')).join('؛ '):
+       'لم تكتمل تسوية جميع الترحيلات: '+proofs.filter(item=>item.state!=='settled')
+         .map(item=>item.number+' — '+item.detail).join('؛ ');
+     nonInvoices.push({recordId:record.id,invoiceId:invoice.id,branch:record.branch||draft.branch||'',date:day,
+       transfers:ids,state,note,counterparts:cover,
+       proofs:proofs.map(({number,counterparts,detail})=>({number,counterparts,detail}))});
+     if(!day)warnings.push('سجل حركة بلا فاتورة زرقاء ولا تاريخ متابعة مثبت: '+record.id+
+       ' — '+(actual.reason||'تاريخ غير صالح'));
+     continue;
+   }
    if(!number)warnings.push('فاتورة بلا رقم صالح في مجموعة '+record.id+'؛ الترحيلات لا تنسب لفاتورة وهمية.');
    if(!day)warnings.push('فاتورة '+(number||'بلا رقم')+' بلا تاريخ ورقي مؤكد: '+actual.reason);
    const row:ColonelInvoice={number:number||String(invoice.number||'بدون رقم'),date:day,
@@ -76,8 +124,6 @@ export function buildColonelReport(
  }
  const byDecision=new Map(decisions.map(d=>[d.transfer_no,d]));
  const byAssign=new Map(assignments.map(a=>[a.transfer_no,a]));
- const byNumber=new Map(sap.map(s=>[s.transfer.number,s]));
- const movement=analyzeLieutenantMovements(sap,end);
  const considered=new Set<string>();
  const transfers:ColonelTransfer[]=[];
  for(const source of sap){
@@ -140,10 +186,14 @@ export function buildColonelReport(
  let cursor=month+'-01';
  while(cursor<=end){
   const invoices=allInvoices.filter(x=>x.date===cursor);
+  const nonInvoiceRows=nonInvoices.filter(x=>x.date===cursor);
   const linked=transfers.filter(x=>x.invoiceDay===cursor);
   const duplicate=invoices.some(x=>invoiceGroups.get(x.number)?.size!==1);
   const inferred=invoices.some(x=>x.dateSource==='transfer');
-  const openCount=linked.filter(x=>x.needsAction).length+
+  const linkedOpen=new Set(linked.filter(x=>x.needsAction).map(x=>x.number));
+  const unresolvedNonInvoice=nonInvoiceRows.filter(x=>x.state!=='settled'&&
+    !x.transfers.some(number=>linkedOpen.has(number))).length;
+  const openCount=linkedOpen.size+unresolvedNonInvoice+
    invoices.filter(x=>!x.complete||!invoiceDocumentNo(x.number)).length+
    (duplicate?1:0);
   const state=states.get(cursor);
@@ -157,7 +207,7 @@ export function buildColonelReport(
    !invoices.length?'لا توجد فواتير مثبتة لهذا اليوم':
    openCount?'يوجد '+openCount+' حالة تحتاج إجراء':
    'الفواتير مكتملة والحالات المرتبطة بهذا اليوم لا تحمل ملاحظات مفتوحة في الكشف المقروء';
-  days.push({day:cursor,invoices,transfers:linked,invoicesComplete:!!state?.invoices_complete,
+  days.push({day:cursor,invoices,nonInvoices:nonInvoiceRows,transfers:linked,invoicesComplete:!!state?.invoices_complete,
    confirmedAt:state?.confirmed_at||'',openCount,undatedCount:0,ready,reason});
   const next=new Date(cursor+'T00:00:00Z');next.setUTCDate(next.getUTCDate()+1);
   cursor=next.toISOString().slice(0,10);
