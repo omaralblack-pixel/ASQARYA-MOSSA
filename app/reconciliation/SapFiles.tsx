@@ -7,7 +7,7 @@ import {maxSapFileBytes,readSavedSapImport,saveSapImport} from '../lib/saved-sap
 import {listSapFiles,readSapArchive,readSapJson,sapRequest,type SapArchiveFile} from '../lib/sap-files-client';
 import {fromSapStorageFilename} from '../lib/sap-archive-filename';
 import {parseLieutenantTransfers} from '../lib/lieutenant';
-import {isUnifiedSapSource,splitUnifiedSapSource,unifiedSapQuery} from '../lib/unified-sap-query';
+import {isUnifiedSapSource,splitUnifiedSapSource,unifiedSapQuery,sapTransferUdfDiscoveryQuery} from '../lib/unified-sap-query';
 import {splitSapSectionIntoChunks,type UnifiedChunkKind} from '../lib/sap-unified-chunks';
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const uploadDay=(date:string)=>date&&Number.isFinite(Date.parse(date))?new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)):'';
@@ -31,14 +31,21 @@ export default function SapFiles(){
  const [opened,OPEN]=useState<{file:SapArchiveFile;text:string}|null>(null);
  const [olderSnapshotNotice,OSN]=useState('');
  const [fromDate,FROM]=useState(()=>today().slice(0,8)+'01'),[toDate,TO]=useState(today());
+ const [blueInvoiceUdf,SET_BLUE_INVOICE_UDF]=useState('');
  const queryRef=useRef<HTMLTextAreaElement>(null);
  const lock=useRef(false),mounted=useRef(true);
  let unifiedSql='',queryError='';
- try{unifiedSql=unifiedSapQuery(fromDate,toDate);}catch(e){queryError=e instanceof Error?e.message:'فترة غير صالحة.';}
+ try{unifiedSql=unifiedSapQuery(fromDate,toDate,blueInvoiceUdf.trim());}catch(e){queryError=e instanceof Error?e.message:'فترة غير صالحة.';}
  async function copyUnifiedSql(){
   if(!unifiedSql)return;
   try{await navigator.clipboard.writeText(unifiedSql);M('تم نسخ كويري SAP الشامل. شغّله في SAP وصدّر النتيجة إلى ملف واحد.');}
   catch{queryRef.current?.focus();queryRef.current?.select();M('المتصفح منع النسخ التلقائي؛ تم تحديد الكويري. اضغط Ctrl+C.');}
+ }
+ async function copySapUdfDiscovery(){
+  try{
+    await navigator.clipboard.writeText(sapTransferUdfDiscoveryQuery);
+    M('تم نسخ كويري تعريف حقول OWTR. شغّله في SAP وابحث عن الحقل الذي يحتوي رقم الفاتورة في Remarks السفلي.');
+  }catch{M('تعذّر النسخ. افتح النص تحت زر تحديد حقول SAP وانسخه يدويًا.');}
  }
  async function archiveUnifiedParts(file:SapArchiveFile,text:string){
   if(!isUnifiedSapSource(text))return;
@@ -277,9 +284,22 @@ export default function SapFiles(){
     <button type="button" className="button secondary" disabled={!unifiedSql} onClick={()=>void copyUnifiedSql()}><Copy size={15}/>نسخ الكويري</button>
     <label className="button primary sap-file-picker"><FileUp size={15}/>رفع الملف الموحد<input type="file" accept=".txt,.tsv,.csv,.xlsx" aria-label="رفع الملف الموحد SAP" disabled={busy} onChange={upload}/></label>
    </div>
+   <div className="table-controls">
+     <label>اسم عمود Remarks السفلي من SAP (اختياري)
+       <input type="text" dir="ltr" value={blueInvoiceUdf} placeholder="U_YourFieldName" spellCheck={false}
+         onChange={e=>SET_BLUE_INVOICE_UDF(e.target.value)} />
+     </label>
+     <button type="button" className="button secondary" onClick={()=>void copySapUdfDiscovery()}>
+       <Copy size={15}/>نسخ كويري تحديد عمود الفاتورة
+     </button>
+   </div>
+   <details><summary>كويري تحديد اسم الحقل من SAP (OWTR / CUFD)</summary>
+     <textarea dir="ltr" readOnly rows={3} aria-label="كويري أسماء الحقول المخصصة في SAP" value={sapTransferUdfDiscoveryQuery}/>
+     <p className="hint">شغّل هذا الكويري في SAP، وابحث عن الحقل المعروض باسم Remarks أسفل شاشة الترحيل. أدخل اسم العمود الذي يبدأ بـ U_ أعلاه، ثم انسخ الكويري الشامل الجديد. لا تضع اسمًا بالتخمين.</p>
+   </details>
    <textarea ref={queryRef} aria-label="كويري SAP الشامل" dir="ltr" readOnly rows={4} value={unifiedSql} />
    {queryError&&<p className="red" role="alert">{queryError}</p>}
-   <p className="hint">شغّل الكويري في SAP، وصدّر النتائج إلى Excel أو TXT، ثم اضغط «رفع الملف الموحد». يحفظ النظام الملف الأصلي ويجهّز النسخ المقروءة للشاشات القديمة دون حذفها.</p>
+   <p className="hint">شغّل الكويري في SAP، وصدّر النتائج إلى Excel أو TXT، ثم اضغط «رفع الملف الموحد». إذا كان رقم الفاتورة موجودًا في حقل Remarks سفلي مخصص، يجب تحديد عمود U_ الخاص به؛ حقل Journal Remarks مختلف ولا يُفترض أنه يحوي رقم الفاتورة. يبقى اسم العمود فارغًا إلى أن يُؤكَّد من SAP.</p>
   </div>}<p className="hint">التاريخ مطلوب لكشوف الرصيد فقط: الختامي بنهاية اليوم، والافتتاحي قبل أول حركة في اليوم. تاريخ الرفع مستقل ولا يُستخدم بدل تاريخ الرصيد. التصنيف يعتمد الأعمدة الفعلية.</p>
   <details><summary>لصق كشف SAP بدل إرفاق ملف</summary><SapPaste disabled={busy} onFile={file=>{void upload({currentTarget:{files:[file],value:''}} as unknown as ChangeEvent<HTMLInputElement>);}}/></details>
   </section>
