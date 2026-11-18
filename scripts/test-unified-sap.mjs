@@ -5,7 +5,7 @@ import ts from 'typescript';
 const source=ts.transpileModule(fs.readFileSync('app/lib/unified-sap-query.ts','utf8'),{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext},
 }).outputText;
-const {unifiedSapQuery,isUnifiedSapSource,splitUnifiedSapSource}=
+const {unifiedSapQuery,isUnifiedSapSource,splitUnifiedSapSource,sapTransferUdfDiscoveryQuery}=
   await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 for(const [from,to] of [
  ['2026-11-31','2026-12-01'],['2026-11-04','2026-11-01'],
@@ -26,14 +26,21 @@ assert.ok(query.includes('C0006751'),'Only Aqaba official customer is scoped');
 for(const table of ['"OWTR"','"WTR1"','"OINM"','"OINV"','"ORIN"','"ODLN"','"ORDN"'])
  assert.ok(query.includes(table),'Missing table '+table);
 const headers=[...query.split('\nUNION ALL\n')[0].matchAll(/ AS "([^"]+)"/g)].map(match=>match[1]);
-assert.equal(headers.length,30);
+assert.equal(headers.length,31);
+assert.ok(sapTransferUdfDiscoveryQuery.includes('"CUFD"'));
+assert.match(unifiedSapQuery('2026-11-01','2026-11-03','U_BlueRemarks'),
+  /TO_NVARCHAR\(H\."U_BlueRemarks"\)/,
+  'Read optional custom lower Remarks field only after confirming its SAP column');
+assert.throws(()=>unifiedSapQuery('2026-11-01','2026-11-03','U_X"; DROP TABLE "OWTR"'),
+  /اسم حقل الملاحظات/, 'Reject unsafe or unconfirmed SQL identifiers');
 const row=object=>headers.map(key=>String(object[key]??'')).join('\t');
 const exported=[
  headers.join('\t'),
  row({RecordType:'WINDOW',DocumentDate:'2026-11-01',BaseRef:'2026-11-03'}),
  row({RecordType:'TRANSFER',DocumentNumber:'2615754',DocumentDate:'2026-11-03',DocEntry:'89101',
    LineNumber:'1',ItemCode:'CHS00561',ItemName:'جبنة',Quantity:'10',Unit:'Piece',
-   FromWarehouse:'001',ToWarehouse:'011',Remarks:'مؤسسة العقبة',JournalRemarks:'2623000001',CancellationStatus:'Y'}),
+   FromWarehouse:'001',ToWarehouse:'011',Remarks:'مؤسسة العقبة',JournalRemarks:'Inventory Transfers -',
+    BlueInvoiceRemarks:'2623000001',CancellationStatus:'Y'}),
  row({RecordType:'OPENING',DocumentDate:'2026-11-01',ItemCode:'CHS00561',ItemName:'جبنة',
    Unit:'Piece',Warehouse:'011',StockQuantity:'5'}),
  row({RecordType:'CLOSING',DocumentDate:'2026-11-03',ItemCode:'CHS00561',ItemName:'جبنة',
@@ -59,6 +66,15 @@ assert.ok(flagged.warnings[0].includes('262332321'));
 assert.equal(flagged.counts.TRANSFER,1,'Warning must not drop a transfer');
 assert.ok(parts.transfers.includes('2615754'));
 assert.ok(parts.transfers.includes('2623000001'));
+assert.ok(parts.transfers.includes('Blue Invoice Remarks'));
+assert.ok(parts.transfers.includes('Inventory Transfers -'));
+// An already-archived older unified source with 30 columns must still load.
+const oldHeaders=headers.filter(x=>x!=='BlueInvoiceRemarks');
+const oldSource=exported.split('\n').map(line=>line.split('\t').filter((_,index)=>
+  index!==headers.indexOf('BlueInvoiceRemarks')).join('\t')).join('\n');
+assert.equal(oldHeaders.length,30);
+assert.equal(splitUnifiedSapSource(oldSource).counts.TRANSFER,1);
+assert.ok(splitUnifiedSapSource(oldSource).transfers.includes('Blue Invoice Remarks'));
 assert.ok(parts.transfers.includes('\tY'));
 assert.ok(parts.opening.includes('\t5'));
 assert.ok(parts.closing.includes('\t15'));
