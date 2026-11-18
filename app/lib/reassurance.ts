@@ -80,19 +80,19 @@ function cancellationCandidates(rows:ReassuranceRow[],transfers:LieutenantTransf
   const sources=stockMovementSources(transfers);
   const counts=new Map<string,number>();
   for(const source of sources)counts.set(source.transfer.number,(counts.get(source.transfer.number)||0)+1);
-  const warehouse=(raw:string)=>/^\\d+$/.test(raw.trim())?raw.trim().padStart(3,'0'):raw.trim();
+  const warehouse=(raw:string)=>/^\d+$/.test(raw.trim())?raw.trim().padStart(3,'0'):raw.trim();
   for(const source of sources){
     const number=source.transfer.number;
     if(!number||counts.get(number)!==1||linked.has(number)||source.issues.length||
       source.signedAdjustment||source.cancellationMentioned||
       source.cancellationState==='canceled'||source.cancellationState==='cancellation'||
       source.transfer.date<from||source.transfer.date>to)continue;
-    const lines=source.transfer.paste.replace(/\\r/g,'').split('\\n').slice(1).filter(line=>line.trim());
+    const lines=source.transfer.paste.replace(/\r/g,'').split('\n').slice(1).filter(line=>line.trim());
     if(!lines.length)continue;
     const impacts=new Map<string,number>();
     let invalid=false;
     for(const line of lines){
-      const [rawCode,,rawQty,unit,rawFrom,rawTo]=line.split('\\t');
+      const [rawCode,,rawQty,unit,rawFrom,rawTo]=line.split('\t');
       const code=(rawCode||'').trim().toUpperCase();
       const qty=signedNumeric(rawQty||''),fromWh=warehouse(rawFrom||''),toWh=warehouse(rawTo||'');
       if(!code||!unit||qty===null||qty<=0||fromWh===toWh||
