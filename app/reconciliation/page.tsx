@@ -607,6 +607,13 @@ useEffect(()=>{
  }
 },[sync.signal.version]);
 
+function replaceWorkingDraft(next:OrderedDraft){
+ if(draftBaseline.current&&draft&&JSON.stringify(draft)!==draftBaseline.current&&
+   !window.confirm('هناك تعديلات غير محفوظة في كشفك. هل تريد تجاهلها وفتح كشف آخر؟'))return false;
+ draftBaseline.current=JSON.stringify(next);
+ setRemoteConflict('');D(next);
+ return true;
+}
 async function openRecord(id:string,invoiceId?:string){
   if(draftBaseline.current&&draft&&JSON.stringify(draft)!==draftBaseline.current&&
     !window.confirm('لديك تعديلات غير محفوظة في الكشف المفتوح. هل تريد تجاهل المسودة وفتح كشف آخر؟'))return;
@@ -801,11 +808,11 @@ return <div className="recon-app"><header className="topbar"><a className="brand
  </div>}
  {error&&!edit&&<div className="banner error" role="alert"><span>{error}</span><button type="button" aria-label="إغلاق التنبيه" onClick={()=>E('')}>×</button></div>}{notice&&<div className="banner success" role="status"><span>{notice}</span><button type="button" aria-label="إغلاق الرسالة" onClick={()=>N('')}>×</button></div>}{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
 {(tab==='aqaba'||tab.startsWith('aqaba-'))&&<AqabaWorkspace syncVersion={sync.signal.version} syncScope={sync.signal.scope} section={tab==='aqaba'?'invoices':tab.slice('aqaba-'.length) as 'prices'|'stock'|'documents'|'queries'} catalog={reference} onEditPrice={(sapCode,name)=>void openSapLink(sapCode,name)}/>}
-{tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
+{tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{if(!replaceWorkingDraft(withInvoiceDates(picked)))return;setTransferSources(sources);PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport syncVersion={sync.signal.version} syncScope={sync.signal.scope}/>}
  {tab==='reassurance'&&<Reassurance syncVersion={sync.signal.version} syncScope={sync.signal.scope} branches={branches} onOpenRecord={id=>{void run(()=>openRecord(id));}}
-   onNavigate={view=>{E('');Q('');T(view)}} onOpenTransfer={(transfer,branch)=>{const next=blank();D({...next,branch,transfers:[{...transfer,id:uid()}]});setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+' من شاشة طمني.');T('work');}}/>}
+   onNavigate={view=>{E('');Q('');T(view)}} onOpenTransfer={(transfer,branch)=>{const next=blank();if(!replaceWorkingDraft({...next,branch,transfers:[{...transfer,id:uid()}]}))return;setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+' من شاشة طمني.');T('work');}}/>}
  {tab==='sap-files'&&<SapFiles syncVersion={sync.signal.version} syncScope={sync.signal.scope}/>}
  {tab==='colonel'&&<Colonel syncVersion={sync.signal.version} syncScope={sync.signal.scope} branches={branches}
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
@@ -814,7 +821,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
     onOpenTransfer={(transfer,branch)=>{
       const next=blank();
-      D({...next,branch,transfers:[{...transfer,id:uid()}]});
+      if(!replaceWorkingDraft({...next,branch,transfers:[{...transfer,id:uid()}]}))return;
       setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+
         ' من الملازم أول. أدخل الفاتورة الزرقاء وشيّكها قبل الحفظ.');T('work');
     }}/>}
