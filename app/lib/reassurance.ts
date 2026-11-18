@@ -284,7 +284,7 @@ export function reassure(input:{data:ReassuranceData;transfers:LieutenantTransfe
     return source.transfer.date>=from&&source.transfer.date<=to&&!source.reverse&&
       !source.signedAdjustment&&!!movement&&
       (movement.kind==='reversed'||movement.verifiedOffset===true);
-  }).map(source=>{
+  }).map((source):ReassuranceSettlement=>{
     const movement=movements.get(source.transfer.number)!;
     return {number:source.transfer.number,date:source.transfer.date,branch:source.branch,
       counterparts:movement.counterparts||[movement.counterpart].filter((id):id is string=>!!id),
