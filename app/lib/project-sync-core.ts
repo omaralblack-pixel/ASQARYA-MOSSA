@@ -4,7 +4,7 @@ export type ProjectSyncScope='reconcile'|'colonel'|'sap'|'aqaba';
 export type ProjectSyncEvent={id:number;scope:ProjectSyncScope;method:string;path:string;created_at:string};
 export const projectSyncScopes:ProjectSyncScope[]=['reconcile','colonel','sap','aqaba'];
 export function projectSyncScope(pathname:string):ProjectSyncScope|null{
- if(pathname==='/api/reconcile')return 'reconcile';
+ if(pathname==='/api/reconcile'||pathname==='/api/data')return 'reconcile';
  if(pathname==='/api/colonel')return 'colonel';
  if(pathname==='/api/lieutenant-files'||pathname==='/api/sap-processing')return 'sap';
  if(pathname==='/api/aqaba')return 'aqaba';
