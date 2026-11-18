@@ -5,7 +5,7 @@ import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, T
 import GroupLookup from './GroupLookup';
 import {isAqabaBranch} from '../lib/aqaba-instant-reference';
 import {readSavedSapImport} from '../lib/saved-sap-import';
-import {parseSapImport, type SapImportGroup} from '../lib/sap-import';
+import {parseSapImport,sapBranchFromRemarks,type SapImportGroup} from '../lib/sap-import';
 import {groupSapEvidence,searchArchivedSapEvidence,type SapEvidence} from '../lib/sap-document-lookup';
 import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editGroupInvoiceDate, addTransferToDraft, withSapInvoiceNumbers, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
 
@@ -140,7 +140,10 @@ export default function InstantMatch({
   async function searchImportedSap(number:string){
     const data=await getJson<{hits:SapEvidence[];partial:boolean}>('/api/reconcile?sapLookup='+encodeURIComponent(number));
     if(data.partial)throw Error('نتائج الترحيلات المستوردة كثيرة وغير مكتملة. ابحث برقم المستند كاملًا.');
-    return data.hits;
+    // A previously imported queue may have an empty branch even when
+    // the original SAP Remarks names exactly one official branch.
+    return data.hits.map(hit=>({...hit,
+      branch:hit.branch||sapBranchFromRemarks(hit.remarks,branches)}));
   }
 
   // Suggestion lookup is debounced and read-only; D1 queue is consulted even
@@ -265,10 +268,13 @@ export default function InstantMatch({
 
       let candidate = imports.find(group=>group.members.some(member=>
         searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
-      if(!candidate)candidate=groupSapEvidence(queued,searched,searchKind)||undefined;
+      if(!candidate)candidate=groupSapEvidence(queued,searched,searchKind,branches)||undefined;
       // Imported records may hold old Remarks; only inspect full immutable SAP
       // originals after an explicit user search, never on each keystroke.
-      if(!candidate || (searchKind==='transfer'&&candidate.members.every(member=>!member.invoices.length))){
+      if(!candidate ||
+        (searchKind==='transfer'&&candidate.members.every(member=>!member.invoices.length))||
+        candidate.members.some(member=>!member.branch&&member.issues.includes('الفرع غير معروف'))||
+        candidate.issues.some(issue=>issue.includes('الفرع غير معروف'))){
         let archived;
         try{archived=await searchArchivedSapEvidence(searched,searchKind,branches)}
         catch(e){
@@ -276,8 +282,11 @@ export default function InstantMatch({
           setFileWarning('تعذّر فحص الملفات المؤرشفة؛ الرابط المعروض من البيانات المستوردة فقط.');
         }
         if(archived){
-          const proposal=groupSapEvidence(archived.hits,searched,searchKind);
-          if(proposal)candidate=proposal;
+          const proposal=groupSapEvidence(archived.hits,searched,searchKind,branches);
+          // Preserve every known transfer when replacing a stale queued result
+          // with the original SAP evidence. Never lose a flagged transfer.
+          if(proposal&&(!candidate||candidate.members.every(member=>
+            proposal.members.some(original=>original.transfer.number===member.transfer.number))))candidate=proposal;
           if(archived.unreadable>0){
             setFileWarning('تعذّر قراءة '+archived.unreadable+' ملف SAP مؤرشف؛ النتائج قد تكون ناقصة، ولا يُعتبر غياب الرقم إثباتًا لعدم وجود الفاتورة.');
             if(!candidate)throw Error('الفحص غير مكتمل: لم تُقرأ بعض ملفات SAP المؤرشفة. لا تنشئ فاتورة مكررة قبل مراجعة الأصول.');
@@ -370,10 +379,10 @@ export default function InstantMatch({
       if (stored && stored.recordId===draft.id) throw Error('الترحيل موجود مسبقًا في السجل الحالي.');
       let member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
       if(!member){
-        let linked=groupSapEvidence(await searchImportedSap(searched),searched,'transfer');
+        let linked=groupSapEvidence(await searchImportedSap(searched),searched,'transfer',branches);
         if(!linked || linked.members.every(item=>!item.invoices.length)){
           const archived=await searchArchivedSapEvidence(searched,'transfer',branches);
-          const found=groupSapEvidence(archived.hits,searched,'transfer');
+          const found=groupSapEvidence(archived.hits,searched,'transfer',branches);
           if(found)linked=found;
           if(archived.unreadable>0&&!linked)
             throw Error('لم تكتمل قراءة الأصول المؤرشفة للتحقق من رقم الترحيل '+searched+'.');
