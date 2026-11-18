@@ -12,7 +12,7 @@ assert.equal(api.projectSyncScope('/api/lieutenant-files'),'sap');
 assert.equal(api.projectSyncScope('/api/sap-processing'),'sap');
 assert.equal(api.projectSyncScope('/api/aqaba'),'aqaba');
 assert.equal(api.projectSyncScope('/api/project-sync'),null);
-assert.equal(api.projectSyncScope('/api/data'),null);
+assert.equal(api.projectSyncScope('/api/data'),'reconcile');
 assert.equal(api.shouldPublishProjectChange('GET','/api/reconcile',200),false);
 assert.equal(api.shouldPublishProjectChange('POST','/api/reconcile',409),false,
  'stale invoice edits must not be distributed as completed changes');
