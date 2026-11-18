@@ -127,6 +127,40 @@ test('New shared source keeps recovered archive originals and newest document ve
   assert.ok(result.scan.transfers.find(row=>row.transfer.number==='2617002').transfer.paste.includes('-20'));
   assert.equal(reassuranceSource(archive,undefined,[]).scan,archive.scan);
 });
+test('Shows the exact unlinked full-document incoming movement as a cancellation-review candidate',()=>{
+  const input=fixture({qty:88,actual:100,
+    records:[record(88,{},[invoice(88)],[card(88,'2617999')])],
+    transfers:[live(88,'2617999'),live(12,'2617112')]});
+  const row=reassure(input).rows[0];
+  assert.equal(row.difference,12);
+  assert.deepEqual(row.candidates.map(doc=>doc.number),['2617112']);
+  assert.equal(row.candidates[0].quantity,12);
+  assert.equal(row.candidates[0].direction,'إلغاء وارد إلى 011');
+  assert.equal(row.candidates[0].stockUnexplained,false);
+});
+test('Never proposes canceling a transfer already tied to an invoice record',()=>{
+  const input=fixture({qty:88,actual:100,
+    records:[record(88,{},[invoice(88)],[card(88,'2617999'),card(12,'2617112')])],
+    transfers:[live(88,'2617999'),live(12,'2617112')]});
+  assert.deepEqual(reassure(input).rows[0].candidates,[]);
+});
+test('Never selects a wrong-direction or already canceled transfer just because its quantity is 12',()=>{
+  const rows=(candidate)=>reassure(fixture({qty:88,actual:100,
+    records:[record(88,{},[invoice(88)],[card(88,'2617999')])],
+    transfers:[live(88,'2617999'),candidate]})).rows[0];
+  assert.deepEqual(rows(live(12,'2617112','Piece','011','001')).candidates,[]);
+  assert.deepEqual(rows(live(12,'2617112','Piece','001','011',
+    {cancellationState:'canceled'})).candidates,[]);
+});
+test('An unrelated second item prevents canceling an entire multi-item document',()=>{
+  const candidate=live(12,'2617112');
+  candidate.transfer.paste+='\\n'+['CHS00012','Unrelated product',8,'Piece','001','011'].join('\\t');
+  candidate.lineCount=2;
+  const input=fixture({qty:88,actual:100,
+    records:[record(88,{},[invoice(88)],[card(88,'2617999')])],
+    transfers:[live(88,'2617999'),candidate]});
+  assert.deepEqual(reassure(input).rows.find(row=>row.code===code).candidates,[]);
+});
 console.log(`${passed} reassurance business-rule tests passed.`);
 
 const {restoreUnifiedStockSnapshots}=loadTs('app/lib/lieutenant-source.ts');
