@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 import {useEffect,useRef,useState,type ChangeEvent} from 'react';
 import {FileUp,RefreshCw,FileArchive,Download,Trash2,AlertTriangle,Copy} from 'lucide-react';
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
@@ -32,6 +33,7 @@ export default function SapFiles(){
  const [olderSnapshotNotice,OSN]=useState('');
  const [fromDate,FROM]=useState(()=>today().slice(0,8)+'01'),[toDate,TO]=useState(today());
  const queryRef=useRef<HTMLTextAreaElement>(null);
+ const sapRevision=useSapRevision();
  const lock=useRef(false),mounted=useRef(true);
  let unifiedSql='',queryError='';
  try{unifiedSql=unifiedSapQuery(fromDate,toDate);}catch(e){queryError=e instanceof Error?e.message:'فترة غير صالحة.';}
@@ -72,7 +74,7 @@ export default function SapFiles(){
   const failures=[archive,processing].filter((x):x is PromiseRejectedResult=>x.status==='rejected');
   if(failures.length)throw Error(failures.map(x=>x.reason instanceof Error?x.reason.message:String(x.reason)).join(' '));
  }
- useEffect(()=>{mounted.current=true;void refresh().catch(e=>E(e.message)).finally(()=>L(false));return()=>{mounted.current=false};},[]);
+ useEffect(()=>{mounted.current=true;void refresh().catch(e=>E(e.message)).finally(()=>L(false));return()=>{mounted.current=false};},[sapRevision]);
  async function exclusive(action:()=>Promise<void>){
   if(lock.current)return;lock.current=true;B(true);E('');M('');
   try{await action();}catch(e){if(mounted.current)E(e instanceof Error?e.message:'تعذّر إتمام الطلب.');}
@@ -265,7 +267,7 @@ export default function SapFiles(){
    (filter==='all'||actual===filter)&&(!balanceFrom||!!snapshot&&snapshot>=balanceFrom)&&(!balanceTo||!!snapshot&&snapshot<=balanceTo)&&(!uploadFrom||uploaded>=uploadFrom)&&(!uploadTo||uploaded<=uploadTo);
  });
  return <div className="sap-files">
-  <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع نسخة SAP الجديدة كل يوم حتى تبقى البيانات محدّثة. يحفظ النظام كل نسخة أصلية مستقلة ببصمتها، دون تكرار الترحيلات.</p></div><FileArchive size={32}/></div>
+  <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><a href="/desktop-sync">ربط برنامج SAP Desktop Sync</a><p>ارفع نسخة SAP الجديدة كل يوم حتى تبقى البيانات محدّثة. يحفظ النظام كل نسخة أصلية مستقلة ببصمتها، دون تكرار الترحيلات.</p></div><FileArchive size={32}/></div>
   <section className="panel"><h2>رفع ملف SAP جديد</h2><div className="table-controls">
    <label>نوع الملف المتوقع (يُصحّح تلقائيًا)<select value={kind} disabled={busy} onChange={e=>K(e.target.value as SapKind)}>{Object.entries(sapKinds).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></label>
    {kind!=='unified'&&<><label>تاريخ الرصيد الفعلي<input type="date" max={today()} value={date} disabled={busy} onChange={e=>D(e.target.value)}/></label>

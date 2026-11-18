@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 
 import {useEffect,useMemo,useState} from 'react';
 import {Download,RefreshCw,Search} from 'lucide-react';
@@ -49,6 +50,8 @@ export default function StockReport(){
       setLoading(false);
     }
   }
+  const sapRevision=useSapRevision();
+  useEffect(()=>{void readSavedSapImport().then(setFile).catch(err=>setError(err.message))},[sapRevision]);
   useEffect(()=>{void reload()},[]);
 
   async function download(){

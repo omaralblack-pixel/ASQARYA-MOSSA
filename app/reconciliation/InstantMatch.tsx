@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 
 import {useEffect, useMemo, useState} from 'react';
 import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
@@ -168,6 +169,7 @@ export default function InstantMatch({
     return list;
   }
 
+  const sapRevision=useSapRevision();
   useEffect(()=>{
     if (!branches.length) return;
     let active = true;
@@ -191,7 +193,7 @@ export default function InstantMatch({
     }
     void initialize();
     return ()=>{active=false};
-  },[branches]);
+  },[branches,sapRevision]);
 
   useEffect(()=>{
     if(!isAqaba){setAqabaPricing(null);setAqabaPricingError('');setAqabaPricingLoading(false);return}

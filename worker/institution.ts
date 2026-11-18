@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { maxSapFileBytes, type SavedSapImport } from "../app/lib/saved-sap-import";
 import { themeRuntimeScript } from "../lib/theme";
 import { toSapStorageFilename, fromSapStorageFilename } from "../app/lib/sap-archive-filename";
+import {desktopDevice,manageDesktopDevices} from './desktop-auth';
 
 const sessionCookie = "__Host-institution";
 const sessionSeconds = 8 * 60 * 60;
@@ -109,17 +110,26 @@ async function readBody(request: Request, limit: number) {
   }
 }
 
-async function savedImport(request: Request, env: Cloudflare.Env) {
+export async function savedImport(request: Request, env: Cloudflare.Env, storageObject = object) {
   const { SUPABASE_URL, SUPABASE_STORAGE_SECRET } = env;
   if (!SUPABASE_URL || !SUPABASE_STORAGE_SECRET) return reply(503, "حفظ كشف SAP على Supabase غير مفعّل.");
   const method = request.method;
+  // Desktop publications use immutable views plus an atomic D1 pointer. A late
+  // network response from an expired lease cannot overwrite the active view.
+  let selectedObject=storageObject;
+  if(method==='GET'&&storageObject===object&&env.DB){
+    try{
+      const row=await env.DB.prepare('SELECT shared_key FROM sap_sync_publication WHERE id=1').first<{shared_key:string}>();
+      if(row?.shared_key)selectedObject=row.shared_key;
+    }catch(error){if(!(error instanceof Error&&/no such table/i.test(error.message)))throw error;}
+  }
   if (!["GET", "PUT", "DELETE"].includes(method)) return reply(405, "طريقة الطلب غير مدعومة.");
   const headers = new Headers({ apikey: SUPABASE_STORAGE_SECRET });
   const base = new URL(storagePath, SUPABASE_URL).href;
-  let url = `${base}/${bucket}/${object}`;
+  let url = `${base}/${bucket}/${selectedObject}`;
   let body: string | undefined;
   if (method === "GET") {
-    url = `${base}/authenticated/${bucket}/${object}`;
+    url = `${base}/authenticated/${bucket}/${selectedObject}`;
   } else if (method === "PUT") {
     try {
       body = await readBody(request, maxRequestBytes);
@@ -150,6 +160,10 @@ async function savedImport(request: Request, env: Cloudflare.Env) {
     if (!result.ok) return reply(502, "تعذّر الوصول إلى كشف SAP على Supabase.");
     if (method === "GET") {
       return new Response(result.body, { headers: { ...privateHeaders, "Content-Type": "application/json" } });
+    }
+    if(storageObject===object&&method!=='GET'&&env.DB){
+      try{await env.DB.prepare("UPDATE sap_sync_publication SET shared_key='',revision=revision+1,token='',lease=0 WHERE id=1").run();}
+      catch(error){if(!(error instanceof Error&&/no such table/i.test(error.message)))throw error;}
     }
     return new Response(null, { status: 204, headers: privateHeaders });
   } catch {
@@ -344,6 +358,13 @@ export async function lieutenantFiles(request: Request, env: Cloudflare.Env) {
 export async function handleInstitution(request: Request, env: Cloudflare.Env): Promise<Response | undefined> {
   const url = new URL(request.url);
   const api = url.pathname.startsWith("/api/");
+  // A device credential grants this single ingestion protocol only. It never
+  // authenticates invoice, cancellation, archive deletion or management routes.
+  if(url.pathname==='/api/desktop-sync'){
+    if(!env.DB)return reply(503,'قاعدة SAP غير متاحة.');
+    if(!await desktopDevice(request,env.DB))return reply(401,'اربط الجهاز أو جدّد رمز الربط من الموقع.');
+    return;
+  }
   const secret = await resolveSessionSecret(env);
   const password = env.INSTITUTION_PASSWORD || "123";
   if (!secret) {
@@ -372,6 +393,20 @@ export async function handleInstitution(request: Request, env: Cloudflare.Env): 
     return redirect(request, "/reconciliation", `${sessionCookie}=${value}.${sessionSignature(value, secret)}; ${cookieAttributes}; Max-Age=${sessionSeconds}`);
   }
   if (!authenticated) return api ? reply(401, "سجّل الدخول أولاً.") : redirect(request, "/login");
+  if(url.pathname==='/api/sap-sync-revision'&&request.method==='GET'){
+    if(!env.DB)return reply(503,'D1 unavailable');
+    try{
+      const row=await env.DB.prepare('SELECT revision FROM sap_sync_publication WHERE id=1').first<{revision:number}>();
+      return Response.json({revision:row?.revision||0},{headers:privateHeaders});
+    }catch(error){
+      if(error instanceof Error&&/no such table/i.test(error.message))return Response.json({revision:0},{headers:privateHeaders});
+      throw error;
+    }
+  }
+  if(url.pathname==='/api/desktop-sync/devices'){
+    if(!env.DB)return reply(503,'قاعدة SAP غير متاحة.');
+    return manageDesktopDevices(request,env.DB);
+  }
   if (url.pathname === "/logout" && request.method === "POST") {
     return redirect(request, "/login", `${sessionCookie}=; ${cookieAttributes}; Max-Age=0`);
   }

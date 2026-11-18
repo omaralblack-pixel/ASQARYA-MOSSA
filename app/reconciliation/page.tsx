@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 import {useEffect,useMemo,useRef,useState} from 'react';
 import SapImport from './SapImport';
 import SapFiles from './SapFiles';
@@ -202,6 +203,7 @@ const fractionalNegativeFils=suspectedFractionalNotes.reduce((sum,row)=>sum+Math
 const comparisonStatus=difference===null?'review':difference!==0&&!acceptedDifference?'difference':'match';
 const comparisonLabel='مقارنة قيمة إجمالي المجموعة (رقم الصفحة للتشييك فقط)';
 const pageOptions=[...new Set([0,...sortedRows.map(row=>getPage(row.key))])].sort((a,b)=>a-b);const monthResult=useMemo(()=>monthly(serial,month,columns,filtered,dateFormat,records,branches),[serial,month,columns,filtered,dateFormat,records,branches]);
+const sapRevision=useSapRevision();
 useEffect(()=>{
  if(tab!=='monthly')return;
  let active=true;
@@ -217,7 +219,7 @@ useEffect(()=>{
   else E('لا يوجد كشف SAP محفوظ. ارفعه من شاشة ملفات SAP مرة واحدة.');
  })().catch(e=>{if(active)E(e.message)});
  return()=>{active=false};
-},[tab]);
+},[tab,sapRevision]);
 async function run(fn:()=>Promise<void>){B(true);E('');N('');try{await fn()}catch(e:any){E(e.message)}finally{B(false)}}
 function change(p:Partial<OrderedDraft>){
   D(d=>{
