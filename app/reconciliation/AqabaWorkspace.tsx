@@ -22,9 +22,13 @@ async function request(body?:unknown,query=''):Promise<any>{
  if(!res.ok)throw Error(data.error||'تعذّر الاتصال بشاشة العقبة.');
  return data;
 }
-export default function AqabaWorkspace({catalog,onEditPrice,section='invoices'}:{catalog:Item[];onEditPrice:(sapCode:string,name:string)=>void;section?:'invoices'|'prices'|'stock'|'documents'|'queries'}){
+export default function AqabaWorkspace({catalog,onEditPrice,section='invoices',syncVersion=0,syncScope='all'}:{
+ catalog:Item[];onEditPrice:(sapCode:string,name:string)=>void;
+ section?:'invoices'|'prices'|'stock'|'documents'|'queries';syncVersion?:number;syncScope?:string;
+}){
  const [from,F]=useState(initial.from),[to,T]=useState(initial.to);
  const loadRevision=useRef(0);
+ const lastSync=useRef(syncVersion);
  const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState(''),[journalPaste,JP]=useState('');
  const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[],journal:[]});
  const [packs,PACK]=useState<Record<string,number>>({});
@@ -125,6 +129,12 @@ export default function AqabaWorkspace({catalog,onEditPrice,section='invoices'}:
   }finally{if(revision===loadRevision.current)LOADING(false)}
  };
  useEffect(()=>{load().catch(e=>E(e.message))},[from,to]);
+ useEffect(()=>{
+   if(lastSync.current===syncVersion)return;
+   lastSync.current=syncVersion;
+   if(['aqaba','reconcile','all'].includes(syncScope))
+     void load().catch(cause=>E(cause instanceof Error?cause.message:'تعذّر تحديث مستندات العقبة.'));
+ },[syncVersion,syncScope]);
  useEffect(()=>{
   fetch('/api/reconcile',{cache:'no-store'}).then(async res=>{
    if(!res.ok)throw Error('المرجع غير متاح');
