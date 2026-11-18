@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from unified_chunks import unified_chunks, MAX_CHUNK_BYTES
 
 MAX_BYTES = 16 * 1024 * 1024
 
@@ -65,7 +66,12 @@ class Outbox:
         self.db_path = self.root / 'queue.sqlite3'
         with self.db() as db:
             db.execute('PRAGMA journal_mode=WAL')
-            db.execute('CREATE TABLE IF NOT EXISTS files (origin TEXT NOT NULL,sha TEXT NOT NULL,name TEXT NOT NULL,stage TEXT NOT NULL DEFAULT "upload",key TEXT,attempts INTEGER NOT NULL DEFAULT 0,next REAL NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT "",review TEXT NOT NULL DEFAULT "",created REAL NOT NULL,PRIMARY KEY(origin,sha))')
+            db.execute('CREATE TABLE IF NOT EXISTS files (origin TEXT NOT NULL,sha TEXT NOT NULL,name TEXT NOT NULL,stage TEXT NOT NULL DEFAULT "upload",key TEXT,attempts INTEGER NOT NULL DEFAULT 0,next REAL NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT "",review TEXT NOT NULL DEFAULT "",created REAL NOT NULL,saved_at INTEGER NOT NULL DEFAULT 0,is_chunk INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(origin,sha))')
+            if 'saved_at' not in [r[1] for r in db.execute('PRAGMA table_info(files)')]:
+                db.execute('ALTER TABLE files ADD COLUMN saved_at INTEGER NOT NULL DEFAULT 0')
+                db.execute('UPDATE files SET saved_at=CAST(created*1000 AS INTEGER)')
+            if 'is_chunk' not in [r[1] for r in db.execute('PRAGMA table_info(files)')]:
+                db.execute('ALTER TABLE files ADD COLUMN is_chunk INTEGER NOT NULL DEFAULT 0')
         self.recover()
 
     @contextlib.contextmanager
@@ -89,8 +95,8 @@ class Outbox:
             if not 0 < len(data) <= MAX_BYTES or hashlib.sha256(data).hexdigest() != meta['sha']:
                 raise SyncError('تلف في نسخة محلية؛ احتفظ بمجلد البرنامج وراجع السجل.', False)
             with self.db() as db:
-                db.execute('INSERT OR IGNORE INTO files(origin,sha,name,created) VALUES(?,?,?,?)',
-                           (meta['origin'], meta['sha'], meta['name'], meta['created']))
+                db.execute('INSERT OR IGNORE INTO files(origin,sha,name,created,saved_at,is_chunk) VALUES(?,?,?,?,?,?)',
+                           (meta['origin'], meta['sha'], meta['name'], meta['created'], meta.get('saved_at',int(meta['created']*1000)),int(meta.get('is_chunk',False))))
 
     def capture(self, path, origin):
         path = Path(path)
@@ -102,6 +108,9 @@ class Outbox:
             after = path.stat()
             if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size) or len(data) != before.st_size:
                 return None
+        return self.enqueue(data,path.name,origin,int(before.st_mtime*1000))
+
+    def enqueue(self,data,name,origin,saved_at,is_chunk=False):
         sha = hashlib.sha256(data).hexdigest()
         with self.db() as db:
             if db.execute('SELECT 1 FROM files WHERE origin=? AND sha=?', (origin, sha)).fetchone():
@@ -109,12 +118,12 @@ class Outbox:
         # Metadata and original bytes share ONE atomic file. There is no crash
         # window with durable bytes but no recoverable name/destination.
         destination = hashlib.sha256(origin.encode()).hexdigest()[:16]
-        meta = dict(origin=origin, sha=sha, name=path.name, created=time.time())
+        meta = dict(origin=origin, sha=sha, name=name, created=time.time(), saved_at=saved_at,is_chunk=is_chunk)
         snapshot = self.spool / (destination + '-' + sha + '.snapshot')
         atomic_write(snapshot, json.dumps(meta, ensure_ascii=False).encode()+b'\n'+data)
         with self.db() as db:
-            db.execute('INSERT OR IGNORE INTO files(origin,sha,name,created) VALUES(?,?,?,?)',
-                       (origin, sha, path.name, meta['created']))
+            db.execute('INSERT OR IGNORE INTO files(origin,sha,name,created,saved_at,is_chunk) VALUES(?,?,?,?,?,?)',
+                       (origin, sha, name, meta['created'],meta['saved_at'],int(is_chunk)))
         return sha
 
     def bytes(self, sha):
@@ -187,10 +196,10 @@ class Api:
             raise ValueError('رمز الجهاز غير صالح.')
         self.opener = urllib.request.build_opener(NoRedirect)
 
-    def call(self, query='', body=None, raw=None, name=None):
+    def call(self, query='', body=None, raw=None, name=None, saved_at=None):
         headers = {'Authorization':'Bearer '+self.token, 'Accept':'application/json'}
         if raw is not None:
-            headers.update({'Content-Type':'application/octet-stream','X-File-Name':urllib.parse.quote(name)})
+            headers.update({'Content-Type':'application/octet-stream','X-File-Name':urllib.parse.quote(name),'X-SAP-Saved-At':str(saved_at)})
             data = raw
         elif body is not None:
             headers['Content-Type'] = 'application/json'
@@ -233,7 +242,7 @@ def sync_one(outbox, api, row):
             data = outbox.bytes(sha)
             if hashlib.sha256(data).hexdigest() != sha:
                 raise SyncError('بصمة النسخة المحلية غير متطابقة.', False)
-            result = api.call(query+'&action=upload', raw=data, name=row['name'])
+            result = api.call(query+'&action=upload', raw=data, name=row['name'], saved_at=row['saved_at'])
             if result.get('sha256') != sha or not result.get('key'):
                 raise SyncError('الخادم لم يؤكد بصمة الملف ومفتاح الأرشيف.')
             outbox.update(origin, sha, stage='process', key=result['key'], attempts=0, next=0, error='')
@@ -244,12 +253,33 @@ def sync_one(outbox, api, row):
             return
         if state['file'].get('published'):
             job = state.get('job') or {}
-            outbox.update(origin, sha, stage='done', attempts=0, next=0, error='', review='؛ '.join(job.get('issues',[])))
+            outbox.update(origin, sha, stage='done', attempts=0, next=0, error='', review='؛ '.join(job.get('issues',[]) or state['file'].get('review',[])))
             return
         job = state.get('job')
+        data=outbox.bytes(sha)
+        if not job and not row.get('is_chunk') and len(data)>MAX_CHUNK_BYTES:
+            try:
+                text=decode_txt(data)
+                children=unified_chunks(text)
+            except (ValueError,UnicodeError) as e:
+                raise SyncError(str(e),False)
+            if 'RecordType' in text.split('\n')[0].split('\t'):
+                hashes=[]
+                for i,child in enumerate(children):
+                    child_bytes=child.encode()
+                    child_sha=hashlib.sha256(child_bytes).hexdigest();hashes.append(child_sha)
+                    outbox.enqueue(child_bytes,'sap-'+sha[:16]+'-'+str(i+1).zfill(4)+'.txt',origin,row['saved_at'],True)
+                statuses={r['sha']:r['stage'] for r in outbox.rows(origin)}
+                if all(statuses.get(h)=='done' for h in hashes):
+                    result=api.call(query,body={'action':'publish','chunks':hashes})
+                    if not result.get('published'):raise SyncError('لم يؤكد الخادم اكتمال جميع أجزاء الأصل.')
+                    outbox.update(origin,sha,stage='done',next=0,error='',review='؛ '.join(result.get('review',[])))
+                else:
+                    outbox.update(origin,sha,next=time.time()+3,error='استكمال أجزاء SAP الصغيرة؛ الأصل والدفعات السابقة محفوظة.')
+                return
         if not job:
             try:
-                text = decode_txt(outbox.bytes(sha))
+                text = decode_txt(data)
             except UnicodeError:
                 raise SyncError('الأصل مؤرشف، لكن ترميز TXT غير مدعوم. استخدم UTF-8 أو UTF-16 وراجع ملفات SAP.', False)
             result = api.call(query, body={'action':'start','text':text})
@@ -268,6 +298,9 @@ def sync_one(outbox, api, row):
                 if failed:
                     raise SyncError(failed.get('error') or 'فشلت دفعة SAP؛ الدفعات السابقة محفوظة.')
             else:
+                if row.get('is_chunk'):
+                    outbox.update(origin,sha,stage='done',next=0,error='',review='؛ '.join(job.get('issues',[])))
+                    return
                 result = api.call(query, body={'action':'publish'})
                 if not result.get('published'):
                     raise SyncError('لم يُؤكد تحديث مصادر SAP المشتركة.')

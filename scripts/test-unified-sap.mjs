@@ -68,3 +68,29 @@ assert.throws(()=>splitUnifiedSapSource(exported.replace('WINDOW','WRONG')));
 assert.throws(()=>splitUnifiedSapSource(exported+'\nINVALID'));
 assert.equal(isUnifiedSapSource('رقم الترحيل\tالتاريخ\n1\t2026-11-03'),false);
 console.log('PASS: unified query period, cancellation, all SAP sources, tagged export routing, rejection of malformed files.');
+const chunksSource=ts.transpileModule(fs.readFileSync('app/lib/sap-unified-chunks.ts','utf8'),{
+ compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}
+}).outputText;
+const {splitSapSectionIntoChunks}=
+ await import('data:text/javascript;base64,'+Buffer.from(chunksSource).toString('base64'));
+const transferHeader=parts.transfers.split('\n')[0];
+const transferLine=parts.transfers.split('\n')[1];
+const repeatedRows=Array.from({length:160},(_,i)=>transferLine.replace('2615754',String(2619000+Math.floor(i/2))));
+const longTransfer=transferHeader+'\n'+repeatedRows.join('\n');
+const split=splitSapSectionIntoChunks(longTransfer,'transfers',1500);
+assert.ok(split.length>1,'Large SAP transfer source must split under the CPU budget');
+assert.deepEqual(split.flatMap(part=>part.split('\n').slice(1)),repeatedRows,
+ 'Every SAP line must appear once and retain its order');
+const groups=new Map();
+for(const [i,part] of split.entries())for(const line of part.split('\n').slice(1)){
+ const doc=line.split('\t')[0];assert.ok(!groups.has(doc)||groups.get(doc)===i,
+  'Never split a SAP transfer across two files');groups.set(doc,i);
+}
+assert.ok(split.every(part=>new TextEncoder().encode(part).length<=1500),
+ 'Every derived chunk must obey the physical byte limit');
+assert.equal(splitSapSectionIntoChunks(parts.official,'official',1500).length,1);
+assert.equal(splitSapSectionIntoChunks(parts.journal,'journal',1500).length,1);
+assert.match(fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8'),
+ /processUnifiedFile\(file,source\)/,
+ 'Large unified source must use split processing instead of one CPU-bound plan');
+console.log('PASS: immutable SAP sections, document-preserving chunks, complete lines, CPU-safe byte budgets.');

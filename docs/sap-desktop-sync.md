@@ -2,7 +2,7 @@
 
 ## Inspected baseline
 
-Source baseline: `7365b970e57fd68c74debaf49528c8e434a90725`, 18 November 2026.
+Source baseline: `7365b970e57fd68c74debaf49528c8e434a90725`, 18 November 2026. Later concurrent main updates through `8110e02f7be6bab31348a33603cf16159749826e` were merged into this isolated branch, retaining their browser chunking fix.
 
 - `worker/institution.ts`: password/session and same-origin gateway; private Supabase `institution-sap/lieutenant/` original byte envelopes; `current.json` compatibility export.
 - `app/api/sap-processing/route.ts`: persistent D1 jobs, generations, batches, two-minute atomic leases, exact document receipts, historical processing runs. Planning delegates to the signed Supabase `sap-plan` function when configured.
@@ -18,7 +18,9 @@ The client polls the selected folder every two seconds, waits eight seconds afte
 
 Upload retry is content-idempotent per device. Status is read before every processing step. Existing partial jobs are resumed; successful batches are never reset by desktop actions. Failed/offline/5xx responses retain local bytes and durable stage, with jittered exponential retry. Permanent input/auth errors block for review and can resume after reconnect. Redirects are refused so credentials are never forwarded to another host.
 
-After all existing batches finish, publication creates derived transfer/opening/closing archives for unified exports, retaining the real query dates. Legacy shared readers see a raw-row, document-number merge: incoming document replaces its prior rows, older missing documents and all columns remain. Late retries of older snapshots supplement missing documents without overwriting newer document contents. No match, invoice or cancellation decision is inferred by this merge.
+For unified originals larger than 280 KB, the desktop creates deterministic small raw unified child files, with the original WINDOW metadata in each and no SAP document split across files. Children are immutable and independently verified/processed using the existing planner. The server reconstructs the complete ordered child hashes from the parent original and requires every child batch to be complete before publication. A parent with an existing partial D1 job continues that job instead. Completed children never publish an incomplete compatibility view. Python and TypeScript chunk derivations are checked for byte equality. This avoids requesting a monolithic large Supabase plan, while retaining the full original and old 1/3 jobs.
+
+After all existing batches finish, publication creates derived transfer/opening/closing archives for unified exports, retaining the real query dates. Legacy shared readers see a raw-row, document-number merge: incoming document replaces its prior rows, older missing documents and all columns remain. Source save timestamps, rather than upload arrival order, determine snapshot precedence. Late retries of older snapshots supplement missing documents without overwriting newer document contents. No match, invoice or cancellation decision is inferred by this merge.
 
 Compatibility snapshots are immutable private Supabase `sync-views/*.json` objects, referenced through an atomic D1 pointer. D1 lease fencing prevents an expired writer from replacing the active view after a delayed Storage response. Prior views/originals and processing history remain. The normal authenticated saved-import GET resolves the pointer; explicit legacy manual PUT/DELETE resets the pointer and invalidates an active desktop publisher. Queued existing records/invoice payloads continue following the pre-existing importer semantics.
 
@@ -47,4 +49,4 @@ Rolling back the Worker code does not delete originals, batches, invoice data or
 - `python -m unittest discover -s desktop-sync/tests -v`: source stability, independent same-name versions, unchanged-content dedup, durable manifests after crash, offline/502 and lost-response recovery, expired credentials, encoding and corruption. Windows additionally tests DPAPI and open-writer file locks.
 - `node scripts/test-desktop-sync.mjs`: actual gateway/API logic with SQLite-backed D1 and a deterministic in-memory Supabase transport. Full hash readback, uncertain writes, planner 546, preserved 1/3 progress, immutable publication fencing, older/newer ordering, no invoice or cancellation creation, revocation and shared view.
 - Existing SAP processing/archive/source-integrity/system audit tests, TypeScript and production build.
-- `.github/workflows/sap-desktop-sync.yml` builds/tests on Windows and uploads an EXE package. `build.ps1` also runs a packaged EXE self-test; no live credentials/data are used. Build artifacts are unsigned and not a claim of installation on the user's PC.
+- `.github/workflows/sap-desktop-sync.yml` builds/tests on Windows and uploads an EXE package. `build.ps1` also runs a packaged EXE self-test; no live credentials/data are used. The Windows build and packaged EXE self-test also completed successfully in GitHub Actions on the initial branch revision. The final accepted run is recorded in the PR. Build artifacts are unsigned and not a claim of installation on the user's PC.

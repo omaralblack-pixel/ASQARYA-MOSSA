@@ -64,7 +64,7 @@ class Tests(unittest.TestCase):
         self.outbox.capture(self.source,ORIGIN)
         class Fake:
             def __init__(self):self.fail_upload=True;self.fail_batch=True;self.done=False;self.calls=[]
-            def call(self,query='',body=None,raw=None,name=None):
+            def call(self,query='',body=None,raw=None,name=None,saved_at=None):
                 if raw is not None:
                     if self.fail_upload:self.fail_upload=False;raise SyncError('HTTP 502')
                     return dict(sha256=hashlib.sha256(raw).hexdigest(),key='immutable')
@@ -119,6 +119,46 @@ class Tests(unittest.TestCase):
         metadata=snapshot.read_bytes().split(b'\n',1)[0]
         snapshot.write_bytes(metadata+b'\ncorruption')
         with self.assertRaises(SyncError):Outbox(self.root/'state')
+
+    def test_large_unified_client_splits_and_publishes_complete_parent(self):
+        from unified_chunks import unified_chunks
+        from urllib.parse import parse_qs
+        text='RecordType\tDocumentNumber\tDocumentType\tDocEntry\tRemarks\nWINDOW\t\t\t\tperiod\n'+'\n'.join('TRANSFER\t'+str(2610000+i)+'\t\t\t'+'م'*120 for i in range(1800))
+        chunks=unified_chunks(text)
+        self.assertGreater(len(chunks),1)
+        self.assertTrue(all(len(c.encode())<=280000 for c in chunks))
+        huge=text.split('\n')[:2]+['TRANSFER\t1234567\t\t\t'+'x'*300000]
+        with self.assertRaises(ValueError):unified_chunks('\n'.join(huge))
+        self.source.write_bytes(text.encode());parent=self.outbox.capture(self.source,ORIGIN)
+        class Fake:
+            def __init__(self):self.files={};self.published=False;self.start_sizes=[]
+            def call(self,query='',body=None,raw=None,name=None,saved_at=None):
+                sha=parse_qs(query.lstrip('?'))['sha256'][0]
+                if raw is not None:
+                    self.files.setdefault(sha,{'job':None})
+                    return {'sha256':sha,'key':sha}
+                file=self.files[sha]
+                if body:
+                    if body['action']=='start':
+                        self.start_sizes.append(len(body['text'].encode()))
+                        file['job']={'batches':[{'idx':0,'state':'pending'}]}
+                    elif body['action']=='batch':file['job']['batches'][0]['state']='complete'
+                    elif body['action']=='publish':
+                        assert sha==parent,'child chunks never publish partial shared views'
+                        assert len(body['chunks'])==len(chunks)
+                        assert all(self.files[h]['job']['batches'][0]['state']=='complete' for h in body['chunks'])
+                        self.published=True
+                        return {'published':True}
+                    return {'job':file['job']}
+                return {'file':{'published':self.published if sha==parent else False},'job':file['job']}
+        api=Fake()
+        for _ in range(12):
+            for row in self.outbox.rows(ORIGIN):
+                if row['stage']!='done':sync_one(self.outbox,api,row)
+        self.assertTrue(api.published)
+        self.assertTrue(all(n<=280000 for n in api.start_sizes))
+        self.assertEqual(next(r for r in self.outbox.rows(ORIGIN) if r['sha']==parent)['stage'],'done')
+        self.assertEqual(self.outbox.bytes(parent),text.encode())
 
     @unittest.skipUnless(os.name=='nt','Windows file sharing and DPAPI')
     def test_windows_exclusive_copy_and_dpapi(self):

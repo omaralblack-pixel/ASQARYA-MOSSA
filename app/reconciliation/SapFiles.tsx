@@ -9,6 +9,7 @@ import {listSapFiles,readSapArchive,readSapJson,sapRequest,type SapArchiveFile} 
 import {fromSapStorageFilename} from '../lib/sap-archive-filename';
 import {parseLieutenantTransfers} from '../lib/lieutenant';
 import {isUnifiedSapSource,splitUnifiedSapSource,unifiedSapQuery} from '../lib/unified-sap-query';
+import {splitSapSectionIntoChunks,type UnifiedChunkKind} from '../lib/sap-unified-chunks';
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const uploadDay=(date:string)=>date&&Number.isFinite(Date.parse(date))?new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)):'';
 const uploadTime=(date:string)=>date&&Number.isFinite(Date.parse(date))?uploadDay(date)+' '+new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(date)):'';
@@ -91,9 +92,58 @@ export default function SapFiles(){
   if(previous&&last(previous.text)>last(sharedText))return;
   await saveSapImport({name:file.name,text:sharedText});
  }
- async function processFile(file:SapArchiveFile,text?:string,recheck=false):Promise<void>{
+ async function processUnifiedFile(file:SapArchiveFile,text:string):Promise<void>{
+  // Avoid the CPU-limited monolithic Supabase parse (HTTP 546).
+  const sections=splitUnifiedSapSource(text);
+  const sources:{kind:UnifiedChunkKind;body:string;count:number;label:string}[]=[
+   {kind:'transfers',body:sections.transfers,count:sections.counts.TRANSFER,label:'الترحيلات'},
+   {kind:'official',body:sections.official,count:sections.counts.OFFICIAL,label:'المستندات الرسمية'},
+   {kind:'journal',body:sections.journal,count:sections.counts.OINM,label:'حركات المخزون'},
+  ];
+  const parts=sources.filter(x=>x.count>0).map(x=>({...x,chunks:splitSapSectionIntoChunks(x.body,x.kind)}));
+  const total=parts.reduce((n,x)=>n+x.chunks.length,0);
+  const hash=file.key.split('__')[1];
+  if(!/^[a-f0-9]{32}$/.test(hash))throw Error('بصمة أصل SAP غير صالحة.');
+  let finished=0,review=0;
+  for(const part of parts)for(let i=0;i<part.chunks.length;i++){
+   if(!mounted.current)return;
+   const name='sap-'+hash+'-'+part.kind+'-'+String(i+1).padStart(4,'0')+
+    '-of-'+String(part.chunks.length).padStart(4,'0')+'.txt';
+   const bytes=new TextEncoder().encode(part.chunks[i]);
+   M('معالجة SAP المجزأة: '+(finished+1)+' من '+total+' — '+part.label+
+    '. النسخ والدفعات السابقة محفوظة.');
+   const response=await fetch('/api/lieutenant-files',{method:'POST',headers:{
+    'Content-Type':'text/plain','X-File-Name':encodeURIComponent(name),
+    'X-File-Kind':part.kind==='transfers'?'transfers':'other'
+   },body:bytes});
+   const saved=await readSapJson<{key:string}>(response,'أرشفة جزء SAP رقم '+(finished+1));
+   if(!saved.key)throw Error('الخادم لم يؤكد أرشفة الجزء '+(finished+1));
+   await verifyArchivedSource(saved.key,bytes.buffer as ArrayBuffer);
+   const child:SapArchiveFile={key:saved.key,name,
+    kind:part.kind==='transfers'?'transfers':'other',
+    created:new Date().toISOString(),size:bytes.byteLength};
+   await processFile(child,part.chunks[i],false,true);
+   const status=(await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(child.key))).job;
+   if(!status||!['complete','review','archived'].includes(status.status))
+    throw Error('توقفت معالجة الجزء '+(finished+1)+' من '+total+
+     '؛ المكتمل محفوظ. اضغط «حالة / استكمال» على الأصل لاستكمال الباقي.');
+   if(status.status==='review')review++;
+   finished++;
+  }
+  // Never publish an individual chunk to the shared SAP full-export view.
+  await archiveUnifiedParts(file,text);
+  await publishShared(file,text);
+  M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة.'+
+   (review?' توجد ملاحظات قراءة في '+review+' أجزاء.':' جميع الدفعات ناجحة.')+
+   ' الأصل محفوظ، ويمكن رفع نسخة الغد بنفس الاسم.');
+ }
+ async function processFile(file:SapArchiveFile,text?:string,recheck=false,fromUnified=false):Promise<void>{
   const current=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));
   let state=current.job;
+  if(!state&&!fromUnified&&(file.kind==='unified'||file.kind==='other')){
+   const source=text??await readSapArchive(file);
+   if(isUnifiedSapSource(source))return processUnifiedFile(file,source);
+  }
   // Reuse D1 job state; a 1/3 import must never be restarted from the
   // expensive full Excel parsing path.
   const mayRecheck=!!state&&recheck&&state.done===state.total&&
@@ -117,7 +167,7 @@ export default function SapFiles(){
   remember(state);
   // Unified imports are already preserved as immutable originals and D1 receipts.
   // Never replace the legacy shared full export with a shorter date-window subset.
-  if(state.kind==='transfers')await publishShared(file,text??await readSapArchive(file));
+  if(state.kind==='transfers'&&!fromUnified)await publishShared(file,text??await readSapArchive(file));
   // Only unfinished batches are requested. Finished batches survive reloads and
   // independent tabs; the server lease serializes claims for the same batch.
   for(const batch of state.batches.filter(x=>x.state!=='complete')){

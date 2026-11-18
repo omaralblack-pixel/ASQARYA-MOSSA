@@ -1,4 +1,5 @@
 'use client';
+import {invalidateSavedSapRead} from './saved-sap-import';
 import {useSyncExternalStore} from 'react';
 let revision=0,timer:ReturnType<typeof setInterval>|undefined,busy=false;
 const listeners=new Set<()=>void>();
@@ -8,7 +9,7 @@ async function poll(){
   const response=await fetch('/api/sap-sync-revision',{cache:'no-store',signal:AbortSignal.timeout(10000)});
   if(!response.ok)return;
   const data=await response.json() as {revision:number};
-  if(Number.isSafeInteger(data.revision)&&data.revision!==revision){revision=data.revision;listeners.forEach(fn=>fn());}
+  if(Number.isSafeInteger(data.revision)&&data.revision!==revision){revision=data.revision;invalidateSavedSapRead();listeners.forEach(fn=>fn());}
  }catch{/* Keep last loaded data on an offline browser. */}finally{busy=false;}
 }
 function subscribe(fn:()=>void){
