@@ -19,6 +19,7 @@ import Colonel from './Colonel';
 import Reassurance from './Reassurance';
 import AqabaWorkspace from './AqabaWorkspace';
 import ThemeToggle from '../../components/ThemeToggle';
+import {ProjectSyncIndicator,useInstitutionSync,announceInstitutionChange} from '../../components/ProjectSyncIndicator';
 import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
 import {fractionalQuantityNotes} from '../lib/fractional-quantity-notes';
@@ -60,6 +61,7 @@ async function api(body?:any,url='',signal?:AbortSignal){
    try{data=await response.json()}
    catch{throw Error('خادم المطابقة أعاد JSON غير مكتمل (HTTP '+response.status+'). أعد محاولة تحديث القائمة.')}
    if(!response.ok)throw Error(data?.error||'تعذّر تنفيذ طلب المطابقة (HTTP '+response.status+').');
+   if(body)announceInstitutionChange();
    return data;
  }
  throw Error('تعذّر الاتصال بخادم المطابقة.');
@@ -92,6 +94,12 @@ function Badge({state,label}:{state:string;label?:string}){return <span classNam
 function TransferCard({transfer,index,onChange,onRemove,onLookup}:{transfer:any,index:number,onChange:(t:any)=>void,onRemove:()=>void,onLookup:(number:string)=>void}){const parsed=useMemo(()=>parseTransfer(transfer.paste,{allowReverse:true}),[transfer.paste]);return <section className="transfer-card"><div className="card-title"><span className="number">{index+1}</span><b>الترحيل {index+1}</b>{<button className="icon-button danger" aria-label={'حذف الترحيل '+(index+1)} onClick={onRemove}><Trash2 size={16}/></button>}</div><div className="two-fields"><label>رقم الترحيل<input value={transfer.number} onChange={e=>onChange({...transfer,number:e.target.value})} onBlur={e=>{if(e.target.value.trim()&&!transfer.paste.trim())onLookup(e.target.value.trim())}} placeholder="مثال: 2615835"/></label><label>تاريخ الترحيل<input type="date" value={transfer.date} onChange={e=>onChange({...transfer,date:e.target.value})}/></label></div><label className="paste-label">جدول SAP<textarea aria-label={'جدول SAP '+(index+1)} value={transfer.paste} onChange={e=>onChange({...transfer,paste:e.target.value})} placeholder={'الصق جدول الترحيل مع العناوين هنا…\nItem No.    Quantity    UoM Name    From Warehouse    To Warehouse'} dir="ltr"/></label><div className="paste-summary">{transfer.paste?<><span><CheckCircle2 size={14}/>{parsed.lines.length} بند صالح</span>{parsed.lines.some(line=>line.from==='011')&&<span>ترحيل عكسي · يُخصم من الصافي</span>}{parsed.issues.length>0&&<span className="red">{parsed.issues.length} ملاحظات قراءة</span>}{parsed.excluded.length>0&&<span className="amber">{parsed.excluded.length} خارج مسارات المؤسسة</span>}</>:<span>نسخ من SAP ← لصق هنا. تُقرأ Quantity فقط.</span>}</div>{parsed.issues.length>0&&<details><summary>ملاحظات قراءة الترحيل</summary>{parsed.issues.map((p,i)=><p className="red" key={i}>{p}</p>)}</details>}{parsed.excluded.length>0&&<details><summary>بنود خارج نطاق المؤسسة</summary>{parsed.excluded.map((p,i)=><p key={i}>{p}</p>)}</details>}</section>}
 export default function Home(){const [reference,REF]=useState<Item[]>([]),[branches,BR]=useState<string[]>([]),[drivers,DR]=useState<string[]>([]),[draft,D]=useState<OrderedDraft|null>(null),[tab,T]=useState('work'),[loading,L]=useState(true),[busy,B]=useState(false),[error,E]=useState(''),[notice,N]=useState(''),[records,REC]=useState<any[]>([]),[query,Q]=useState(''),[onlyDiff,DIFF]=useState(false),[sort,SORT]=useState('entry'),[pageFilter,PAGE]=useState('all'),[pick,PICK]=useState(''),[edit,EDIT]=useState<Item|null>(null),[linkSap,LINK]=useState(''),[importTexts,IT]=useState<Record<string,string>>({}),[month,M]=useState(today().slice(0,7)),[serial,SERIAL]=useState(''),[columns,COLS]=useState({number:-1,date:-1,branch:-1}),[filtered,FILTERED]=useState(false),[dateFormat,DF]=useState('dmy'),[monthTab,MT]=useState('missing'),[monthReady,MR]=useState(false);
 const [monthlySource,setMonthlySource]=useState('');
+const monthlyLoadedText=useRef('');
+const monthlyEditorText=useRef('');
+monthlyEditorText.current=serial;
+const sync=useInstitutionSync();
+const [remoteConflict,setRemoteConflict]=useState('');
+const draftBaseline=useRef('');
 const [editOriginal,setEditOriginal]=useState<Item|null>(null);
 const focusOpenedTransfers=useRef(false);
 const [editAlias,setEditAlias]=useState('');
@@ -120,7 +128,7 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
   if(!stored)return [];
   return stored.transfers.flatMap(transfer=>transferNumbers(transfer.number).map(number=>[number,record.id] as const));
 })),[sapPreview.records]);
-useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier','lieutenant','lieutenant-day','lieutenant-balance','lieutenant-opening','lieutenant-query','lieutenant-cashvan','lieutenant-cancellations','aqaba','aqaba-prices','aqaba-stock','aqaba-documents','aqaba-queries','reassurance','sap-files','colonel'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
+useEffect(()=>{const first=blank();D(first);draftBaseline.current=JSON.stringify(first);const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier','lieutenant','lieutenant-day','lieutenant-balance','lieutenant-opening','lieutenant-query','lieutenant-cashvan','lieutenant-cancellations','aqaba','aqaba-prices','aqaba-stock','aqaba-documents','aqaba-queries','reassurance','sap-files','colonel'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
 
 const aqabaWork=!!draft&&isAqabaBranch(draft.branch);
 useEffect(()=>{
@@ -213,11 +221,17 @@ useEffect(()=>{
   const file=candidates.find(x=>monthlyKeys.has(x.key));
   const shared=file?{name:file.name,text:await readSapArchive(file)}:await readSavedSapImport();
   if(!active)return;
-  if(shared){setSerial(shared.text);setMonthlySource(shared.name);await getRecords();if(active)MR(true);}
-  else E('لا يوجد كشف SAP محفوظ. ارفعه من شاشة ملفات SAP مرة واحدة.');
+  if(shared){
+    if(monthlyEditorText.current.trim()&&monthlyEditorText.current!==monthlyLoadedText.current){
+      E('وصل تحديث SAP جديد، لكن لديك كشف شهري معدل ولم يُحفظ. احتفظنا به؛ راجع المصدر قبل استبداله.');
+      return;
+    }
+    monthlyLoadedText.current=shared.text;
+    setSerial(shared.text);setMonthlySource(shared.name);await getRecords();if(active)MR(true);
+  }else E('لا يوجد كشف SAP محفوظ. ارفعه من شاشة ملفات SAP مرة واحدة.');
  })().catch(e=>{if(active)E(e.message)});
  return()=>{active=false};
-},[tab]);
+},[tab,sync.signal.version]);
 async function run(fn:()=>Promise<void>){B(true);E('');N('');try{await fn()}catch(e:any){E(e.message)}finally{B(false)}}
 function change(p:Partial<OrderedDraft>){
   D(d=>{
@@ -581,7 +595,37 @@ async function getRecords(){
  REC(readable);
  if(readable.length!==x.records.length)E('يوجد '+(x.records.length-readable.length)+' سجل غير مقروء. بقية السجلات متاحة؛ البيانات الأصلية لم تُحذف أو تُعدّل.');
 }
+// Cross-screen updates never replace the currently edited draft. A remote
+// version change is surfaced for operator comparison; server save rejects stale
+// versions with 409 even if a polling cycle was missed.
+useEffect(()=>{
+ if(!sync.signal.version)return;
+ const scope=sync.signal.scope;
+ if(scope==='reconcile'||scope==='all'){
+   if(tab==='history'||tab==='invoices'||tab==='monthly')
+     void getRecords().catch(cause=>E(cause instanceof Error?cause.message:'تعذّر تحديث السجل.'));
+   if(tab!=='work')void api().then(data=>{REF(data.reference);BR(data.branches);DR(data.drivers)})
+     .catch(cause=>E(cause instanceof Error?cause.message:'تعذّر تحديث مرجع المؤسسة.'));
+   if(draft?.id&&!busy){
+     const checkedId=draft.id,knownVersion=draft.version;
+     void api(undefined,'?id='+encodeURIComponent(checkedId)).then(data=>{
+       if(data.record?.version!==knownVersion)
+         setRemoteConflict('تم تعديل نفس الكشف من شاشة أو جهاز آخر. احتفظنا بمسودتك؛ افتح النسخة الجديدة بعد مراجعة تغييراتك، ولا تحفظ فوقها.');
+     }).catch(()=>setRemoteConflict('تعذّر التحقق من نسخة الكشف المفتوح. احتفظنا بمسودتك؛ أعد المحاولة قبل الحفظ.'));
+   }
+ }
+},[sync.signal.version]);
+
+function replaceWorkingDraft(next:OrderedDraft){
+ if(draftBaseline.current&&draft&&JSON.stringify(draft)!==draftBaseline.current&&
+   !window.confirm('هناك تعديلات غير محفوظة في كشفك. هل تريد تجاهلها وفتح كشف آخر؟'))return false;
+ draftBaseline.current=JSON.stringify(next);
+ setRemoteConflict('');D(next);
+ return true;
+}
 async function openRecord(id:string,invoiceId?:string){
+  if(draftBaseline.current&&draft&&JSON.stringify(draft)!==draftBaseline.current&&
+    !window.confirm('لديك تعديلات غير محفوظة في الكشف المفتوح. هل تريد تجاهل المسودة وفتح كشف آخر؟'))return;
   const [data,settings]=await Promise.all([api(undefined,'?id='+encodeURIComponent(id)),api()]);
   const saved=readReconciliationRecord(data.record.payload);
   if(!saved)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
@@ -597,7 +641,8 @@ async function openRecord(id:string,invoiceId?:string){
   REF(settings.reference);
     setTransferSources({});
   focusOpenedTransfers.current=invoiceId!==undefined;
-  D(next);PAGE(page);Q('');T('work');
+  draftBaseline.current=JSON.stringify(next);
+  setRemoteConflict('');D(next);PAGE(page);Q('');T('work');
 }
 async function loadRecord(r:{id:string}){await run(()=>openRecord(r.id))}
 function showDefinition(item:Item,sapCode?:string){
@@ -739,11 +784,14 @@ async function save() {
     });
     const saved = await api({action: 'save', draft: savedDraft, transferSources: sources});
     setTransferSources(current => Object.fromEntries(Object.entries(current).filter(([, source]) => !sources.includes(source))));
-    D(current => current && current.transfers[0]?.id === draft.transfers[0]?.id
-      ? {...current, id: saved.id, version: saved.version, referenceSnapshot: saved.referenceSnapshot,
-          useCurrentReference: false, linkedSapCodes: undefined,
-}
-      : current);
+    D(current => {
+      if(!current||current.transfers[0]?.id!==draft.transfers[0]?.id)return current;
+      const next={...current,id:saved.id,version:saved.version,referenceSnapshot:saved.referenceSnapshot,
+        useCurrentReference:false,linkedSapCodes:undefined};
+      draftBaseline.current=JSON.stringify(next);
+      setRemoteConflict('');
+      return next;
+    });
     N(draft.invoices.some(invoice => invoiceDocumentNo(invoice.number))
 ? 'تم حفظ الفاتورة وترحيلاتها.'
 : 'تم حفظ الترحيل في السجل.');
@@ -759,22 +807,30 @@ async function save() {
 }
 function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);COLS(monthlyColumns(text))}
 if(!draft)return <div className="initial">جاري تجهيز مساحة المطابقة…</div>;
-return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="topbar-private"><span className="private-dot"/>مساحة عمل خاصة</span><ThemeToggle/><form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');T(key);if(key==='history'||key==='invoices'||key==='monthly')void run(getRecords)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{error&&!edit&&<div className="banner error" role="alert"><span>{error}</span><button type="button" aria-label="إغلاق التنبيه" onClick={()=>E('')}>×</button></div>}{notice&&<div className="banner success" role="status"><span>{notice}</span><button type="button" aria-label="إغلاق الرسالة" onClick={()=>N('')}>×</button></div>}{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
-{(tab==='aqaba'||tab.startsWith('aqaba-'))&&<AqabaWorkspace section={tab==='aqaba'?'invoices':tab.slice('aqaba-'.length) as 'prices'|'stock'|'documents'|'queries'} catalog={reference} onEditPrice={(sapCode,name)=>void openSapLink(sapCode,name)}/>}
-{tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
+return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="topbar-private"><span className="private-dot"/>مساحة عمل خاصة</span><ThemeToggle/><form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');T(key);if(key==='history'||key==='invoices'||key==='monthly')void run(getRecords)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main><ProjectSyncIndicator checkedAt={sync.checkedAt} error={sync.error} checking={sync.checking}
+   onRefresh={()=>{void sync.refreshNow()}}/>
+ {remoteConflict&&tab==='work'&&<div className="banner error" role="alert">
+   <strong>{remoteConflict}</strong>
+   {draft?.id&&<button type="button" className="button secondary small" onClick={()=>{void openRecord(draft.id!)}}>
+     فتح النسخة الأحدث بعد التأكيد
+   </button>}
+ </div>}
+ {error&&!edit&&<div className="banner error" role="alert"><span>{error}</span><button type="button" aria-label="إغلاق التنبيه" onClick={()=>E('')}>×</button></div>}{notice&&<div className="banner success" role="status"><span>{notice}</span><button type="button" aria-label="إغلاق الرسالة" onClick={()=>N('')}>×</button></div>}{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
+{(tab==='aqaba'||tab.startsWith('aqaba-'))&&<AqabaWorkspace syncVersion={sync.signal.version} syncScope={sync.signal.scope} section={tab==='aqaba'?'invoices':tab.slice('aqaba-'.length) as 'prices'|'stock'|'documents'|'queries'} catalog={reference} onEditPrice={(sapCode,name)=>void openSapLink(sapCode,name)}/>}
+{tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{if(!replaceWorkingDraft(withInvoiceDates(picked)))return;setTransferSources(sources);PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
- {tab==='stock'&&<StockReport/>}
- {tab==='reassurance'&&<Reassurance branches={branches} onOpenRecord={id=>{void run(()=>openRecord(id));}}
-   onNavigate={view=>{E('');Q('');T(view)}} onOpenTransfer={(transfer,branch)=>{const next=blank();D({...next,branch,transfers:[{...transfer,id:uid()}]});setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+' من شاشة طمني.');T('work');}}/>}
- {tab==='sap-files'&&<SapFiles/>}
- {tab==='colonel'&&<Colonel branches={branches}
+ {tab==='stock'&&<StockReport syncVersion={sync.signal.version} syncScope={sync.signal.scope}/>}
+ {tab==='reassurance'&&<Reassurance syncVersion={sync.signal.version} syncScope={sync.signal.scope} branches={branches} onOpenRecord={id=>{void run(()=>openRecord(id));}}
+   onNavigate={view=>{E('');Q('');T(view)}} onOpenTransfer={(transfer,branch)=>{const next=blank();if(!replaceWorkingDraft({...next,branch,transfers:[{...transfer,id:uid()}]}))return;setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+' من شاشة طمني.');T('work');}}/>}
+ {tab==='sap-files'&&<SapFiles syncVersion={sync.signal.version} syncScope={sync.signal.scope}/>}
+ {tab==='colonel'&&<Colonel syncVersion={sync.signal.version} syncScope={sync.signal.scope} branches={branches}
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
     onNavigate={view=>{E('');Q('');T(view)}}/>}
- {(tab==='lieutenant'||tab.startsWith('lieutenant-'))&&<FirstLieutenant section={tab==='lieutenant'?'transfers':tab.slice('lieutenant-'.length) as 'day'|'balance'|'opening'|'query'|'cashvan'|'cancellations'} branches={branches} reference={reference}
+ {(tab==='lieutenant'||tab.startsWith('lieutenant-'))&&<FirstLieutenant syncVersion={sync.signal.version} syncScope={sync.signal.scope} section={tab==='lieutenant'?'transfers':tab.slice('lieutenant-'.length) as 'day'|'balance'|'opening'|'query'|'cashvan'|'cancellations'} branches={branches} reference={reference}
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
     onOpenTransfer={(transfer,branch)=>{
       const next=blank();
-      D({...next,branch,transfers:[{...transfer,id:uid()}]});
+      if(!replaceWorkingDraft({...next,branch,transfers:[{...transfer,id:uid()}]}))return;
       setTransferSources({});PAGE('all');Q('');E('');N('تم فتح الترحيل '+transfer.number+
         ' من الملازم أول. أدخل الفاتورة الزرقاء وشيّكها قبل الحفظ.');T('work');
     }}/>}
@@ -863,7 +919,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
 <button className="button primary" disabled={busy} onClick={()=>void save()}><Save size={17}/>{busy?'جارٍ الحفظ…':draft.id?'حفظ التعديلات':'حفظ'}</button></div></section></>}
 {tab==='history'&&<><div className="page-title"><div><p className="eyebrow">الأرشيف</p><h1>سجل المطابقة</h1><p>الترحيلات والفواتير محفوظة مع نتيجة المطابقة وأسعارها وقت الحفظ. تصدير Excel يشمل كل السجل حتى مع وجود بحث.</p></div><button className="button secondary" disabled={!historyRecords.some(r=>(JSON.parse(r.payload).invoices||[]).some((invoice:Invoice)=>invoiceDocumentNo(invoice.number)))} onClick={()=>window.print()}><Printer size={16}/>طباعة سجل المطابقات</button><button className="button secondary" disabled={busy||!records.length} onClick={exportFullHistory}><FileText size={16}/>تصدير السجل كامل Excel</button><button className="button secondary" onClick={()=>run(getRecords)}><RefreshCw size={16}/>تحديث</button></div><div className="search panel no-print"><Search size={17}/><input value={query} onChange={e=>Q(e.target.value)} placeholder="ابحث بالفرع أو رقم الترحيل أو الفاتورة"/></div>{historyRecords.map(r=>{const p=JSON.parse(r.payload);return <button key={r.id} className="record panel no-print" onClick={()=>loadRecord(r)}><span className="record-icon"><ClipboardPaste size={22}/></span><span><b>{r.branch}</b><small>ترحيلات: {p.transfers.map((t:any)=>t.number).join('، ')}</small><small>فواتير: {p.invoices.map((i:any)=>i.number).join('، ')}</small></span><span>{money(p.summary?.total??null)} د.أ</span><Badge state={r.status} label={!(p.invoices||[]).some((invoice:Invoice)=>invoiceDocumentNo(invoice.number))?'ترحيل بلا فاتورة زرقاء':p.summary?.acceptedDifference?'مطابق باعتمادك':undefined}/><span className="text-button">فتح الكشف ←</span></button>})}{!records.length&&<div className="panel empty">لا توجد ترحيلات أو فواتير محفوظة بعد.</div>}<InvoiceRegisterPrint records={historyRecords}/></>}
 {tab==='invoices'&&<InvoiceRegister records={records} busy={busy} refresh={()=>run(getRecords)} open={loadRecord}/>}
-{tab==='serial-soldier'&&<SerialSoldier branches={branches}/>}
+{tab==='serial-soldier'&&<SerialSoldier syncVersion={sync.signal.version} syncScope={sync.signal.scope} branches={branches}/>}
 {tab==='monthly'&&<><div className="page-title"><div><p className="eyebrow">إقفال الشهر</p><h1>مطابقة ترحيلات M2026</h1><p>تُقرأ ترحيلات SAP المحفوظة من ملفات SAP وتُقارن مع سجل الموقع للشهر المحدد.</p></div><button className="button secondary" onClick={()=>run(getRecords)}><RefreshCw size={16}/>تحديث المحفوظ</button></div><section className="panel"><div className="section-title"><CalendarDays size={21}/><h2>كشف الترحيلات الشهري</h2></div><div className="form-grid"><label>الشهر<input type="month" value={month} onChange={e=>{M(e.target.value);FILTERED(false);MR(false)}}/></label><label>تنسيق التاريخ في الكشف<select value={dateFormat} onChange={e=>DF(e.target.value)}><option value="dmy">يوم / شهر / سنة</option><option value="mdy">شهر / يوم / سنة</option></select></label></div><p className="hint">المصدر: {monthlySource||'جارٍ تحميل الكشف المشترك…'}</p><a className="button secondary" href="/reconciliation?view=sap-files">ملفات SAP — إدارة الكشف</a><label>كشف SAP المحفوظ<textarea className="serial-input" dir="ltr" value={serial} readOnly/></label>{serial&&!numbersOnly&&<div className="form-grid">{(['number','date','branch'] as const).map(k=><label key={k}>{k==='number'?'عمود رقم الترحيل':k==='date'?'عمود التاريخ':'عمود الفرع (اختياري)'}<select value={columns[k]} onChange={e=>COLS({...columns,[k]:Number(e.target.value)})}><option value={-1}>غير محدد</option>{heads.map((h,i)=><option key={i} value={i}>{h||'عمود '+(i+1)}</option>)}</select></label>)}</div>}<label className="check-label"><input type="checkbox" checked={filtered} onChange={e=>FILTERED(e.target.checked)}/>الكشف مفلتر من أول الشهر المحدد إلى آخره (مطلوب إذا لم يوجد عمود تاريخ)</label><button className="button primary" disabled={busy||!serial.trim()} onClick={()=>run(async()=>{await getRecords();MR(true)})}><Search size={17}/>مطابقة كشف الشهر</button></section>{monthReady&&<>{monthResult.problems.length>0&&<div className="banner error"><div><b>نتيجة غير مكتملة؛ راجع التالي:</b>{monthResult.problems.map((p,i)=><p key={i}>{p}</p>)}</div></div>}{monthResult.warnings?.map((warning,i)=><p className="amber" key={i}>{warning}</p>)}<div className="monthly-stats">{[['missing','غير مسجلة هنا',monthResult.missing.length],['pending','فواتير غير مكتملة',monthResult.pending.length],['received','فواتير مسجلة',monthResult.received.length],['extra','محفوظة خارج الكشف',monthResult.extra.length],['canceled','ملغاة على SAP',monthResult.canceled.length],['toCancel','كاش فان — حالة الإلغاء',monthResult.toCancel.length],['reverse','ترحيلات عكسية',monthResult.reverse.length]].map(([key,label,n])=><button key={key} className={'stat '+(monthTab===key?'selected':'')} onClick={()=>MT(String(key))}><span>{label}</span><strong>{n}</strong></button>)}</div><section className="panel"><h2>{monthTab==='missing'?'ترحيلات في الكشف لم تُسجّل فواتيرها هنا':monthTab==='pending'?'ترحيلات محفوظة وفواتيرها غير مكتملة':monthTab==='received'?'ترحيلات لها فواتير مسجلة':monthTab==='canceled'?'الترحيلات الملغاة وحركات إلغائها':monthTab==='toCancel'?'ترحيلات الكاش فان — حالة الإلغاء والترحيل المقابل':monthTab==='reverse'?'ترحيلات عكسية خارجة من المؤسسة':'ترحيلات محفوظة للشهر لا تظهر في الكشف'}</h2><div className="table-scroll"><table><thead><tr><th>رقم الترحيل</th><th>التاريخ</th><th>الفرع</th><th>الملاحظة</th>{monthTab==='toCancel'&&<><th>مرحل</th><th>حالة الإلغاء على SAP</th><th>الترحيل المقابل</th></>}<th/></tr></thead><tbody>{(monthResult[monthTab as 'missing'|'pending'|'received'|'extra'|'canceled'|'toCancel'|'reverse'] as any[]||[]).map((r:any)=><tr key={r.number}><td><code>{r.number}</code></td><td>{r.date}</td><td>{r.branch||r.group?.branch||'—'}</td><td>{r.reason||'—'}{monthTab==='toCancel'&&r.remarks&&<small dir="auto" style={{display:'block'}}>Remarks: {r.remarks}</small>}</td>{monthTab==='toCancel'&&<><td>{r.posted||'—'}</td><td><b className={r.cancellationStatus==='تم الإلغاء'?'green':r.cancellationStatus==='غير ملغي'?'red':'amber'}>{r.cancellationStatus||'لم يثبت الإلغاء'}</b></td><td>{r.counterpart?<><code>{r.counterpart}</code><small style={{display:'block'}}>{r.counterpartKind||''}</small></>:'—'}</td></>}<td>{r.group&&<button className="button secondary small" onClick={()=>loadRecord(r.group)}>فتح الكشف</button>}</td></tr>)}</tbody></table>{!(monthResult[monthTab as 'missing'|'pending'|'received'|'extra'|'canceled'|'toCancel'|'reverse'] as any[]||[]).length&&<div className="empty">لا توجد ترحيلات بهذه الفئة.</div>}</div><p className="hint">وجود فواتير مسجلة لا يعني تطابق كمياتها؛ افتح الكشف لعرض نتيجته. «غير مسجلة» تعني غيابها عن سجل هذا الموقع. الترحيل العكسي لا يساوي إلغاء SAP؛ علامة «تم الإلغاء» تحتاج CANCELED=Y أو مستند إلغاء صريح. «مرحل» تعني أن الترحيل موجود في الكشف الملصوق وليست مراجعة حية لـ SAP.</p>{monthResult.duplicates.length>0&&<p className="amber">أرقام مكررة في الكشف حُسبت مرة واحدة: {monthResult.duplicates.join('، ')}</p>}{monthResult.outside.length>0&&<p className="hint">استُبعد {monthResult.outside.length} سطرًا بتاريخ خارج الشهر المحدد.</p>}</section></>}</>}
 {tab==='reference'&&<><div className="page-title"><div><p className="eyebrow">قائمة المؤسسة المعتمدة</p><h1>الأصناف والأسعار والشدّات</h1><p>{reference.filter(r=>r.active).length} صنفًا مفعّلًا. رقم المؤسسة لا يتغير بتغيّر تسمية SAP.</p></div><button className="button primary" onClick={newDefinition}><Plus size={16}/>إضافة صنف</button></div><div className="banner info">الأسعار والتسميات من نموذج المؤسسة؛ شدّات SAP من ملف المستودع. FVL00311 شدّته 8 حبات. الأصناف غير المربوطة تحتاج تعريفًا صريحًا ولا تُربط بتشابه الاسم.</div>{(referenceAudit.missingPrices.length>0||referenceAudit.packDifferences.length>0)&&<div className="banner info" role="status"><b>مراجعة جودة مرجع المؤسسة — دون تعديل تلقائي:</b>
  {referenceAudit.missingPrices.length>0&&<p>{referenceAudit.missingPrices.length} صنفًا مفعّلًا دون سعر: {referenceAudit.missingPrices.map(row=>row.sapCode+' ('+row.code+')').join('، ')}. لا تعتمد قيمته المالية قبل تحديد سعره.</p>}

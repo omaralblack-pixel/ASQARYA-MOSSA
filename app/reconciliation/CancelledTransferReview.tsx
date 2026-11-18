@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import {cancellationReviewRows,validateCancellationDecision,
   type CancellationDecision,type CancellationDecisionInput,
   type CancellationDecisionKind,type CancellationRelatedType,
@@ -41,11 +41,25 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
   const [note,setNote]=useState(saved?.note||'');
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
-  useEffect(()=>{
+  const [remoteConflict,setRemoteConflict]=useState('');
+  const dirty=useRef(false);
+  const lastSavedRevision=useRef(saved?.revision||0);
+  const restoreSaved=()=>{
+    dirty.current=false;setRemoteConflict('');
     setMode(saved?.decision||'');
     setRelatedType(saved?.related_type||'');
     setRelatedNumber(saved?.related_number||'');
     setNote(saved?.note||'');
+  };
+  useEffect(()=>{
+    const revision=saved?.revision||0;
+    if(lastSavedRevision.current===revision)return;
+    lastSavedRevision.current=revision;
+    if(dirty.current){
+      setRemoteConflict('تغيّر القرار المحفوظ من شاشة أخرى. بقيت ملاحظتك ومسودتك كما هي؛ راجع القرار الجديد قبل استبدالها.');
+      return;
+    }
+    restoreSaved();
   },[saved?.revision,saved?.decision,saved?.related_type,saved?.related_number,saved?.note]);
   const number=row.source.transfer.number;
   async function save(){
@@ -55,18 +69,18 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
     });
     if(!parsed.value){setError(parsed.error||'القرار غير صالح.');return}
     setBusy(true);setError('');
-    try{await onSave(parsed.value,saved?.revision||0)}
+    try{await onSave(parsed.value,saved?.revision||0);dirty.current=false;setRemoteConflict('')}
     catch(cause){setError(cause instanceof Error?cause.message:'تعذّر الحفظ.')}
     finally{setBusy(false)}
   }
   async function clear(){
     if(!saved)return;
     setBusy(true);setError('');
-    try{await onClear(number,saved.revision)}
+    try{await onClear(number,saved.revision);dirty.current=false;setRemoteConflict('')}
     catch(cause){setError(cause instanceof Error?cause.message:'تعذّر إعادة الفتح.')}
     finally{setBusy(false)}
   }
-  return <tr>
+  return <tr onChangeCapture={()=>{dirty.current=true}}>
     <td dir="ltr"><b>{number}</b><small style={{display:'block'}} dir="ltr">{row.source.transfer.date}</small>
       <div className="no-print"><button type="button" className="button secondary"
         onClick={()=>onOpenTransfer(row.source)}>فتح الترحيل</button></div>
@@ -122,9 +136,15 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
           <textarea rows={2} value={note} maxLength={600} disabled={disabled||busy}
             onChange={event=>{setNote(event.target.value);setError('')}} placeholder="سبب قرارك أو التوضيح الإضافي"/>
         </label>}
+        {!!remoteConflict&&<div className="banner error" role="alert">
+          {remoteConflict}
+          <button type="button" className="button secondary small" onClick={restoreSaved}>
+            تجاهل مسودتي وتحميل القرار الأحدث
+          </button>
+        </div>}
         {!!error&&<p className="red" role="alert">{error}</p>}
         <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-          <button className="button primary" type="button" disabled={disabled||busy||!mode} onClick={()=>void save()}>
+          <button className="button primary" type="button" disabled={disabled||busy||!mode||!!remoteConflict} onClick={()=>void save()}>
             {busy?'جارٍ الحفظ...':'حفظ القرار دائمًا'}
           </button>
           {saved&&<button className="button secondary" type="button" disabled={disabled||busy}
@@ -138,11 +158,12 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
   </tr>;
 }
 
-export default function CancelledTransferReview({transfers,from,to,onOpenTransfer}:{
+export default function CancelledTransferReview({transfers,from,to,onOpenTransfer,syncVersion=0,syncScope='all'}:{
   transfers:LieutenantTransfer[];from:string;to:string;
-  onOpenTransfer:(row:LieutenantTransfer)=>void;
+  onOpenTransfer:(row:LieutenantTransfer)=>void;syncVersion?:number;syncScope?:string;
 }){
   const [decisions,setDecisions]=useState<Record<string,CancellationDecision>>({});
+  const lastSync=useRef(syncVersion);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
   const [filter,setFilter]=useState<'all'|'pending'|'reviewed'>('all');
@@ -166,6 +187,11 @@ export default function CancelledTransferReview({transfers,from,to,onOpenTransfe
     finally{setLoading(false)}
   }
   useEffect(()=>{void refresh()},[]);
+  useEffect(()=>{
+    if(lastSync.current===syncVersion)return;
+    lastSync.current=syncVersion;
+    if(['reconcile','colonel','sap','all'].includes(syncScope))void refresh();
+  },[syncVersion,syncScope]);
   async function save(decision:CancellationDecisionInput,expectedRevision:number){
     const result=await requestJson<{record:CancellationDecision}>('/api/reconcile',{
       method:'POST',headers:{'Content-Type':'application/json'},

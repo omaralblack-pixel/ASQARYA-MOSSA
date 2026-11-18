@@ -24,7 +24,7 @@ async function verifyArchivedSource(key:string,original:ArrayBuffer){
   throw Error('الملف المسترجع من Supabase لا يطابق الملف الأصلي. أوقفت المعالجة لحماية البيانات.');
 }
 
-export default function SapFiles(){
+export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:number;syncScope?:string}){
  const [files,F]=useState<SapArchiveFile[]>([]),[jobs,J]=useState<Record<string,SapJob>>({}),[job,SJ]=useState<SapJob|null>(null);
  const [kind,K]=useState<SapKind>('unified'),[date,D]=useState(today()),[busy,B]=useState(false),[loading,L]=useState(true),[error,E]=useState(''),[message,M]=useState('');
  const [query,Q]=useState(''),[filter,FL]=useState('all'),[balanceFrom,BF]=useState(''),[balanceTo,BT]=useState(''),[uploadFrom,UF]=useState(''),[uploadTo,UT]=useState('');
@@ -33,6 +33,7 @@ export default function SapFiles(){
  const [fromDate,FROM]=useState(()=>today().slice(0,8)+'01'),[toDate,TO]=useState(today());
  const queryRef=useRef<HTMLTextAreaElement>(null);
  const lock=useRef(false),mounted=useRef(true);
+ const lastSync=useRef(syncVersion);
  let unifiedSql='',queryError='';
  try{unifiedSql=unifiedSapQuery(fromDate,toDate);}catch(e){queryError=e instanceof Error?e.message:'فترة غير صالحة.';}
  async function copyUnifiedSql(){
@@ -73,6 +74,12 @@ export default function SapFiles(){
   if(failures.length)throw Error(failures.map(x=>x.reason instanceof Error?x.reason.message:String(x.reason)).join(' '));
  }
  useEffect(()=>{mounted.current=true;void refresh().catch(e=>E(e.message)).finally(()=>L(false));return()=>{mounted.current=false};},[]);
+ useEffect(()=>{
+   if(lastSync.current===syncVersion)return;
+   lastSync.current=syncVersion;
+   if((syncScope==='sap'||syncScope==='all')&&!lock.current)
+     void refresh().catch(cause=>E(cause instanceof Error?cause.message:'تعذّر تحديث أرشيف SAP.'));
+ },[syncVersion,syncScope]);
  async function exclusive(action:()=>Promise<void>){
   if(lock.current)return;lock.current=true;B(true);E('');M('');
   try{await action();}catch(e){if(mounted.current)E(e instanceof Error?e.message:'تعذّر إتمام الطلب.');}

@@ -223,14 +223,16 @@ function MovementSummary({transfers,from,to}:{transfers:LieutenantTransfer[];fro
   </details>;
 }
 
-export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpenRecord,section='transfers'}:{
+export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpenRecord,section='transfers',syncVersion=0,syncScope='all'}:{
   branches:string[];
   reference:Item[];
   onOpenTransfer:(transfer:Transfer,branch:string)=>void;
   onOpenRecord:(id:string)=>void;
   section?:'transfers'|'day'|'balance'|'opening'|'query'|'cashvan'|'cancellations';
+  syncVersion?:number;syncScope?:string;
 }){
   const [files,setFiles]=useState<StoredFile[]>([]);
+  const lastSync=useRef(syncVersion);
   const [selectedTransfer,setSelectedTransfer]=useState('');
   const [closing,setClosing]=useState<StockSnapshot|null>(null);
   const [opening,setOpening]=useState<StockSnapshot|null>(null);
@@ -387,6 +389,20 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     return()=>{active=false};
   },[]);
 
+  useEffect(()=>{
+    if(lastSync.current===syncVersion)return;
+    lastSync.current=syncVersion;
+    if(['reconcile','colonel','sap','all'].includes(syncScope)){
+      void refreshSnapshot().catch(cause=>setError(cause instanceof Error?cause.message:'تعذّر تحديث سجل الملازم.'));
+      if(section==='day'&&dailyInvoices)void inspectInvoiceDay();
+      if(syncScope==='sap'||syncScope==='all'){
+        // The operator's date filters stay intact. A new immutable SAP
+        // original is re-read; no saved decisions or invoice drafts are edited.
+        void reloadAuditFromArchive();
+      }
+    }
+  },[syncVersion,syncScope]);
+
   const dailyReport=useMemo(()=>
     dailyInvoices&&selectedTransfer&&transfers.length?
       auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference):null,
@@ -516,7 +532,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     <CashVanAudit transfers={transfers} sourceName={transferSourceName||files.find(file=>file.key===selectedTransfer)?.name||''}/>
     </>}
     {(section==='cancellations')&&<>
-    <CancelledTransferReview transfers={transfers} from={from} to={to}
+    <CancelledTransferReview transfers={transfers} from={from} to={to} syncVersion={syncVersion} syncScope={syncScope}
       onOpenTransfer={source=>onOpenTransfer(source.transfer,source.branch)}/>
     </>}
     {(section==='day')&&<>

@@ -1,5 +1,5 @@
 'use client';
-import {useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,CheckCircle2,Download,FileSpreadsheet,RefreshCw,Upload} from 'lucide-react';
 import {serialMergeProposals,previouslyApprovedSerialMerges,evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
 
@@ -36,8 +36,11 @@ async function getSaved():Promise<SerialRecord[]> {
  }
  throw Error('سجل المشروع تجاوز حد صفحات التصدير المسموح؛ لا يجوز تسليم كشف غير مكتمل.');
 }
-export default function SerialSoldier({branches}:{branches:string[]}){
+export default function SerialSoldier({branches,syncVersion=0,syncScope='all'}:{
+ branches:string[];syncVersion?:number;syncScope?:string;
+}){
  const [file,setFile]=useState<File|null>(null);
+ const lastSync=useRef(syncVersion);
  const [buffer,setBuffer]=useState<ArrayBuffer|null>(null);
  const [report,setReport]=useState<SerialReport|null>(null);
  const [issues,setIssues]=useState<string[]>([]);
@@ -95,6 +98,30 @@ export default function SerialSoldier({branches}:{branches:string[]}){
    if(!file)return;
    await checkExcel(file);
  }
+ // Saja Excel is an output-only working copy; recompute the comparison
+ // from the existing uploaded bytes, NEVER write its rows into project data.
+ async function refreshSavedComparison(){
+   if(!buffer||busy)return;
+   setBusy(true);setError('');
+   try{
+     const {readSerialWorkbook}=await import('../lib/serial-workbook');
+     const parsed=readSerialWorkbook(buffer);
+     const saved=await getSaved();
+     const result=evaluateSerial(parsed.rows,saved,parsed.period);
+     result.blockers=[...new Set([...parsed.errors,...result.blockers])];
+     setReport(result);
+     setIssues(parsed.errors);
+     setUpdated(new Date().toLocaleString('ar-JO'));
+   }catch(cause){
+     setError('تغيرت بيانات المشروع لكن تعذّر إعادة تدقيق كشف سجى: '+
+       (cause instanceof Error?cause.message:'خطأ غير معروف')+'. لا تعتمد نسخة التقرير القديمة.');
+   }finally{setBusy(false)}
+ }
+ useEffect(()=>{
+   if(lastSync.current===syncVersion)return;
+   lastSync.current=syncVersion;
+   if(['reconcile','colonel','sap','all'].includes(syncScope))void refreshSavedComparison();
+ },[syncVersion,syncScope]);
  async function downloadProjectInvoices(){
    if(busy)return;
    setBusy(true);setError('');
