@@ -11,7 +11,7 @@ export function projectSyncScope(pathname:string):ProjectSyncScope|null{
  return null;
 }
 export function shouldPublishProjectChange(method:string,path:string,status:number,duplicate=false){
- return method!=='GET'&&method!=='HEAD'&&status>=200&&status<300&&
+ return ['POST','PUT','PATCH','DELETE'].includes(method)&&status>=200&&status<300&&
    projectSyncScope(path)!==null&&!duplicate;
 }
 export function affectedScreens(scope:ProjectSyncScope){
