@@ -35,6 +35,7 @@ function load(file){
 const {searchArchivedSapEvidence,groupSapEvidence}=load('app/lib/sap-document-lookup.ts');
 const branches=['21 — السرو'];
 const {parseSapImport,readSapImportRows,sapBranchFromRemarks}=load('app/lib/sap-import.ts');
+const {parseLieutenantTransfers}=load('app/lib/lieutenant.ts');
 // Instant Match uses the same SAP originals; English column names must never
 // cause false "missing Arabic columns" errors.
 const englishImported=parseSapImport(archives.get(files[0].key),branches);
@@ -100,6 +101,37 @@ const missingSecond=parseSapImport(dualRemarksHeader.replace('\tRemarks 2','')+'
  dualRemarksRow.replace('\t2623908380',''),branchList);
 assert.equal(missingSecond.groups[0].draft.branch,'22 — صويلح');
 assert.deepEqual(missingSecond.groups[0].members[0].invoices,[]);
+// Verified OWTR field mapping: Comments=blue invoice, JrnlMemo=system notes,
+// U_ST_Remarks=branch notes, U_Branch=dedicated branch field.
+const verifiedHeader=['Document Number','Document Date','Branch Name','Remarks',
+ 'Journal Remarks','Extra SAP Remarks','Item No.','Item Description',
+ 'Quantity','UoM Code','From Warehouse','To Warehouse','CANCELED'].join('\t');
+const verifiedRow=['2616675','2026-11-16','صويلح','2623908380',
+ 'Inventory Transfers -','صويلح','FVL00012','ذرة',
+ '1','Carton','001','011','N'].join('\t');
+const verifiedText=verifiedHeader+'\n'+verifiedRow;
+const verified=parseSapImport(verifiedText,branchList);
+assert.deepEqual(verified.issues,[]);
+assert.equal(verified.groups.length,1);
+assert.equal(verified.groups[0].issues.length,0);
+assert.equal(verified.groups[0].members[0].branch,'22 — صويلح');
+assert.equal(verified.groups[0].members[0].reversal,false);
+assert.equal(verified.groups[0].draft.invoices[0].number,'2623908380');
+const queued=parseLieutenantTransfers(verifiedText,branchList);
+assert.equal(queued.issues.length,0);
+assert.equal(queued.transfers.length,1);
+assert.equal(queued.transfers[0].branch,'22 — صويلح');
+assert.deepEqual(queued.transfers[0].invoiceNumbers,['2623908380']);
+assert.equal(queued.transfers[0].cancellationState,'active');
+assert.deepEqual(queued.transfers[0].issues,[]);
+// U_Branch may contain a numeric branch code in some SAP exports.
+const codeBranch=verifiedText.replace('\tصويلح\t2623908380','\t22\t2623908380');
+assert.equal(parseSapImport(codeBranch,branchList).groups[0].draft.branch,'22 — صويلح');
+assert.equal(parseLieutenantTransfers(codeBranch,branchList).transfers[0].branch,'22 — صويلح');
+// Do not approve a different branch silently if U_Branch contradicts notes.
+const conflicting=verifiedText.replace('\tصويلح\t2623908380','\tالسرو\t2623908380');
+assert.ok(parseSapImport(conflicting,branchList).groups[0].issues.some(note=>note.includes('تعارض فرع SAP')));
+assert.ok(parseLieutenantTransfers(conflicting,branchList).transfers[0].issues.some(note=>note.includes('تعارض فرع SAP')));
 const report=await searchArchivedSapEvidence('2623224070','invoice',branches);
 assert.equal(report.unreadable,0);
 assert.deepEqual(report.hits.map(row=>row.transfer.number).sort(),['2616485','2616486']);
