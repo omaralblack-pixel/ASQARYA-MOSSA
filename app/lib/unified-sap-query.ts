@@ -7,7 +7,7 @@ const fields = [
   'LineNumber','ItemCode','ItemName','Unit','Quantity','FromWarehouse',
   'ToWarehouse','Warehouse','InQty','OutQty','StockQuantity','TransNum',
   'TransType','CardCode','CardName','CancellationStatus','Remarks',
-  'JournalRemarks','Price','LineTotal','VatSum','BaseType','BaseEntry',
+  'JournalRemarks','BlueInvoiceRemarks','Price','LineTotal','VatSum','BaseType','BaseEntry',
   'BaseLine','BaseRef',
 ] as const;
 type Field = typeof fields[number];
@@ -23,8 +23,12 @@ const select=(values:Expressions,source:string,where:string)=>
   'SELECT\n'+fields.map(field=>'  '+(values[field]||"''")+' AS "'+field+'"').join(',\n')+
   '\n'+source+(where?'\n'+where:'');
 const wh011='\'011\'';
-export function unifiedSapQuery(from:string,to:string):string{
+// Discover the actual field in CUFD first. UI labels are not SQL column names.
+export const sapTransferUdfDiscoveryQuery='SELECT \'U_\' || "AliasID" AS "SAP Column", "Descr" AS "Field Label" FROM "CUFD" WHERE "TableID" = \'OWTR\' ORDER BY "FieldID"';
+export function unifiedSapQuery(from:string,to:string,blueInvoiceUdf=''):string{
   if(!dateOk(from)||!dateOk(to)||from>to)throw Error('تاريخ البداية والنهاية غير صالحين.');
+  if(blueInvoiceUdf&&!/^U_[A-Za-z][A-Za-z0-9_]{0,49}$/.test(blueInvoiceUdf))
+    throw Error('اسم حقل الملاحظات السفلي يجب أن يبدأ بـ U_ ويتبعه اسم عمود SAP صحيح.');
   const first="TO_DATE('"+from+"', 'YYYY-MM-DD')";
   const last="TO_DATE('"+to+"', 'YYYY-MM-DD')";
   const transfer=select({
@@ -35,6 +39,7 @@ export function unifiedSapQuery(from:string,to:string):string{
     Quantity:nz('L."Quantity"'),FromWarehouse:'L."FromWhsCod"',
     ToWarehouse:'L."WhsCode"',CancellationStatus:'H."CANCELED"',
     Remarks:'H."Comments"',JournalRemarks:'H."JrnlMemo"',
+    BlueInvoiceRemarks:blueInvoiceUdf?nz('H."'+blueInvoiceUdf+'"'):"''",
   },'FROM "OWTR" H INNER JOIN "WTR1" L ON H."DocEntry" = L."DocEntry"',
   'WHERE (L."FromWhsCod" = '+wh011+' OR L."WhsCode" = '+wh011+
   ') AND H."DocDate" BETWEEN '+first+' AND '+last);
@@ -91,7 +96,7 @@ const transferHeaders=[
   ['اسم الصنف','ItemName'],
   ['From Warehouse','FromWarehouse'],['To Warehouse','ToWarehouse'],
   ['Remarks','Remarks'],['Journal Remarks','JournalRemarks'],
-  ['CANCELED','CancellationStatus'],
+  ['Blue Invoice Remarks','BlueInvoiceRemarks'],['CANCELED','CancellationStatus'],
 ] as const;
 const stockHeaders=[
   ['رقم الصنف','ItemCode'],['اسم الصنف','ItemName'],
