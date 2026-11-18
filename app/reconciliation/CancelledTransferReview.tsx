@@ -33,7 +33,7 @@ async function requestJson<T>(url:string,init?:RequestInit):Promise<T>{
 function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
   row:CancellationReviewRow;saved?:CancellationDecision;disabled:boolean;
   onSave:ChangeHandler;onClear:(number:string,revision:number)=>Promise<void>;
-  onOpenTransfer:(row:LieutenantTransfer)=>void;syncVersion?:number;syncScope?:string;
+  onOpenTransfer:(row:LieutenantTransfer)=>void;
 }){
   const [mode,setMode]=useState<''|CancellationDecisionKind>(saved?.decision||'');
   const [relatedType,setRelatedType]=useState<CancellationRelatedType>(saved?.related_type||'');
@@ -160,7 +160,7 @@ function CancellationEditor({row,saved,disabled,onSave,onClear,onOpenTransfer}:{
 
 export default function CancelledTransferReview({transfers,from,to,onOpenTransfer,syncVersion=0,syncScope='all'}:{
   transfers:LieutenantTransfer[];from:string;to:string;
-  onOpenTransfer:(row:LieutenantTransfer)=>void;
+  onOpenTransfer:(row:LieutenantTransfer)=>void;syncVersion?:number;syncScope?:string;
 }){
   const [decisions,setDecisions]=useState<Record<string,CancellationDecision>>({});
   const lastSync=useRef(syncVersion);
