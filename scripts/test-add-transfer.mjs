@@ -54,7 +54,7 @@ function loadTs(file) {
 }
 
 const {GET, POST} = loadTs(resolve('app/api/reconcile/route.ts'));
-const {addTransferToDraft, checkSignature, reconcile, withInvoiceDates} = loadTs(resolve('app/lib/reconcile.ts'));
+const {addTransferToDraft, checkSignature, reconcile, withInvoiceDates, unmatchedBranchSources} = loadTs(resolve('app/lib/reconcile.ts'));
 const {parseSapImport, canUseSelectedBranchForSapMember} = loadTs(resolve('app/lib/sap-import.ts'));
 const {stockReport}=loadTs(resolve('app/lib/stock-report.ts'));
 const reference = [{code: '11366443', sapCode: 'FVL00302', name: 'peas', price: 350, cartonPieces: 20, invoicePack: null, sapUnit: 'Carton', kgPerPiece: null, active: true}];
@@ -345,3 +345,33 @@ assert.equal(sql.prepare('SELECT count(*) AS n FROM reconciliation_branch_except
  'Approval must not authorize other transfers');
 console.log('PASS: branch exception 2616606 stays scoped to 99 -> 5 with immutable reason and no SAP/invoice writes');
 
+
+// Repro: SAP TXT still says 56, but SAP was subsequently corrected to 77.
+// A per-document authorization must be enough; the full source is immutable.
+const branch56='56 — مثلث ارحابا',branch77='77 — رحاب';
+const conflictText=[
+ 'رقم الترحيل\tتاريخ الترحيل\tكود الفرع\tاسم الفرع\tRemarks\tItem No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse',
+ '2616771\t2026-11-18\t56\tمثلث ارحابا\tرحاب\tFVL00302\tpeas\t1\tCarton\t001\t011',
+].join('\n');
+const conflictResult=parseSapImport(conflictText,[branch56,branch77]);
+assert.equal(conflictResult.groups.length,1);
+const conflictMember=conflictResult.groups[0].members[0];
+assert.equal(conflictMember.transfer.number,'2616771');
+assert.equal(conflictMember.branch,branch56);
+assert.ok(conflictMember.issues.some(issue=>issue.includes(branch56)&&issue.includes(branch77)));
+assert.equal(conflictMember.reversal,false,'A branch conflict must not imply SAP cancellation');
+assert.equal(conflictMember.reverseMovement,false);
+sql.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify([branch,branch99,branch5,branch56,branch77]),'branches');
+const correctionCount=sql.prepare('SELECT count(*) AS n FROM reconciliations').get().n;
+const approval=await approveException({transferNo:'2616771',sourceBranches:[branch56],targetBranch:branch77,
+ reason:'تم تعديل فرع الترحيل على SAP إلى 77 رحاب، وإقرار التصحيح في مشروع المؤسسة دون إعادة رفع الأرشيف'});
+assert.equal(approval.status,200,JSON.stringify(await approval.json()));
+const approvedCorrections=await GET(new Request(apiUrl+'?branchExceptions=2616771'));
+assert.equal(approvedCorrections.status,200);
+const correctionRows=(await approvedCorrections.json()).exceptions;
+assert.deepEqual(unmatchedBranchSources(correctionRows,'2616771',branch77,[branch56,branch77]),[]);
+assert.deepEqual(unmatchedBranchSources(correctionRows,'2616772',branch77,[branch56,branch77]),[branch56],
+ 'Approval for 2616771 must never authorize a neighboring transfer');
+assert.equal(sql.prepare('SELECT count(*) AS n FROM reconciliations').get().n,correctionCount,
+ 'Branch correction alone must not duplicate or move an invoice');
+console.log('PASS: transfer 2616771 branch 56 -> 77 correction is auditable, scoped and does not rewrite SAP');
