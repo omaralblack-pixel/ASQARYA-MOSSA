@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {Search} from 'lucide-react';
@@ -91,6 +92,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
   const shownReady=shown.filter(isReady);
   const hiddenSelected=selectedGroups.filter(group=>!shown.includes(group)).length;
 
+  const sapRevision=useSapRevision();
   useEffect(()=>{
     if(!branches.length)return;
     let active=true;
@@ -109,7 +111,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
     }
     void restore();
     return ()=>{active=false};
-  },[branches]);
+  },[branches,sapRevision]);
 
   // A saved SAP TXT can be a balance or a different report type.
   // Parser diagnostics must not block navigation to unrelated screens.

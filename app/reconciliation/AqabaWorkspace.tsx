@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 import {Fragment,useEffect,useMemo,useRef,useState} from 'react';
 import {readAqabaOfficial,readAqabaBlue,readAqabaTransfers,readAqabaJournal,auditAqabaJournal,compareAqaba,reviewAqabaTransfers,AQABA_CUSTOMER,
  type AqabaLine,type BlueLine,type AqabaTransfer,type AqabaMovement} from '../lib/aqaba';
@@ -24,6 +25,7 @@ async function request(body?:unknown,query=''):Promise<any>{
 }
 export default function AqabaWorkspace({catalog,onEditPrice,section='invoices'}:{catalog:Item[];onEditPrice:(sapCode:string,name:string)=>void;section?:'invoices'|'prices'|'stock'|'documents'|'queries'}){
  const [from,F]=useState(initial.from),[to,T]=useState(initial.to);
+ const sapRevision=useSapRevision();
  const loadRevision=useRef(0);
  const [officialPaste,OP]=useState(''),[bluePaste,BP]=useState(''),[transferPaste,TP]=useState(''),[journalPaste,JP]=useState('');
  const [saved,S]=useState<ResponseData>({official:[],blue:[],transfers:[],journal:[]});
@@ -124,7 +126,7 @@ export default function AqabaWorkspace({catalog,onEditPrice,section='invoices'}:
   }catch(error){if(revision===loadRevision.current)throw error;
   }finally{if(revision===loadRevision.current)LOADING(false)}
  };
- useEffect(()=>{load().catch(e=>E(e.message))},[from,to]);
+ useEffect(()=>{load().catch(e=>E(e.message))},[from,to,sapRevision]);
  useEffect(()=>{
   fetch('/api/reconcile',{cache:'no-store'}).then(async res=>{
    if(!res.ok)throw Error('المرجع غير متاح');

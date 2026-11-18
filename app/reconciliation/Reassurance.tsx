@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDownToLine,CheckCircle2,HeartPulse,Printer,RefreshCw,RotateCcw,Search} from 'lucide-react';
@@ -36,6 +37,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
   const [search,setSearch]=useState('');
   const [filter,setFilter]=useState('action');
   const [checkedAt,setCheckedAt]=useState('');
+  const sapRevision=useSapRevision();
   const request=useRef(0);
   const valid=!!from&&!!to&&from<=to&&to<=today();
   const report=useMemo<ReassuranceReport|null>(()=>loaded&&valid?reassure({...loaded,from,to}):null,[loaded,from,to,valid]);
@@ -114,7 +116,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer}:{bran
     }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر إجراء الفحص.');}
     finally{if(id===request.current)setBusy(false);}
   }
-  useEffect(()=>{void reload();return()=>{request.current++};},[from,to,branches]); // Read-only; refreshes when the screen opens or dates change.
+  useEffect(()=>{void reload();return()=>{request.current++};},[from,to,branches,sapRevision]); // Read-only; refreshes when the screen opens or dates change.
 
   const settled=report?.state==='match';
   const closingUnavailable=!!report&&(!loaded?.closing||loaded.closing.date!==to);

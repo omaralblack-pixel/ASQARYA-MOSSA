@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {readSapArchive,listSapFiles} from '../lib/sap-files-client';
@@ -345,6 +346,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       setError(cause instanceof Error?cause.message:'تعذّر إعادة تحميل كشف SAP من الأرشيف.');
     }finally{setBusy(false);}
   }
+  const sapRevision=useSapRevision();
   useEffect(()=>{
     let active=true;
     async function init(){
@@ -385,7 +387,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     }
     void init();
     return()=>{active=false};
-  },[]);
+  },[sapRevision]);
 
   const dailyReport=useMemo(()=>
     dailyInvoices&&selectedTransfer&&transfers.length?

@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 
 import {useEffect, useMemo, useState} from 'react';
 import {Download, RefreshCw, Search} from 'lucide-react';
@@ -82,6 +83,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
   });
   const branchCount = new Set(visible.map(row => row.record.branch.trim()).filter(Boolean)).size;
 
+  const sapRevision=useSapRevision();
   // Re-open the stored SAP source whenever this screen mounts or the user requests a refresh.
   // Nothing is posted back to either SAP storage or the reconciliation database.
   useEffect(() => {
@@ -107,7 +109,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
       }
     }).finally(() => {if (active) setSapBusy(false);});
     return () => {active = false;};
-  }, [sapReload]);
+  }, [sapReload,sapRevision]);
 
   const comparison = useMemo(() => sapSource ? compareSapWithSavedInvoices(sapSource, records) : [], [sapSource,records]);
   const notReceived = comparison.filter(row=>row.state==='missing'||row.state==='pending');

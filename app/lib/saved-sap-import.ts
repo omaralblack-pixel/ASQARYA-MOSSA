@@ -12,6 +12,7 @@ async function callSavedImport(init?: RequestInit) {
 }
 
 let sharedRead:Promise<SavedSapImport|undefined>|undefined;
+export function invalidateSavedSapRead(){sharedRead=undefined;}
 export function readSavedSapImport():Promise<SavedSapImport|undefined>{
   if(sharedRead)return sharedRead;
   sharedRead=callSavedImport().then(async response=>(await response.json()) as SavedSapImport|null).then(value=>value??undefined).finally(()=>{sharedRead=undefined});

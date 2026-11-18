@@ -1,4 +1,5 @@
 'use client';
+import {useSapRevision} from '../lib/use-sap-revision';
 import {useCallback,useEffect,useMemo,useState} from 'react';
 import {AlertTriangle,CalendarCheck,CheckCircle2,ClipboardCheck,FileSpreadsheet,RefreshCw,ShieldCheck,ArrowLeftRight} from 'lucide-react';
 import {listSapFiles,readSapArchive} from '../lib/sap-files-client';
@@ -83,6 +84,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
  const [manualDay,setManualDay]=useState('');
  const [manualReason,setManualReason]=useState('');
  const [lastQueued,setLastQueued]=useState<string[]>([]);
+ const sapRevision=useSapRevision();
  const reload=useCallback(async()=>{
   setBusy(true);setError('');setNotice('');setLoaded(false);
   try{
@@ -98,7 +100,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate}:{
    setError(cause instanceof Error?cause.message:'تعذّر تحميل بيانات العقيد.');
   }finally{setBusy(false)}
  },[month,branches]);
- useEffect(()=>{void reload()},[reload]);
+ useEffect(()=>{void reload()},[reload,sapRevision]);
  const report=useMemo(()=>loaded?buildColonelReport(
   month,records,sap,control.decisions,control.assignments,control.days,
   !!sourceName&&!sourceIssues.length,

@@ -38,6 +38,10 @@ jobs:
           for test in scripts/test-reconcile.mjs scripts/test-fractional-quantity-notes.mjs scripts/test-add-transfer.mjs scripts/test-exchange.mjs scripts/test-history-export.mjs scripts/test-reverse-lookup.mjs scripts/test-serial-soldier.mjs scripts/test-sap-invoice-register.mjs; do
             node "$test"
           done
+      - name: Desktop SAP protocol regression tests
+        run: |
+          node scripts/test-desktop-sync.mjs
+          python3 -m unittest discover -s desktop-sync/tests -v
       - name: SAP source authenticity and reference integrity tests
         run: node scripts/test-sap-source-integrity.mjs
       - name: Blue invoice and SAP transfer lookup regressions
