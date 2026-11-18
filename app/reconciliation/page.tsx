@@ -430,8 +430,7 @@ async function approveBranchMismatch(){
  const savedMessage='تم التأكد من حفظ استثناء الفرع للترحيل '+transferNo+
    ' في سجل القرارات. اضغط «بحث وإضافة» لإكمال الربط، ثم احفظ الكشف.';
  try{
-   const response=await apiTimed({action:'approveBranchException',transferNo,targetBranch,sourceBranches,reason},'',16000)
-     as {exceptions?:BranchException[]};
+   const response=await apiTimed({action:'approveBranchException',transferNo,targetBranch,sourceBranches,reason},'',16000) as {exceptions?:BranchException[]};
    if(!Array.isArray(response.exceptions)||!verified(response.exceptions))
      throw Error('لم يؤكد الخادم حفظ الاستثناء في سجل المراجعة.');
    setBranchMismatch(null);setBranchExceptionReason('');
@@ -441,8 +440,7 @@ async function approveBranchMismatch(){
    // blindly repeating the write or claiming it failed.
    let confirmed=false;
    try{
-     const result=await apiTimed(undefined,'?branchExceptions='+encodeURIComponent(transferNo),8000)
-       as {exceptions?:BranchException[]};
+     const result=await apiTimed(undefined,'?branchExceptions='+encodeURIComponent(transferNo),8000) as {exceptions?:BranchException[]};
      confirmed=Array.isArray(result.exceptions)&&verified(result.exceptions);
    }catch{/* The result is unknown, not proof of a failed write. */}
    if(confirmed){
