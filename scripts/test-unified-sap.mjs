@@ -30,6 +30,13 @@ assert.equal(headers.length,32);
 assert.ok(query.includes('H."U_ST_Remarks"'),'Default supplemental Remarks comes from verified OWTR UDF');
 assert.ok(query.includes('H."U_Branch"'),'Branch comes from the dedicated OWTR U_Branch');
 assert.ok(query.includes('H."Comments"'),'Blue invoice comes from OWTR Comments');
+const onlySql=query.split('\n').filter(line=>!line.trimStart().startsWith('--')).join('\n');
+assert.equal((onlySql.match(/;/g)||[]).length,1,'Unified SAP query must contain exactly one SQL statement');
+assert.ok(!onlySql.includes('FROM "CUFD"'),'Never append the field-discovery query to the export');
+const sapFilesUi=fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8');
+assert.ok(sapFilesUi.includes('نسخ الكويري الشامل فقط'),'Use an explicit single-query copy action');
+assert.ok(!sapFilesUi.includes('copySapUdfDiscovery')&&!sapFilesUi.includes('sapTransferUdfDiscoveryQuery'),
+ 'Remove obsolete second-query button after SAP column discovery');
 assert.ok(sapTransferUdfDiscoveryQuery.includes('"CUFD"'));
 assert.match(unifiedSapQuery('2026-11-01','2026-11-03','U_BlueRemarks'),
   /TO_NVARCHAR\(H\."U_BlueRemarks"\)/,
