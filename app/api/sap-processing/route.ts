@@ -72,10 +72,10 @@ export async function POST(req:Request){try{
    const timestamp=String(Date.now());
    const signature=createHmac('sha256',env.SUPABASE_STORAGE_SECRET).update(timestamp+'\n'+payload).digest('hex');
    const response=await fetch(new URL('/functions/v1/sap-plan',env.SUPABASE_URL),{
-    method:'POST',headers:{'Content-Type':'application/json','x-sap-time':timestamp,'x-sap-signature':signature},body:payload,
+    method:'POST',headers:{'Content-Type':'application/json','x-sap-time':timestamp,'x-sap-signature':signature},body:payload,signal:AbortSignal.timeout(60000),
    });
-   const result=await response.json() as {plan?:SapPlan;error?:string};
-   if(!response.ok||!result.plan)return json({error:result.error||'تعذّر تحليل أصل SAP المحفوظ.'},response.ok?502:response.status);
+   const result=await response.json().catch(()=>null) as {plan?:SapPlan;error?:string}|null;
+   if(!response.ok||!result?.plan)return json({error:'خدمة تحليل SAP: HTTP '+response.status+'؛ '+(result?.error||'رد غير صالح أو تجاوز موارد الخدمة. الأصل والدفعات السابقة محفوظة؛ أعد المحاولة بعد التحقق من سجلات sap-plan في Supabase.')},response.status>=500||response.ok?502:response.status);
    plan=result.plan;
   }else{
   // Independently re-read the immutable original. Browser-supplied decoded

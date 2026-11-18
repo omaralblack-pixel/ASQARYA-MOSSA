@@ -43,3 +43,11 @@ yarn-error.log*
 
 # OS metadata
 .DS_Store
+
+# Desktop packaging and local outbox (never commit credentials/SAP data)
+/desktop-sync/.venv/
+/desktop-sync/build/
+/desktop-sync/dist/
+/desktop-sync/*.spec
+__pycache__/
+*.pyc

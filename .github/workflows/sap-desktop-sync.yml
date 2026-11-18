@@ -1,0 +1,28 @@
+name: SAP Desktop Sync build and tests
+on:
+  pull_request:
+    paths: ['desktop-sync/**', 'worker/**', 'app/api/desktop-sync/**', 'app/lib/sap-sync-shared.ts', 'scripts/test-desktop-sync.mjs', '.github/workflows/sap-desktop-sync.yml']
+  push:
+    branches: ['codex/sap-desktop-sync']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build and test Windows executable
+        shell: pwsh
+        run: ./desktop-sync/build.ps1
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAPDesktopSync-Windows-x64
+          path: desktop-sync/dist/
+          retention-days: 30
