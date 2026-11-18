@@ -120,7 +120,7 @@ const savedTransfers=useMemo(()=>new Map(sapPreview.records.flatMap(record=>{
   if(!stored)return [];
   return stored.transfers.flatMap(transfer=>transferNumbers(transfer.number).map(number=>[number,record.id] as const));
 })),[sapPreview.records]);
-useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier','lieutenant','aqaba','reassurance','sap-files','colonel'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
+useEffect(()=>{D(blank());const view=new URLSearchParams(window.location.search).get('view');if(['history','invoices','monthly','reference','instant','replace','stock','serial-soldier','lieutenant','lieutenant-day','lieutenant-balance','lieutenant-opening','lieutenant-query','lieutenant-cashvan','lieutenant-cancellations','aqaba','aqaba-prices','aqaba-stock','aqaba-documents','aqaba-queries','reassurance','sap-files','colonel'].includes(view||'')){T(view!);if(view==='history'||view==='invoices'||view==='monthly')getRecords().catch(e=>E(e.message));}api().then(x=>{REF(x.reference);BR(x.branches);DR(x.drivers)}).catch(e=>E(e.message)).finally(()=>L(false))},[]);
 
 const aqabaWork=!!draft&&isAqabaBranch(draft.branch);
 useEffect(()=>{
@@ -710,7 +710,7 @@ async function save() {
 function setSerial(text:string){SERIAL(text);FILTERED(false);MR(false);COLS(monthlyColumns(text))}
 if(!draft)return <div className="initial">جاري تجهيز مساحة المطابقة…</div>;
 return <div className="recon-app"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><ArrowLeftRight size={22}/></span><span><b>إدارة المؤسسة</b><small>مركز الكيلاني للأغذية · مساحة عمل المؤسسة</small></span></a><div className="topbar-end"><span className="topbar-private"><span className="private-dot"/>مساحة عمل خاصة</span><ThemeToggle/><form method="post" action="/logout"><button type="submit" className="btn">تسجيل خروج</button></form></div></header><div className="app-shell"><aside className="sidebar"><WorkspaceNav area="reconciliation" tab={tab} onSelect={key=>{E('');Q('');T(key);if(key==='history'||key==='invoices'||key==='monthly')void run(getRecords)}}/><div className="sidebar-note"><PackageCheck size={28}/><b>من الترحيل إلى الفاتورة</b><p>كل الأصناف تُقارن بالحبة. الأكواد والشدّات من مراجعها المعتمدة.</p><span>001 / 002 <ArrowLeftRight size={12}/> 011</span></div><div className="sidebar-bottom">المؤسسة الاستهلاكية العسكرية</div></aside><main>{error&&!edit&&<div className="banner error" role="alert"><span>{error}</span><button type="button" aria-label="إغلاق التنبيه" onClick={()=>E('')}>×</button></div>}{notice&&<div className="banner success" role="status"><span>{notice}</span><button type="button" aria-label="إغلاق الرسالة" onClick={()=>N('')}>×</button></div>}{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
-{tab==='aqaba'&&<AqabaWorkspace catalog={reference} onEditPrice={(sapCode,name)=>void openSapLink(sapCode,name)}/>}
+{(tab==='aqaba'||tab.startsWith('aqaba-'))&&<AqabaWorkspace section={tab==='aqaba'?'invoices':tab.slice('aqaba-'.length) as 'prices'|'stock'|'documents'|'queries'} catalog={reference} onEditPrice={(sapCode,name)=>void openSapLink(sapCode,name)}/>}
 {tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{setTransferSources(sources);D(withInvoiceDates(picked));PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport/>}
@@ -720,7 +720,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
  {tab==='colonel'&&<Colonel branches={branches}
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
     onNavigate={view=>{E('');Q('');T(view)}}/>}
- {tab==='lieutenant'&&<FirstLieutenant branches={branches} reference={reference}
+ {(tab==='lieutenant'||tab.startsWith('lieutenant-'))&&<FirstLieutenant section={tab==='lieutenant'?'transfers':tab.slice('lieutenant-'.length) as 'day'|'balance'|'opening'|'query'|'cashvan'|'cancellations'} branches={branches} reference={reference}
     onOpenRecord={id=>{void run(()=>openRecord(id));}}
     onOpenTransfer={(transfer,branch)=>{
       const next=blank();
