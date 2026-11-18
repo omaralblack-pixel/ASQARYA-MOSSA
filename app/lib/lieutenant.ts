@@ -87,6 +87,14 @@ function parseLieutenantTransfersUncached(source:string,branches:string[]):Lieut
       normalized.includes(' '+normalizedBranch(name)+' '));
     return matches.length===1?matches[0][1]:'';
   };
+  const fieldBranch=(code:string,name:string)=>{
+    const text=name.trim(),normalized=normalizedBranch(text);
+    return byCode.get(digits(code).trim())||
+      byName.get(text)||
+      [...byName.entries()].find(([branchName])=>normalizedBranch(branchName)===normalized)?.[1]||
+      branches.find(branch=>normalizedBranch(branch)===normalized)||
+      (/^\d+$/.test(text)?byCode.get(digits(text)):undefined)||'';
+  };
   const grouped=new Map<string,Group>();
   const issues:string[]=[];
   for(let i=first+1;i<raw.length;i++){
@@ -137,9 +145,13 @@ function parseLieutenantTransfersUncached(source:string,branches:string[]):Lieut
     const {date,branchCode,branchName,remarks,state}=group.meta;
     const problems=[...new Set(group.issues)];
     if(!date)problems.push('تاريخ الترحيل غير صالح.');
+    const explicit=fieldBranch(branchCode,branchName);
+    const inferred=inferBranch(remarks);
+    if(explicit&&inferred&&explicit!==inferred)
+      problems.push('تعارض فرع SAP: حقل اسم الفرع '+explicit+' يخالف الملاحظات '+inferred);
     transfers.push({
       transfer:{id:'lieutenant-'+number,number,date,paste:[lineHeader,...group.lines].join('\n')},
-      branch:byCode.get(digits(branchCode))||byName.get(branchName)||inferBranch(remarks)||'',
+      branch:explicit||inferred,
       remarks,lineCount:group.lines.length,reverse:group.reverse,
       cancellationState:state,
       cancellationMentioned:/has been canceled|cancelled|ملغى|إلغاء/i.test(remarks),
