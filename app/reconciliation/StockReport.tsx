@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import {Download,RefreshCw,Search} from 'lucide-react';
 import {parseLieutenantTransfers} from '../lib/lieutenant';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
@@ -14,8 +14,9 @@ import {tableWorkbook} from '../lib/invoice-workbook';
 const formatQuantity=new Intl.NumberFormat('en-US',{minimumFractionDigits:3,maximumFractionDigits:6});
 const searchable=(value:string)=>digits(value).trim().toLowerCase();
 
-export default function StockReport(){
+export default function StockReport({syncVersion=0,syncScope='all'}:{syncVersion?:number;syncScope?:string}){
   const [file,setFile]=useState<SavedSapImport>();
+  const lastSync=useRef(syncVersion);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
   const [search,setSearch]=useState('');
@@ -35,13 +36,12 @@ export default function StockReport(){
   const visible=report?.items.filter(row=>searchable(row.sapCode+' '+row.name).includes(query))??[];
   const cancellationOnly=report?.items.some(row=>row.cancellation!==0&&row.incoming===0&&row.reverse===0)??false;
 
-  async function reload(){
+  async function reload(preservePeriod=false){
     setLoading(true);
     setError('');
     try{
       setFile(await readSavedSapImport());
-      setFrom('');
-      setTo('');
+      if(!preservePeriod){setFrom('');setTo('');}
     }catch(err){
       setFile(undefined);
       setError(err instanceof Error?err.message:'تعذّر تحميل كشف SAP المحفوظ.');
@@ -50,6 +50,11 @@ export default function StockReport(){
     }
   }
   useEffect(()=>{void reload()},[]);
+  useEffect(()=>{
+    if(lastSync.current===syncVersion)return;
+    lastSync.current=syncVersion;
+    if(syncScope==='sap'||syncScope==='all')void reload(true);
+  },[syncVersion,syncScope]);
 
   async function download(){
     if(!file||invalidRange||!report?.items.length||report.issues.length)return;
