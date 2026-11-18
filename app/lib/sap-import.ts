@@ -106,8 +106,12 @@ function parseSapImportUncached(paste:string,branches:string[]):{groups:SapImpor
   const {rows,issues}=readSapImportRows(paste);
   const branchesByCode=new Map(branches.map(branch=>[branchCodeKey(branch.split(' — ')[0]),branch]));
   const branchesByName=new Map(branches.map(branch=>[branchNameKey(branch.split(' — ').slice(1).join(' — ')),branch]));
+  const branchesByFull=new Map(branches.map(branch=>[branchNameKey(branch),branch]));
   const resolveBranch=(code:string,name:string)=>
-    branchesByCode.get(branchCodeKey(code))||branchesByName.get(branchNameKey(name))||'';
+    branchesByCode.get(branchCodeKey(code))||
+    branchesByName.get(branchNameKey(name))||
+    branchesByFull.get(branchNameKey(name))||
+    (/^\d+$/.test(name.trim())?branchesByCode.get(branchCodeKey(name)):undefined)||'';
   const transfers=new Map<string,{meta:string[]; lines:string[]; reversal:boolean; conflict:boolean}>();
   for(const values of rows){
     const number=values[0];
@@ -137,7 +141,12 @@ function parseSapImportUncached(paste:string,branches:string[]):{groups:SapImpor
   for(const entry of transfers.values()){
     if(entry.reversal||entry.conflict)continue;
     const [,code,name,remarks]=entry.meta;
-    const known=resolveBranch(code,name)||sapBranchFromRemarks(remarks,branches);
+    const fieldBranch=resolveBranch(code,name);
+    const notesBranch=sapBranchFromRemarks(remarks,branches);
+    // Conflicting official branch fields and notes must not seed automatic
+    // cross-document branch inference for another transfer.
+    if(fieldBranch&&notesBranch&&fieldBranch!==notesBranch)continue;
+    const known=fieldBranch||notesBranch;
     if(!known)continue;
     for(const invoice of readInvoices(remarks)){
       const owners=invoiceBranches.get(invoice)||new Set<string>();
@@ -154,19 +163,22 @@ function parseSapImportUncached(paste:string,branches:string[]):{groups:SapImpor
     const associatedInvoices=readInvoices(remarks);
     const knownBranches=new Set(associatedInvoices.flatMap(invoice=>[...(invoiceBranches.get(invoice)||[])]));
     const inferred=associatedInvoices.length>0&&knownBranches.size===1?[...knownBranches][0]:'';
-    const branch=resolveBranch(branchCode,branchName)||
-      sapBranchFromRemarks(remarks,branches)||inferred;
+    const fieldBranch=resolveBranch(branchCode,branchName);
+    const notesBranch=sapBranchFromRemarks(remarks,branches);
+    const branch=fieldBranch||notesBranch||inferred;
     const transfer={id:'sap-'+number,number,date,paste:[transferHeader,...entry.lines].join('\n')};
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     const reverseMovement=parsed.lines.some(line=>line.from==='011');
     const itemIssues:string[]=[];
     if(entry.conflict)itemIssues.push('بيانات الترحيل تختلف بين سطوره');
+    if(fieldBranch&&notesBranch&&fieldBranch!==notesBranch)
+      itemIssues.push('تعارض فرع SAP: حقل اسم الفرع '+fieldBranch+' يخالف الملاحظات '+notesBranch);
     if(!date)itemIssues.push('تاريخ الترحيل غير صالح');
     if(!branch&&!reverseMovement)itemIssues.push('الفرع غير معروف');
     if(parsed.issues.length||parsed.excluded.length||!parsed.lines.length)itemIssues.push('راجع بنود الترحيل أو وحداته أو مستودعاته');
     const canceledTransferNo=digits(remarks).match(/\binventory transfer no\.?\s*(\d+)\s+has been canceled\b/i)?.[1];
     const member={transfer,reverseMovement,canceledTransferNo,branch,branchLabel:branchName||branchCode,remarks,invoices:entry.reversal?[]:associatedInvoices,lineCount:entry.lines.length,reversal:entry.reversal,issues:itemIssues};
-    const keys=branch&&!entry.reversal&&!entry.conflict&&!reverseMovement?member.invoices.map(invoice=>branch+'|'+invoice):[];
+    const keys=branch&&!entry.reversal&&!itemIssues.length&&!reverseMovement?member.invoices.map(invoice=>branch+'|'+invoice):[];
     const connected=[...new Set(keys.flatMap(key=>invoiceGroups.has(key)?[invoiceGroups.get(key)!]:[]))];
     const members=connected[0]||[];
     for(const other of connected.slice(1)){
