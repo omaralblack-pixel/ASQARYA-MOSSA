@@ -13,9 +13,12 @@ export type ReassuranceData=CollectedInvoiceResult&{records:ReassuranceRecord[];
 export type ReassuranceStock={date:string;items:StockItem[];issues:string[]};
 export type ReassuranceState='match'|'transfer'|'return'|'review';
 export type ReassuranceEvidence={number:string;date:string;direction:string;quantity:number;unit:string;remarks:string};
+export type ReassuranceCancellationCandidate={number:string;date:string;branch:string;quantity:number;
+  direction:string;itemCount:number;invoiceNumbers:string[];cancellationState:'active'|'unknown';
+  stockUnexplained:boolean};
 export type ReassuranceRow={code:string;name:string;unit:'Piece';invoices:number|null;opening:number|null;expected:number|null;
   actual:number|null;difference:number|null;netTransfers:number|null;stockDifference:number|null;
-  state:ReassuranceState;notes:string[];records:{id:string;numbers:string[];basis:'paper'|'approved'}[];evidence:ReassuranceEvidence[]};
+  state:ReassuranceState;notes:string[];records:{id:string;numbers:string[];basis:'paper'|'approved'}[];evidence:ReassuranceEvidence[];candidates:ReassuranceCancellationCandidate[]};
 export type ReassuranceReport={rows:ReassuranceRow[];issues:string[];invoiceCount:number;approvedGroups:number;
   pendingRecords:{id:string;numbers:string[];branch:string;note:string}[];sourceLastDate:string;financialPending:number;paperGroups:number;state:ReassuranceState};
 const epsilon=0.000001;
@@ -57,6 +60,68 @@ function paper(invoice:Draft['invoices'][number]){
     values.set(code,(values.get(code)||0)+quantity);
   }
   return {values,known:invoice.complete&&values.size>0&&issues.length===0};
+}
+
+/** A document can be proposed for review only when removing its complete SAP
+ * movement would eliminate EVERY affected item difference. Quantity coincidence
+ * on one line is insufficient, especially for multi-item transfers.
+ * Suggestions are never proof that an SAP document is erroneous or may be canceled. */
+function cancellationCandidates(rows:ReassuranceRow[],transfers:LieutenantTransfer[],
+  records:ReassuranceRecord[],reference:Item[],from:string,to:string){
+  const linked=new Set<string>();
+  for(const record of records){
+    const draft=readReconciliationRecord(record.payload);
+    if(!draft)continue;
+    for(const transfer of draft.transfers||[])
+      for(const number of transferNumbers(transfer.number||''))linked.add(number);
+  }
+  const byCode=new Map(rows.map(row=>[row.code,row]));
+  const result=new Map<string,ReassuranceCancellationCandidate[]>();
+  const sources=stockMovementSources(transfers);
+  const counts=new Map<string,number>();
+  for(const source of sources)counts.set(source.transfer.number,(counts.get(source.transfer.number)||0)+1);
+  const warehouse=(raw:string)=>/^\\d+$/.test(raw.trim())?raw.trim().padStart(3,'0'):raw.trim();
+  for(const source of sources){
+    const number=source.transfer.number;
+    if(!number||counts.get(number)!==1||linked.has(number)||source.issues.length||
+      source.signedAdjustment||source.cancellationMentioned||
+      source.cancellationState==='canceled'||source.cancellationState==='cancellation'||
+      source.transfer.date<from||source.transfer.date>to)continue;
+    const lines=source.transfer.paste.replace(/\\r/g,'').split('\\n').slice(1).filter(line=>line.trim());
+    if(!lines.length)continue;
+    const impacts=new Map<string,number>();
+    let invalid=false;
+    for(const line of lines){
+      const [rawCode,,rawQty,unit,rawFrom,rawTo]=line.split('\\t');
+      const code=(rawCode||'').trim().toUpperCase();
+      const qty=signedNumeric(rawQty||''),fromWh=warehouse(rawFrom||''),toWh=warehouse(rawTo||'');
+      if(!code||!unit||qty===null||qty<=0||fromWh===toWh||
+        !(fromWh==='011'||toWh==='011')||(fromWh==='011'&&toWh==='011')){invalid=true;break;}
+      const converted=pieces(qty,unit,code,reference);
+      if(converted===null){invalid=true;break;}
+      const signed=toWh==='011'?converted:-converted;
+      impacts.set(code,round((impacts.get(code)||0)+signed));
+    }
+    if(invalid||!impacts.size)continue;
+    // A complete cancellation changes the stock of every code on the document.
+    // Do not recommend an action based only on the line matching the chosen item.
+    const affected=[...impacts].map(([code,impact])=>({row:byCode.get(code),code,impact}));
+    if(affected.some(({row,impact})=>!row||row.difference===null||
+      Math.abs(row.difference-impact)>epsilon))continue;
+    const stockUnexplained=affected.some(({row})=>row!.stockDifference===null||
+      Math.abs(row!.stockDifference)>epsilon||row!.notes.length>0);
+    for(const {code,impact} of affected){
+      if(Math.abs(impact)<epsilon)continue;
+      const candidate:ReassuranceCancellationCandidate={number,date:source.transfer.date,
+        branch:source.branch,quantity:Math.abs(impact),
+        direction:impact>0?'إلغاء وارد إلى 011':'إلغاء صادر من 011',
+        itemCount:impacts.size,invoiceNumbers:source.invoiceNumbers,
+        cancellationState:source.cancellationState==='active'?'active':'unknown',
+        stockUnexplained};
+      result.set(code,[...(result.get(code)||[]),candidate]);
+    }
+  }
+  return result;
 }
 
 /** Compare invoice demand with actual dated 011 stock. Financial approvals stay
@@ -200,8 +265,10 @@ export function reassure(input:{data:ReassuranceData;transfers:LieutenantTransfe
     const blocked=globallyBlocked||notes.length>0||difference===null;
     const state:ReassuranceState=blocked?'review':Math.abs(difference!)<epsilon?'match':difference!<0?'transfer':'return';
     return {code,name:total?.name||target?.name||code,unit:'Piece',invoices,opening:start,expected,actual,difference,
-      netTransfers:net,stockDifference,state,notes,records:total?.records||[],evidence:evidence.get(code)||[]};
+      netTransfers:net,stockDifference,state,notes,records:total?.records||[],evidence:evidence.get(code)||[],candidates:[]};
   });
+  const candidates=cancellationCandidates(rows,transfers,data.records,data.reference,from,to);
+  for(const row of rows)row.candidates=candidates.get(row.code)||[];
   if(!rows.length)issues.push('لا توجد كميات كافية لإجراء المقارنة.');
   const state:ReassuranceState=issues.length||rows.some(row=>row.state==='review')?'review':
     rows.some(row=>row.state==='transfer')?'transfer':rows.some(row=>row.state==='return')?'return':'match';
