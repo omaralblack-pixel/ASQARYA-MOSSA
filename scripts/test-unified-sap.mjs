@@ -26,7 +26,10 @@ assert.ok(query.includes('C0006751'),'Only Aqaba official customer is scoped');
 for(const table of ['"OWTR"','"WTR1"','"OINM"','"OINV"','"ORIN"','"ODLN"','"ORDN"'])
  assert.ok(query.includes(table),'Missing table '+table);
 const headers=[...query.split('\nUNION ALL\n')[0].matchAll(/ AS "([^"]+)"/g)].map(match=>match[1]);
-assert.equal(headers.length,31);
+assert.equal(headers.length,32);
+assert.ok(query.includes('H."U_ST_Remarks"'),'Default supplemental Remarks comes from verified OWTR UDF');
+assert.ok(query.includes('H."U_Branch"'),'Branch comes from the dedicated OWTR U_Branch');
+assert.ok(query.includes('H."Comments"'),'Blue invoice comes from OWTR Comments');
 assert.ok(sapTransferUdfDiscoveryQuery.includes('"CUFD"'));
 assert.match(unifiedSapQuery('2026-11-01','2026-11-03','U_BlueRemarks'),
   /TO_NVARCHAR\(H\."U_BlueRemarks"\)/,
@@ -40,7 +43,7 @@ const exported=[
  row({RecordType:'TRANSFER',DocumentNumber:'2615754',DocumentDate:'2026-11-03',DocEntry:'89101',
    LineNumber:'1',ItemCode:'CHS00561',ItemName:'جبنة',Quantity:'10',Unit:'Piece',
    FromWarehouse:'001',ToWarehouse:'011',Remarks:'مؤسسة العقبة',JournalRemarks:'Inventory Transfers -',
-    ExtraSapRemarks:'2623000001',CancellationStatus:'Y'}),
+    ExtraSapRemarks:'2623000001',BranchName:'84 — العقبة',CancellationStatus:'Y'}),
  row({RecordType:'OPENING',DocumentDate:'2026-11-01',ItemCode:'CHS00561',ItemName:'جبنة',
    Unit:'Piece',Warehouse:'011',StockQuantity:'5'}),
  row({RecordType:'CLOSING',DocumentDate:'2026-11-03',ItemCode:'CHS00561',ItemName:'جبنة',
@@ -67,14 +70,34 @@ assert.equal(flagged.counts.TRANSFER,1,'Warning must not drop a transfer');
 assert.ok(parts.transfers.includes('2615754'));
 assert.ok(parts.transfers.includes('2623000001'));
 assert.ok(parts.transfers.includes('Extra SAP Remarks'));
+assert.ok(parts.transfers.includes('Branch Name'));
+assert.ok(parts.transfers.includes('84 — العقبة'));
+// Exact SAP case: Comments contains blue invoice, U_ST_Remarks branch, and
+// U_Branch is a verified dedicated field; Journal Remarks is generic text.
+const exact=splitUnifiedSapSource(exported+'\n'+row({
+ RecordType:'TRANSFER',DocumentNumber:'2616675',DocumentDate:'2026-11-16',
+ ItemCode:'FVL00012',ItemName:'ذرة',Quantity:'1',Unit:'Carton',
+ FromWarehouse:'001',ToWarehouse:'011',Remarks:'2623908380',
+ ExtraSapRemarks:'صويلح',BranchName:'صويلح',
+ JournalRemarks:'Inventory Transfers -',CancellationStatus:'N'
+}));
+const [transferNames,...transferLines]=exact.transfers.split('\n').map(line=>line.split('\t'));
+const known=transferLines.find(line=>line[transferNames.indexOf('Document Number')]==='2616675');
+assert.ok(known,'Transfer 2616675 must be available in exported 011 data');
+assert.equal(known[transferNames.indexOf('Remarks')],'2623908380');
+assert.equal(known[transferNames.indexOf('Extra SAP Remarks')],'صويلح');
+assert.equal(known[transferNames.indexOf('Branch Name')],'صويلح');
+assert.equal(known[transferNames.indexOf('Journal Remarks')],'Inventory Transfers -');
 assert.ok(parts.transfers.includes('Inventory Transfers -'));
 // An already-archived older unified source with 30 columns must still load.
-const oldHeaders=headers.filter(x=>x!=='ExtraSapRemarks');
-const oldSource=exported.split('\n').map(line=>line.split('\t').filter((_,index)=>
-  index!==headers.indexOf('ExtraSapRemarks')).join('\t')).join('\n');
-assert.equal(oldHeaders.length,30);
-assert.equal(splitUnifiedSapSource(oldSource).counts.TRANSFER,1);
-assert.ok(splitUnifiedSapSource(oldSource).transfers.includes('Extra SAP Remarks'));
+for(const optionalColumns of [['BranchName'],['ExtraSapRemarks','BranchName']]){
+  const removed=new Set(optionalColumns.map(name=>headers.indexOf(name)));
+  const oldSource=exported.split('\n').map(line=>
+    line.split('\t').filter((_,index)=>!removed.has(index)).join('\t')).join('\n');
+  assert.equal(splitUnifiedSapSource(oldSource).counts.TRANSFER,1);
+  assert.ok(splitUnifiedSapSource(oldSource).transfers.includes('Extra SAP Remarks'));
+  assert.ok(splitUnifiedSapSource(oldSource).transfers.includes('Branch Name'));
+}
 assert.ok(parts.transfers.includes('\tY'));
 assert.ok(parts.opening.includes('\t5'));
 assert.ok(parts.closing.includes('\t15'));
