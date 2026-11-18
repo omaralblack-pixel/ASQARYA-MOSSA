@@ -24,6 +24,18 @@ const branchNameKey=(value:string)=>normalize(value).replace(/[أإآٱ]/g,'ا')
   .replace(/[\u064B-\u065F\u0670ـ]/g,'').replace(/\s+/g,' ');
 const transferHeader=headers.slice(5).join('\t');
 
+// Recognize a branch only when one unambiguous official branch name appears
+// as a full name in SAP Remarks. Never infer from partial names or invoice IDs.
+export function sapBranchFromRemarks(remarks:string,branches:string[]):string{
+  const normalized=' '+branchNameKey(remarks).replace(/[^\p{L}\p{N}]+/gu,' ')+' ';
+  const matches=branches.filter(branch=>{
+    const name=branch.split(' — ').slice(1).join(' — ');
+    const key=branchNameKey(name).replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+    return key.length>=3&&normalized.includes(' '+key+' ');
+  });
+  return matches.length===1?matches[0]:'';
+}
+
 type SapTransfer={
   transfer:Transfer;
   branch:string;
@@ -125,7 +137,7 @@ function parseSapImportUncached(paste:string,branches:string[]):{groups:SapImpor
   for(const entry of transfers.values()){
     if(entry.reversal||entry.conflict)continue;
     const [,code,name,remarks]=entry.meta;
-    const known=resolveBranch(code,name);
+    const known=resolveBranch(code,name)||sapBranchFromRemarks(remarks,branches);
     if(!known)continue;
     for(const invoice of readInvoices(remarks)){
       const owners=invoiceBranches.get(invoice)||new Set<string>();
@@ -142,7 +154,8 @@ function parseSapImportUncached(paste:string,branches:string[]):{groups:SapImpor
     const associatedInvoices=readInvoices(remarks);
     const knownBranches=new Set(associatedInvoices.flatMap(invoice=>[...(invoiceBranches.get(invoice)||[])]));
     const inferred=associatedInvoices.length>0&&knownBranches.size===1?[...knownBranches][0]:'';
-    const branch=resolveBranch(branchCode,branchName)||inferred;
+    const branch=resolveBranch(branchCode,branchName)||
+      sapBranchFromRemarks(remarks,branches)||inferred;
     const transfer={id:'sap-'+number,number,date,paste:[transferHeader,...entry.lines].join('\n')};
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     const reverseMovement=parsed.lines.some(line=>line.from==='011');
