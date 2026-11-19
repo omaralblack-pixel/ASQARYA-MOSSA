@@ -313,8 +313,10 @@ const searchedPaperDraft={
 };
 const confirmedPaper=markSearchedPaperInvoice(searchedPaperDraft,'2624002303');
 assert.equal(confirmedPaper.invoices[0].complete,true,'Exact blue invoice number search means the physical paper is in hand');
-assert.equal(confirmedPaper.invoices[1].complete,false,'Do not confirm another invoice within the same group');
+assert.equal(confirmedPaper.invoices[1].complete,true,'All blue invoices belonging to the same group must be checked');
+assert.equal(markSearchedPaperInvoice(searchedPaperDraft,'2624999999'),searchedPaperDraft,'Unrelated invoice from another group must not be checked');
+assert.equal(markSearchedPaperInvoice({...searchedPaperDraft,invoices:[...searchedPaperDraft.invoices,{id:'empty',number:'',complete:false,amount:'',date:'',quantities:{}}]},'2624002303').invoices[2].complete,false,'Do not confirm a blank, unnumbered invoice');
 assert.equal(searchedPaperDraft.invoices[0].complete,false,'Searching cannot persist an edit into original saved data');
 assert.equal(markSearchedPaperInvoice(searchedPaperDraft,'2616818').invoices[0].complete,false,'A transfer lookup is never paper confirmation');
 assert.equal(markSearchedPaperInvoice(searchedPaperDraft,'2624002303').invoices[0].amount,'1.000','Paper marking cannot modify invoice amount');
-console.log('PASS: Search-selected blue invoice is marked in memory only; transfer searches and other invoices remain unchanged.');
+console.log('PASS: Search-selecting one blue invoice marks all valid invoices of that group in memory only; unrelated group and transfer searches remain unchanged.');
