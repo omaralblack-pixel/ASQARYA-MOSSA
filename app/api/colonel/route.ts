@@ -50,9 +50,9 @@ export async function POST(request:Request){
   const number=typeof data.transferNo==='string'?data.transferNo.trim():'';
   const reason=typeof data.reason==='string'?data.reason.trim():'';
   const now=new Date().toISOString();
-  if(action==='complete-day'||action==='reopen-day'){
+  if(action==='complete-day'||action==='reopen-day'||action==='close-day'){
    if(!dayValid(day))return json({error:'تاريخ اليوم غير صالح.'},400);
-   if(action==='complete-day'){
+   if(action!=='reopen-day'){
     // Confirm only that all project invoices currently known for this DAY
     // have a valid number and the operator marked their paper as received.
     // This is NEVER final stock/SAP closure.
@@ -76,11 +76,18 @@ export async function POST(request:Request){
     }
     if(!seen)return json({error:'لا توجد فواتير زرقاء مثبتة بتاريخ '+day+' في سجلات المشروع.'},409);
    }
+   const fingerprint=typeof data.fingerprint==='string'?data.fingerprint.trim():'';
+   const sourceKey=typeof data.sourceKey==='string'?data.sourceKey.trim():'';
+   if(action==='close-day'&&(!/^[a-f0-9]{64}$/.test(fingerprint)||!sourceKey||sourceKey.length>200))
+    return json({error:'لا يمكن إغلاق اليوم بدون بصمة الفحص ومصدر SAP المعتمد.'},400);
    await db().batch([
     db().prepare('INSERT INTO colonel_days (day,invoices_complete,confirmed_at,confirmed_by) VALUES (?,?,?,?) ON CONFLICT(day) DO UPDATE SET invoices_complete=excluded.invoices_complete,confirmed_at=excluded.confirmed_at,confirmed_by=excluded.confirmed_by')
-     .bind(day,action==='complete-day'?1:0,now,'operator'),
-    db().prepare('DELETE FROM colonel_day_signoffs WHERE day=?').bind(day),
-    log(action,day,action==='complete-day'?'أكد المستخدم اكتمال إدخال الفواتير الزرقاء؛ لم يعتمد إغلاق SAP.':'أعاد المستخدم فتح متابعة الفواتير.',now),
+     .bind(day,action==='reopen-day'?0:1,now,'operator'),
+    action==='close-day'?
+     db().prepare('INSERT INTO colonel_day_signoffs (day,fingerprint,source_key,signed_at) VALUES (?,?,?,?) ON CONFLICT(day) DO UPDATE SET fingerprint=excluded.fingerprint,source_key=excluded.source_key,signed_at=excluded.signed_at')
+      .bind(day,fingerprint,sourceKey,now):
+     db().prepare('DELETE FROM colonel_day_signoffs WHERE day=?').bind(day),
+    log(action,day,action==='close-day'?'راجع المستخدم فواتير وترحيلات يوم الفاتورة وأغلقه إداريًا على بصمة البيانات الحالية؛ لا يغيّر إلغاء SAP أو رصيد 011.':action==='complete-day'?'أكد المستخدم اكتمال إدخال الفواتير الزرقاء؛ لم يعتمد إغلاق SAP.':'أعاد المستخدم فتح متابعة الفواتير.',now),
    ]);
    return json({ok:true});
   }
