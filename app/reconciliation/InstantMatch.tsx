@@ -14,6 +14,7 @@ type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:strin
 type SearchKind = 'invoice' | 'transfer';
 type SearchFilter = SearchKind | 'all';
 type DocumentHit = {kind:SearchKind; number:string; branch:string; origin:'saved'|'sap'};
+type ReverseChoice = {group:SapImportGroup;number:string;kind:SearchKind;mode:'lookup'|'append';notes:string[];blockers:string[]};
 
 const localDate = () => new Date().toLocaleDateString('en-CA', {timeZone:'Asia/Amman'});
 const uuid = () => crypto.randomUUID();
@@ -135,6 +136,8 @@ export default function InstantMatch({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [showItems, setShowItems] = useState(false);
+  const [reverseChoice,setReverseChoice] = useState<ReverseChoice|null>(null);
+  const [verifiedReverse,setVerifiedReverse] = useState<string[]>([]);
   const [aqabaPricing,setAqabaPricing] = useState<{reference:Item[];priceCount:number}|null>(null);
   const [aqabaPricingError,setAqabaPricingError] = useState('');
   const [aqabaPricingLoading,setAqabaPricingLoading] = useState(false);
@@ -222,6 +225,8 @@ export default function InstantMatch({
   },[isAqaba]);
 
   function update(next:Draft) {
+    if(draft&&(draft.branch!==next.branch||JSON.stringify(draft.transfers)!==JSON.stringify(next.transfers)))
+      setVerifiedReverse([]);
     setDraft(withInvoiceDates(next));
     setNotice('');
   }
@@ -241,8 +246,108 @@ export default function InstantMatch({
     const saved = readReconciliationRecord(data.record.payload);
     if(!saved)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
     setDraft(withInvoiceDates(fillSearchedAmount({...saved,mode:'manual',id:data.record.id,version:data.record.version,checks:saved.checks||{}},target,searchKind)));
-    setSources({});
+    setSources({});setVerifiedReverse([]);setReverseChoice(null);
     setNotice('تم استرجاع الكشف المحفوظ. تقدر تعدّل الأسعار أو تضيف ترحيل بدون إنشاء سجل مكرر.');
+  }
+
+  // Reverse 011 -> 001/002/009 decreases stock in the net quantity.
+  // Direction alone is never proof that SAP canceled the transfer.
+  function reverseChoiceFor(group:SapImportGroup,number:string,kind:SearchKind,mode:ReverseChoice['mode'],evidence:SapEvidence[]=[]):ReverseChoice{
+    const notes=[...new Set([...group.members.flatMap(sapMemberReviewReasons),...group.issues])];
+    const blockers=[
+      ...group.members.flatMap(member=>member.issues.filter(issue=>!issue.includes('الفرع غير معروف')).map(issue=>'الترحيل '+member.transfer.number+': '+issue)),
+      ...group.members.filter(member=>member.reversal&&!member.reverseMovement).map(member=>'الترحيل '+member.transfer.number+': إشارة إلغاء أو تصحيح مستقلة عن اتجاه 011.'),
+      ...group.members.filter(member=>!!member.canceledTransferNo||/has been cancel(?:ed|led)|ملغى/.test(member.remarks)).map(member=>'الترحيل '+member.transfer.number+': دليل إلغاء في ملاحظات SAP.'),
+      ...evidence.filter(item=>group.members.some(member=>member.transfer.number===item.transfer.number)
+        &&['canceled','cancellation'].includes(item.cancellationState)).map(item=>'الترحيل '+item.transfer.number+': مستند SAP معلّم كإلغاء.'),
+      ...group.issues.filter(issue=>!issue.startsWith('ترحيل عكسي —')&&!issue.includes('الفرع غير معروف'))
+    ];
+    return {group,number,kind,mode,notes,blockers:[...new Set(blockers)]};
+  }
+
+  async function prepareSapDraft(group:SapImportGroup,searched:string,searchKind:SearchKind){
+    const rows=await refreshRecords();
+    const proposed=fillSearchedAmount(fromSap(group,searched,searchKind),searched,searchKind);
+    const occupied=proposed.transfers.flatMap(item=>rows
+      .filter(row=>matchesRecord(row,item.number,'transfer'))
+      .map(row=>({row,number:item.number})));
+    if(occupied.some(({row})=>(recordDraft(row).invoices||[]).some(inv=>invoiceDocumentNo(inv.number)))){
+      throw Error('في ترحيل مرتبط بفاتورة زرقاء محفوظة. افتح الفاتورة من السجل بدل تكرارها.');
+    }
+    const first=occupied[0];
+    if(!first)return {draft:proposed,sources:{} as Record<string,TransferSource>,
+      message:'تم جلب ترحيلات SAP دون حفظها. أدخل مبالغ الفواتير وراجع الكميات.'};
+    const original=await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(first.row.id));
+    const base=readReconciliationRecord(original.record.payload);
+    if(!base)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
+    const other=proposed.transfers.filter(row=>row.number!==first.number);
+    const baseTransfer=base.transfers.find(row=>transferNumbers(row.number).includes(first.number));
+    if(!baseTransfer||transferNumbers(baseTransfer.number).length!==1)
+      throw Error('الترحيل محفوظ مع أرقام أخرى في نفس البطاقة. افتحه من سجل المطابقات أولًا.');
+    const nextSources:Record<string,TransferSource>={};
+    for(const item of other){
+      const owner=occupied.find(entry=>entry.number===item.number);
+      if(owner&&owner.row.id!==first.row.id)
+        nextSources[item.id]={number:item.number,recordId:owner.row.id,version:owner.row.version};
+    }
+    return {draft:withInvoiceDates({...proposed,id:original.record.id,version:original.record.version,
+      transfers:[{...baseTransfer},...other],branch:proposed.branch||base.branch,
+      referenceSnapshot:base.referenceSnapshot,useCurrentReference:true}),
+      sources:nextSources,message:'تم فتح سجل ترحيل محفوظ دون فاتورة، دون إنشاء ترحيل مكرر.'};
+  }
+
+  async function acceptReverseChoice(openDetailed=false){
+    const choice=reverseChoice;
+    if(!choice||busy)return;
+    if(!openDetailed&&choice.blockers.length){
+      setError('هناك ملاحظات SAP أخرى غير اتجاه 011؛ راجعها في المطابقة العادية: '+choice.blockers.join('؛ '));
+      return;
+    }
+    setBusy(true);setError('');
+    try{
+      if(choice.mode==='append'){
+        if(!draft)throw Error('لا يوجد كشف مفتوح لإضافة الحركة العكسية.');
+        const member=choice.group.members.find(item=>item.transfer.number===choice.number);
+        if(!member)throw Error('تعذّر استرجاع تفاصيل الترحيل العكسي.');
+        const latest=await refreshRecords();
+        const owner=latest.find(row=>matchesRecord(row,choice.number,'transfer')&&row.id!==draft.id);
+        if(owner){
+          const data=await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(owner.id));
+          const saved=readReconciliationRecord(data.record.payload);
+          if(!saved)throw Error('هذا الترحيل محفوظ لكن بيانات كشفه غير مقروءة.');
+          if(openDetailed){
+            onDetailed(withInvoiceDates({...saved,id:data.record.id,version:data.record.version,mode:'manual'}),{});
+            setReverseChoice(null);
+            return;
+          }
+          throw Error('الترحيل محفوظ في كشف آخر. استخدم «فتح المستند في المطابقة العادية» لفتح أصله، بدل تكراره.');
+        }
+        if(member.invoices.length&&draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))
+          &&!matchesInvoiceNumbers(draft.invoices,member.invoices))
+          throw Error('الفواتير الزرقاء في SAP ('+member.invoices.join('، ')+') لا تطابق فواتير الكشف الحالي.');
+        if(draft.transfers.some(item=>transferNumbers(item.number).includes(choice.number)))
+          throw Error('الترحيل موجود مسبقًا في الكشف الحالي.');
+        if(draft.transfers.length>=30)throw Error('وصلت إلى الحد الأقصى للترحيلات.');
+        if(draft.branch&&member.branch&&draft.branch!==member.branch)
+          throw Error('الترحيل العكسي تابع لفرع '+member.branch+' وليس فرع الفاتورة الحالية.');
+        const next=withInvoiceDates({...draft,transfers:[...draft.transfers,{...member.transfer,id:uuid()}]});
+        if(openDetailed)onDetailed(next,sources);
+        else{
+          setDraft(next);
+          setNotice('تمت إضافة الحركة العكسية '+choice.number+' بصافي سالب. شيّكها مع مؤسسة الفرع وأكّد مراجعتها قبل الحفظ.');
+        }
+      }else{
+        const prepared=await prepareSapDraft(choice.group,choice.number,choice.kind);
+        if(openDetailed)onDetailed(prepared.draft,prepared.sources);
+        else{
+          setDraft(prepared.draft);setSources(prepared.sources);
+          setVerifiedReverse([]);
+          setNotice('تمت إضافة الحركة العكسية للمطابقة الفورية بصافي سالب. راجع الفرع والكميات ومبالغ الفواتير، ثم ضع علامة التشييك.');
+        }
+      }
+      setReverseChoice(null);
+    }catch(e){setError(e instanceof Error?e.message:'تعذّر فتح الترحيل العكسي.');}
+    finally{setBusy(false);}
   }
 
   async function lookup(query=number, selectedKind:SearchFilter=kind) {
@@ -273,7 +378,7 @@ export default function InstantMatch({
     if (searchKind==='invoice'&&initialAmount.trim()&&fils(initialAmount)===null) {
       setError('أدخل مبلغ الفاتورة بشكل صحيح، مثل 186.400 دينار.');return;
     }
-    setBusy(true);setSuggestionsOpen(false);setError('');setNotice('');setShowItems(false);
+    setBusy(true);setSuggestionsOpen(false);setError('');setNotice('');setShowItems(false);setReverseChoice(null);setVerifiedReverse([]);
     try {
       const [rows,queued]=await Promise.all([refreshRecords(),searchImportedSap(searched)]);
       setQueueMatches(queued);
@@ -283,6 +388,7 @@ export default function InstantMatch({
 
       // The committed daily snapshot is authoritative. A browser may still
       // have the previous shared preview while the new snapshot is published.
+      let reviewEvidence=queued;
       let candidate = groupSapEvidence(queued,searched,searchKind,branches)||
         (!hasCommittedSnapshot.current?imports.find(group=>group.members.some(member=>
           searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched)):undefined);
@@ -303,7 +409,10 @@ export default function InstantMatch({
           // Preserve every known transfer when replacing a stale queued result
           // with the original SAP evidence. Never lose a flagged transfer.
           if(proposal&&(!candidate||candidate.members.every(member=>
-            proposal.members.some(original=>original.transfer.number===member.transfer.number))))candidate=proposal;
+            proposal.members.some(original=>original.transfer.number===member.transfer.number)))){
+              candidate=proposal;
+              reviewEvidence=archived.hits;
+            }
           if(archived.unreadable>0){
             setFileWarning('تعذّر قراءة '+archived.unreadable+' ملف SAP مؤرشف؛ النتائج قد تكون ناقصة، ولا يُعتبر غياب الرقم إثباتًا لعدم وجود الفاتورة.');
             if(!candidate)throw Error('الفحص غير مكتمل: لم تُقرأ بعض ملفات SAP المؤرشفة. لا تنشئ فاتورة مكررة قبل مراجعة الأصول.');
@@ -311,49 +420,18 @@ export default function InstantMatch({
         }
       }
       if (candidate) {
-        const reviewReasons=[...new Set([
-          ...candidate.members.flatMap(sapMemberReviewReasons),
-          ...candidate.issues
-        ])];
-        if (reviewReasons.length) {
-          throw Error('لا يمكن اعتماد المستند تلقائيًا: '+reviewReasons.slice(0,4).join('؛ ')+
+        const reviewReasons=[...new Set([...candidate.members.flatMap(sapMemberReviewReasons),...candidate.issues])];
+        if(candidate.members.some(member=>member.reverseMovement)){
+          const choice=reverseChoiceFor(candidate,searched,searchKind,'lookup',reviewEvidence);
+          setReverseChoice(choice);
+          setNotice('تم العثور على حركة عكسية من المستودع 011. اختر إضافتها للمطابقة الفورية أو فتح المطابقة العادية؛ اتجاه الحركة لا يثبت إلغاء المستند.');
+        }else{
+          if(reviewReasons.length)throw Error('لا يمكن اعتماد المستند تلقائيًا: '+reviewReasons.slice(0,4).join('؛ ')+
             (reviewReasons.length>4?'؛ توجد ملاحظات أخرى.':'.')+
             ' افتح المطابقة الأساسية للمراجعة. خطأ القراءة لا يعني أن الترحيل ملغى.');
-        }
-        const proposed = fillSearchedAmount(fromSap(candidate,searched,searchKind),searched,searchKind);
-        const occupied = proposed.transfers.flatMap(item=>rows
-          .filter(row=>matchesRecord(row,item.number,'transfer'))
-          .map(row=>({row,number:item.number})));
-        if (occupied.some(({row})=>(recordDraft(row).invoices||[]).some(inv=>invoiceDocumentNo(inv.number)))) {
-          throw Error('في ترحيل مرتبط بفاتورة زرقاء محفوظة. افتح الفاتورة من السجل بدل تكرارها.');
-        }
-        const first = occupied[0];
-        if (first) {
-          // Keep a previously saved, invoice-free transfer as the owner of the new invoice.
-          const original = await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(first.row.id));
-          const base = readReconciliationRecord(original.record.payload);
-          if(!base)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
-          const other = proposed.transfers.filter(row=>row.number!==first.number);
-          const baseTransfer = base.transfers.find(row=>transferNumbers(row.number).includes(first.number));
-          if (!baseTransfer || transferNumbers(baseTransfer.number).length!==1)
-            throw Error('الترحيل محفوظ مع أرقام أخرى في نفس البطاقة. افتحه من سجل المطابقات أولًا.');
-          const all = [{...baseTransfer},...other];
-          const nextSources:Record<string,TransferSource> = {};
-          for (const item of other) {
-            const owner = occupied.find(entry=>entry.number===item.number);
-            if (owner && owner.row.id!==first.row.id) {
-              nextSources[item.id]={number:item.number,recordId:owner.row.id,version:owner.row.version};
-            }
-          }
-          setSources(nextSources);
-          setDraft(withInvoiceDates({...proposed,id:original.record.id,version:original.record.version,
-            transfers:all,branch:proposed.branch||base.branch,
-            referenceSnapshot:base.referenceSnapshot,useCurrentReference:true}));
-          setNotice('تم جلب الترحيلات من SAP وربط السجل السابق الذي لا يحمل فاتورة، بدون تكراره.');
-        } else {
-          setSources({});
-          setDraft(proposed);
-          setNotice('تم العثور على الترحيلات المرتبطة في كشف SAP. أدخل مبلغ كل فاتورة زرقاء.');
+          const prepared=await prepareSapDraft(candidate,searched,searchKind);
+          setDraft(prepared.draft);setSources(prepared.sources);
+          setNotice(prepared.message);
         }
       } else if (searchKind==='transfer') {
         const savedResponse = await fetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
@@ -395,21 +473,32 @@ export default function InstantMatch({
       }
       if (stored && stored.recordId===draft.id) throw Error('الترحيل موجود مسبقًا في السجل الحالي.');
       let member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
+      let linked:SapImportGroup|null|undefined;
+      let reviewEvidence:SapEvidence[]=[];
       if(!member){
-        let linked=groupSapEvidence(await searchImportedSap(searched),searched,'transfer',branches);
+        reviewEvidence=await searchImportedSap(searched);
+        linked=groupSapEvidence(reviewEvidence,searched,'transfer',branches);
         if(!linked || linked.members.every(item=>!item.invoices.length)){
           const archived=await searchArchivedSapEvidence(searched,'transfer',branches);
           const found=groupSapEvidence(archived.hits,searched,'transfer',branches);
-          if(found)linked=found;
+          if(found){linked=found;reviewEvidence=archived.hits;}
           if(archived.unreadable>0&&!linked)
             throw Error('لم تكتمل قراءة الأصول المؤرشفة للتحقق من رقم الترحيل '+searched+'.');
         }
         member=linked?.members.find(item=>item.transfer.number===searched);
-        if(linked?.issues.length)throw Error(linked.issues.join(' · '));
+        if(linked?.issues.length&&!member?.reverseMovement)throw Error(linked.issues.join(' · '));
       }
-      if (member && (member.reversal || member.reverseMovement || member.issues.length)) {
-        throw Error(sapMemberReviewReasons(member).join('؛ ')+
-          '. راجع الترحيل في المطابقة الأساسية قبل إضافته؛ نقص البيانات ليس إثباتًا للإلغاء.');
+      if(member?.reverseMovement){
+        if(!linked)reviewEvidence=await searchImportedSap(searched);
+        const linkedGroup=linked||groupSapEvidence(reviewEvidence,searched,'transfer',branches)
+          ||imports.find(group=>group.members.some(item=>item.transfer.number===searched));
+        if(!linkedGroup)throw Error('تعذّر استرجاع أصل SAP للحركة العكسية.');
+        setReverseChoice(reverseChoiceFor(linkedGroup,searched,'transfer','append',reviewEvidence));
+        setNotice('الحركة العكسية '+searched+' تحتاج مراجعتك. اختر إضافتها للمطابقة الفورية أو فتح المطابقة العادية.');
+        return;
+      }
+      if(member&&(member.reversal||member.issues.length)){
+        throw Error(sapMemberReviewReasons(member).join('؛ ')+'. راجع الترحيل في المطابقة الأساسية قبل إضافته.');
       }
       if (draft.transfers.length>0 && member?.invoices.length && !matchesInvoiceNumbers(draft.invoices,member.invoices)) {
         throw Error('فواتير الترحيل '+searched+' في SAP ('+member.invoices.join('، ')+') لا تطابق فواتير الكشف المفتوح.');
@@ -450,13 +539,17 @@ export default function InstantMatch({
   const prepared=useMemo(()=>pricedDraft?prepareReconciliation(pricedDraft,matchingReference):null,[pricedDraft,matchingReference]);
   const originalResult=prepared?.result??null;
   const result=originalResult;
+  const reverseNumbers=useMemo(()=>draft?draft.transfers.filter(transfer=>
+    parseTransfer(transfer.paste,{allowReverse:true}).lines.some(line=>line.from==='011'))
+    .map(transfer=>transfer.number):[],[draft]);
+  const reverseChecked=reverseNumbers.every(number=>verifiedReverse.includes(number));
   const transferWarnings=useMemo(()=>draft ? draft.transfers.flatMap(transfer=>{
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     return [...parsed.issues,...parsed.excluded].map(issue=>'الترحيل '+transfer.number+': '+issue);
   }):[],[draft]);
   const canSave=!!draft&&!!result&&(!isAqaba||!!aqabaPricing&&!aqabaPricingLoading&&!aqabaPricingError)
     &&result.status==='match'&&result.priceDifference===0
-    &&transferWarnings.length===0&&!!draft.branch
+    &&transferWarnings.length===0&&reverseChecked&&!!draft.branch
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
     &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null&&dateValue(item.date));
   async function saveAndNext() {
@@ -470,7 +563,7 @@ export default function InstantMatch({
         setError('حُفظت الفاتورة، لكن المطابقة الأساسية لم تعتمدها. افتح المطابقة التفصيلية لإكمال الملاحظات.');
         return;
       }
-      setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setSuggestionsOpen(false);
+      setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setVerifiedReverse([]);setReverseChoice(null);setSuggestionsOpen(false);
       setNotice('تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
       setSearchFocusRequest(current=>current+1);
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر حفظ المطابقة.')}
@@ -481,7 +574,7 @@ export default function InstantMatch({
     <div className="page-title">
       <div><p className="eyebrow">سير عمل سريع</p><h1>مطابقة فورية</h1>
         <p>اكتب رقم الفاتورة الزرقاء، اسحب ترحيلات SAP، أدخل مبالغ الفواتير، وراجع الفرق مباشرة.</p></div>
-      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setError('');setNotice('');setSuggestionsOpen(false);setSearchFocusRequest(current=>current+1)}}>
+      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setReverseChoice(null);setVerifiedReverse([]);setError('');setNotice('');setSuggestionsOpen(false);setSearchFocusRequest(current=>current+1)}}>
         <RefreshCw size={16}/>مطابقة جديدة</button>
     </div>
     <section className="panel">
@@ -493,7 +586,7 @@ export default function InstantMatch({
         <div className="instant-document-search">
           <label htmlFor="instant-document-number">ابحث برقم الفاتورة الزرقاء أو الترحيل
             <input ref={searchInput} id="instant-document-number" dir="ltr" inputMode="numeric" autoComplete="off"
-              value={number} onChange={e=>{setNumber(e.target.value);setQueueMatches([]);setSuggestionsOpen(true);setError('')}}
+              value={number} onChange={e=>{setNumber(e.target.value);setQueueMatches([]);setSuggestionsOpen(true);setError('');setReverseChoice(null)}}
               onFocus={()=>setSuggestionsOpen(true)}
               onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();void lookup()}}}
               aria-expanded={suggestionsOpen&&/^\d{4,20}$/.test(digits(number).trim())}
@@ -527,6 +620,18 @@ export default function InstantMatch({
       {fileWarning&&<p className="hint" role="status">{fileWarning}</p>}
       {error&&<p role="alert" className="banner danger"><AlertTriangle size={16}/> {error}</p>}
       {notice&&<p role="status" className="banner info"><CheckCircle2 size={16}/> {notice}</p>}
+      {reverseChoice&&<section className="panel" aria-label="خيارات مراجعة الترحيل العكسي">
+        <h3>الترحيل العكسي {reverseChoice.number} — صادر من المستودع 011</h3>
+        <p className="hint">الحركة العكسية تنقص صافي مخزون 011، وليست إثباتًا أن المستند ملغى. اختر المطابقة الفورية مع فرع المؤسسة أو المطابقة العادية.</p>
+        {reverseChoice.notes.length>0&&<p className="hint">{reverseChoice.notes.join('؛ ')}</p>}
+        {reverseChoice.blockers.length>0&&<p className="banner danger" role="alert">هناك مشاكل إضافية في بيانات SAP تمنع الاعتماد الفوري: {reverseChoice.blockers.join('؛ ')}</p>}
+        <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+          <button type="button" className="button primary" disabled={busy||!!reverseChoice.blockers.length}
+            onClick={()=>void acceptReverseChoice(false)}><Plus size={16}/>إضافة الترحيل العكسي للمطابقة الفورية</button>
+          <button type="button" className="button secondary" disabled={busy}
+            onClick={()=>void acceptReverseChoice(true)}>فتح المستند في المطابقة العادية</button>
+        </div>
+      </section>}
     </section>
 
     {draft&&<div style={{display:'grid',gap:16}}>
@@ -576,7 +681,7 @@ export default function InstantMatch({
         <div className="section-title"><h2>ترحيلات SAP</h2></div>
         <div className="form-grid">
           <label>أدخل رقم الترحيل لإضافته مباشرة<input dir="ltr" inputMode="numeric" value={transferNumber}
-            onChange={e=>setTransferNumber(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')void addTransfer()}}
+            onChange={e=>{setTransferNumber(e.target.value);setReverseChoice(null)}} onKeyDown={e=>{if(e.key==='Enter')void addTransfer()}}
             placeholder="2615834"/></label>
           <div style={{display:'flex',alignItems:'end'}}><button type="button" className="button secondary"
             disabled={busy} onClick={()=>void addTransfer()}><Plus size={16}/>إضافة الترحيل بالرقم</button></div>
@@ -609,6 +714,16 @@ export default function InstantMatch({
           <div className={'stat status-stat '+result.status}><span>الحالة</span>
             <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?(draft.invoices.length>1?'مطابق ماليًا — إجمالي المجموعة':'مطابق ماليًا') :result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
         </div>
+        {reverseNumbers.length>0&&<div className="review-list" role="group" aria-label="تشييك الترحيلات العكسية">
+          <h3>مراجعة الحركات العكسية من 011 مع المؤسسة</h3>
+          <p className="hint">كل حركة عكسية تُخصم من الصافي. تأكد من الفرع والأصناف والكميات مع الورق قبل الاعتماد؛ التشييك لا يغيّر مستند SAP.</p>
+          {reverseNumbers.map(number=><label key={number} className="check-label">
+            <input type="checkbox" checked={verifiedReverse.includes(number)}
+              onChange={event=>setVerifiedReverse(previous=>event.target.checked?[...new Set([...previous,number])]:previous.filter(x=>x!==number))}/>
+            شيّكت الحركة العكسية {number} مع مؤسسة الفرع وتأكدت من الكميات
+          </label>)}
+          {!reverseChecked&&<p className="hint">الحفظ الفوري معطّل إلى أن تُشيّك جميع الحركات العكسية.</p>}
+        </div>}
         {draft.invoices.some(item=>!dateValue(item.date))&&<p className="hint" role="alert">حدّد تاريخ الفاتورة الزرقاء أو صحّح التاريخ التلقائي قبل الحفظ، حتى يظل محفوظًا في السجل.</p>}
                 {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
           {transferWarnings.map((text,index)=><p key={'transfer-'+index}>{text}</p>)}
