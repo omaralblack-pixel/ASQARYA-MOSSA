@@ -9,6 +9,21 @@ export type ColonelAssignment={transfer_no:string;invoice_day:string;reason:stri
 export type ColonelDayState={day:string;invoices_complete:number;confirmed_at:string;confirmed_by:string};
 export type ColonelInvoice={number:string;date:string;branch:string;amount:string;recordId:string;
   complete:boolean;dateSource:string;transfers:string[];status:string};
+/** Explain physical invoice validation consistently for status, closing and diagnostics.
+ * Receipt requires the checked paper, an actual blue invoice number and a
+ * paper-sourced date; SAP-inferred dates cannot be approved as paper dates.
+ */
+export function colonelPaperIssues(invoices:ColonelInvoice[]):{number:string;recordId:string;problem:string}[]{
+ return invoices.flatMap(inv=>{
+  const number=invoiceDocumentNo(inv.number);
+  const problems=[
+   !/^\d{8,20}$/.test(number)?'رقم الفاتورة غير صالح':'',
+   !inv.complete?'الورق غير مؤكد الاستلام':'',
+   inv.dateSource==='transfer'?'تاريخ الفاتورة مستنتج من الترحيل ولم يثبت':'',
+  ].filter(Boolean);
+  return problems.map(problem=>({number:inv.number,recordId:inv.recordId,problem}));
+ });
+}
 export type ColonelNonInvoice={recordId:string;invoiceId:string;branch:string;date:string;transfers:string[];
   state:'settled'|'pending'|'unverified';note:string;counterparts:string[];
   proofs:{number:string;counterparts:string[];detail:string}[]};
