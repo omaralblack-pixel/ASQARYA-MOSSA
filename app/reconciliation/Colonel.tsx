@@ -4,7 +4,7 @@ import {AlertTriangle,CalendarCheck,CheckCircle2,ClipboardCheck,FileSpreadsheet,
 import {listSapFiles,readSapArchive} from '../lib/sap-files-client';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {restoreLieutenantSource} from '../lib/lieutenant-source';
-import {buildColonelReport,type ColonelRecord,type ColonelAssignment,type ColonelDayState} from '../lib/colonel-core';
+import {buildColonelReport,colonelPaperIssues,type ColonelRecord,type ColonelAssignment,type ColonelDayState} from '../lib/colonel-core';
 import type {LieutenantTransfer} from '../lib/lieutenant';
 import type {CancellationDecision} from '../lib/lieutenant-cancellation-decisions';
 
@@ -111,7 +111,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
   !!sourceName&&!sourceIssues.length,
  ):null,[month,records,sap,control,loaded,sourceName,sourceIssues.length]);
  const current=report?.days.find(day=>day.day===selectedDay)||null;
- const missingPaper=current?.invoices.filter(inv=>!inv.complete||!/^\d{8,20}$/.test(inv.number))||[];
+ const paperIssues=current?colonelPaperIssues(current.invoices):[];
 
  // Each day is signed against its own project invoices and SAP transfers.
  // A new, unrelated SAP file must not reopen a previously reviewed day.
@@ -130,8 +130,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
    .catch(()=>{if(active)setFingerprints({})});
   return ()=>{active=false};
  },[auditSnapshots]);
- const hasConfirmedPaper=(day:NonNullable<typeof current>)=>day.invoices.length>0&&
-  day.invoices.every(inv=>inv.complete&&/^\\d{8,20}$/.test(inv.number)&&inv.dateSource!=='transfer');
+ const hasConfirmedPaper=(day:NonNullable<typeof current>)=>day.invoices.length>0&&colonelPaperIssues(day.invoices).length===0;
  const canCloseDay=(day:NonNullable<typeof current>)=>
   hasConfirmedPaper(day)&&day.openCount===0&&!!sourceKey&&!sourceIssues.length&&!!fingerprints[day.day];
  const dayIsClosed=(day:NonNullable<typeof current>)=>{
@@ -222,8 +221,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
   if(!canCloseDay(day)){
    const reasons=[
     !day.invoices.length?'لا توجد فواتير زرقاء مسجلة لهذا اليوم':'',
-    day.invoices.some(i=>!i.complete||!/^\\d{8,20}$/.test(i.number))?'توجد فواتير ناقصة أو غير مؤكدة في المشروع':'',
-    day.invoices.some(i=>i.dateSource==='transfer')?'تاريخ فاتورة مستنتج من SAP ولم يثبت بتاريخ الورق':'',
+    ...colonelPaperIssues(day.invoices).slice(0,8).map(issue=>'فاتورة '+issue.number+' — '+issue.problem),
     day.openCount?'يوجد '+day.openCount+' حالة تحتاج إجراء داخل اليوم':'',
     !sourceKey||sourceIssues.length?'مصدر SAP غير مكتمل أو غير محفوظ':'',
    ].filter(Boolean);
@@ -304,7 +302,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
       </ul>
      </div>}
      {!current.invoicesComplete&&hasConfirmedPaper(current)&&<p className="hint">كل أوراق فواتير اليوم مؤكدة؛ لا تحتاج لضغط اعتماد إدخال منفصل. مربّع التشييك بجانب اليوم يحفظ إغلاقك بعد المراجعة.</p>}
-     {missingPaper.length>0&&<p className="amber">يوجد {missingPaper.length} فاتورة زرقاء حقيقية غير مؤكدة أو ناقصة الرقم؛ يجب تصحيحها في سجل المشروع قبل اعتماد اليوم. حركات الإلغاء والعكسي تظهر في قسم التسويات أدناه ولا تُحسب كفواتير ناقصة.</p>}
+     {paperIssues.length>0&&<div className="amber" role="alert"><b>فواتير تحتاج تصحيحًا ({paperIssues.length}):</b><ul>{paperIssues.map((issue,i)=><li key={issue.recordId+'-'+i}>الفاتورة {issue.number||'بدون رقم'} — {issue.problem} <button type="button" className="button secondary small" onClick={()=>onOpenRecord(issue.recordId)}>فتح المجموعة</button></li>)}</ul></div>}
     <label>بحث داخل اليوم <input value={search} onChange={e=>setSearch(e.target.value)}
       placeholder="رقم فاتورة، ترحيل، فرع أو مجموعة"/></label>
     <h3>الفواتير الزرقاء ({current.invoices.length})</h3>
