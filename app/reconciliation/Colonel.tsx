@@ -1,5 +1,5 @@
 'use client';
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {Fragment,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,CalendarCheck,CheckCircle2,ClipboardCheck,FileSpreadsheet,RefreshCw,ShieldCheck,ArrowLeftRight} from 'lucide-react';
 import {listSapFiles,readSapArchive} from '../lib/sap-files-client';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -67,14 +67,14 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
 }){
  const [month,setMonth]=useState(currentMonth);
  const lastSync=useRef(syncVersion);
- const [selectedDay,setSelectedDay]=useState(today());
+ const [selectedDay,setSelectedDay]=useState('');
  const [records,setRecords]=useState<ColonelRecord[]>([]);
  const [sap,setSap]=useState<LieutenantTransfer[]>([]);
  const [archiveFiles,setArchiveFiles]=useState<SapArchiveActivity[]>([]);
  const [control,setControl]=useState<Control>(empty);
  const [sourceName,setSourceName]=useState('');
  const [sourceKey,setSourceKey]=useState('');
- const [fingerprint,setFingerprint]=useState('');
+ const [fingerprints,setFingerprints]=useState<Record<string,string>>({});
  const [sourceIssues,setSourceIssues]=useState<string[]>([]);
  const [loaded,setLoaded]=useState(false);
  const [busy,setBusy]=useState(false);
@@ -110,34 +110,44 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
   month,records,sap,control.decisions,control.assignments,control.days,
   !!sourceName&&!sourceIssues.length,
  ):null,[month,records,sap,control,loaded,sourceName,sourceIssues.length]);
- const current=report?.days.find(day=>day.day===selectedDay)||report?.days[0];
+ const current=report?.days.find(day=>day.day===selectedDay)||null;
  const missingPaper=current?.invoices.filter(inv=>!inv.complete||!/^\d{8,20}$/.test(inv.number))||[];
 
- // A signoff is valid only while its invoice/transfer snapshot and SAP source
- // exactly match what was displayed when the operator approved the day.
- const auditSnapshot=useMemo(()=>JSON.stringify({
-  sourceKey,issues:sourceIssues,day:current?.day||'',
-  invoices:current?.invoices.map(i=>[i.number,i.date,i.amount,i.branch,i.complete,i.recordId,i.dateSource,i.transfers])||[],
-  settlementRecords:current?.nonInvoices.map(row=>[row.recordId,row.date,row.state,row.transfers,row.counterparts,row.note])||[],
-  transfers:current?.transfers.map(t=>[t.number,t.state,t.postingDate,t.invoiceDay,t.needsAction,t.counterparts,t.note])||[],
-  globalOpen:report?.unassigned.filter(t=>t.needsAction).map(t=>[t.number,t.state,t.note])||[],
- }),[current,report,sourceKey,sourceIssues]);
+ // Each day is signed against its own project invoices and SAP transfers.
+ // A new, unrelated SAP file must not reopen a previously reviewed day.
+ const auditSnapshots=useMemo(()=>report?.days.map(day=>[day.day,JSON.stringify({
+  day:day.day,issues:sourceIssues,
+  invoices:day.invoices.map(i=>[i.number,i.date,i.amount,i.branch,i.complete,i.recordId,i.dateSource,i.transfers]),
+  settlementRecords:day.nonInvoices.map(row=>[row.recordId,row.date,row.state,row.transfers,row.counterparts,row.note]),
+  transfers:day.transfers.map(t=>[t.number,t.state,t.postingDate,t.invoiceDay,t.needsAction,t.counterparts,t.note]),
+ })] as const)||[],[report,sourceIssues]);
  useEffect(()=>{
-  let active=true;setFingerprint('');
-  void crypto.subtle.digest('SHA-256',new TextEncoder().encode(auditSnapshot)).then(bytes=>{
-   if(active)setFingerprint(Array.from(new Uint8Array(bytes),value=>value.toString(16).padStart(2,'0')).join(''));
-  }).catch(()=>{if(active)setFingerprint('')});
+  let active=true;setFingerprints({});
+  void Promise.all(auditSnapshots.map(async ([day,snapshot])=>{
+   const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(snapshot));
+   return [day,Array.from(new Uint8Array(bytes),value=>value.toString(16).padStart(2,'0')).join('')] as const;
+  })).then(rows=>{if(active)setFingerprints(Object.fromEntries(rows))})
+   .catch(()=>{if(active)setFingerprints({})});
   return ()=>{active=false};
- },[auditSnapshot]);
- const signoff=control.signoffs.find(s=>s.day===current?.day);
- const signoffCurrent=!!current?.ready&&!!fingerprint&&signoff?.fingerprint===fingerprint&&
-  signoff?.source_key===sourceKey;
+ },[auditSnapshots]);
+ const hasConfirmedPaper=(day:NonNullable<typeof current>)=>day.invoices.length>0&&
+  day.invoices.every(inv=>inv.complete&&/^\\d{8,20}$/.test(inv.number)&&inv.dateSource!=='transfer');
+ const canCloseDay=(day:NonNullable<typeof current>)=>
+  hasConfirmedPaper(day)&&day.openCount===0&&!!sourceKey&&!sourceIssues.length&&!!fingerprints[day.day];
+ const dayIsClosed=(day:NonNullable<typeof current>)=>{
+  const signature=control.signoffs.find(s=>s.day===day.day);
+  return !!signature&&!!fingerprints[day.day]&&signature.fingerprint===fingerprints[day.day];
+ };
+ const signoff=current?control.signoffs.find(s=>s.day===current.day):null;
+ const signoffCurrent=!!current&&dayIsClosed(current);
+ const fingerprint=current?fingerprints[current.day]||'':'';
  const unmatched=report?.unassigned.filter(t=>t.needsAction)||[];
  const activities=useMemo(()=>{
   const actions=control.events.map(e=>({when:e.created_at,title:
    e.event_type==='complete-day'?'اعتماد إدخال فواتير اليوم':
    e.event_type==='reopen-day'?'إعادة فتح اليوم':
-   e.event_type==='signoff-day'?'اعتماد اليوم جاهز بعد مراجعة SAP':
+   e.event_type==='close-day'?'إغلاق اليوم بعد مراجعة الفواتير والترحيلات':
+    e.event_type==='signoff-day'?'اعتماد اليوم جاهز بعد مراجعة SAP':
    e.event_type==='assign-transfer'?'تحديد تاريخ فاتورة للترحيل':'إلغاء ربط يوم الترحيل',
    description:e.entity_no+' — '+e.note}));
   const reviews=control.decisions.map(e=>({when:e.updated_at,title:'قرار محفوظ لدى الملازم أول',
@@ -201,6 +211,26 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
    setManualNo('');setManualReason('');setManualDay('');
   }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر حفظ القرار.')}
   finally{setBusy(false)}
+ }
+ async function toggleDayReview(day:NonNullable<typeof current>){
+  setSelectedDay(day.day);setError('');setNotice('');
+  if(dayIsClosed(day)){
+   if(!window.confirm('إعادة فتح يوم '+day.day+' وإلغاء علامة إغلاقه الإداري؟'))return;
+   await action({action:'reopen-day',day:day.day});
+   return;
+  }
+  if(!canCloseDay(day)){
+   const reasons=[
+    !day.invoices.length?'لا توجد فواتير زرقاء مسجلة لهذا اليوم':'',
+    day.invoices.some(i=>!i.complete||!/^\\d{8,20}$/.test(i.number))?'توجد فواتير ناقصة أو غير مؤكدة في المشروع':'',
+    day.invoices.some(i=>i.dateSource==='transfer')?'تاريخ فاتورة مستنتج من SAP ولم يثبت بتاريخ الورق':'',
+    day.openCount?'يوجد '+day.openCount+' حالة تحتاج إجراء داخل اليوم':'',
+    !sourceKey||sourceIssues.length?'مصدر SAP غير مكتمل أو غير محفوظ':'',
+   ].filter(Boolean);
+   setError('لا يمكن إغلاق يوم '+day.day+' قبل معالجة: '+reasons.join('؛ ')+'. تفاصيل اليوم مفتوحة تحت سطره مباشرة.');
+   return;
+  }
+  await action({action:'close-day',day:day.day,fingerprint:fingerprints[day.day],sourceKey});
  }
  return <div>
   <div className="page-title"><div><p className="eyebrow">مركز القيادة والرقابة</p>
