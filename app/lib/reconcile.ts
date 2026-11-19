@@ -246,16 +246,17 @@ export function withInvoiceDates<T extends Draft>(draft:T):T {
   return {...invoice,date:date.toISOString().slice(0,10)};
  })};
 }
-/** Checking a blue-invoice number in the regular screen means the operator has that paper.
- * Mark only the exact invoice they explicitly selected, in the in-memory draft.
- * Searching for a transfer is not proof of possession of its blue invoice.
+/** Selecting one blue invoice proves the paper for its entire reconciliation group.
+ * Mark all actual blue invoices in THAT draft, without affecting other groups.
+ * Looking up a transfer alone does not confirm possession of blue invoices.
+ * This remains an unsaved edit until the operator explicitly saves.
  */
 export function markSearchedPaperInvoice<T extends Draft>(draft:T,number:string):T{
  const wanted=invoiceDocumentNo(number);
- if(!wanted)return draft;
+ if(!wanted||!draft.invoices.some(item=>invoiceDocumentNo(item.number)===wanted))return draft;
  let changed=false;
  const invoices=draft.invoices.map(item=>{
-   if(invoiceDocumentNo(item.number)!==wanted||item.complete)return item;
+   if(!invoiceDocumentNo(item.number)||item.complete)return item;
    changed=true;
    return {...item,complete:true};
  });
