@@ -87,8 +87,8 @@ function matchingDocuments(rows:Summary[], groups:SapImportGroup[], query:string
 function sapMemberReviewReasons(member:SapImportGroup['members'][number]):string[]{
   const number=member.transfer.number;
   return [
-    ...(member.reversal?['إلغاء أو تصحيح/كمية سالبة؛ يلزم التحقق من حالة المستند في SAP']:[]),
-    ...(member.reverseMovement?['حركة عكسية صادرة من المستودع 011']:[]),
+    ...(member.reversal&&!member.reverseMovement?['مؤشر إلغاء أو تصحيح أو كمية سالبة؛ يلزم التحقق من حالة المستند في SAP']:[]),
+    ...(member.reverseMovement?['حركة عكسية صادرة من المستودع 011؛ هذا لا يعني أن الترحيل ملغى']:[]),
     ...member.issues
   ].map(reason=>'الترحيل '+number+': '+reason);
 }
