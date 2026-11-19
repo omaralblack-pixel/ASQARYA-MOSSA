@@ -1,6 +1,7 @@
 import {env} from 'cloudflare:workers';
 import {dateValue,invoiceDocumentNo,readReconciliationRecord,transferNumbers} from '../../lib/reconcile';
 import {invoiceDate} from '../../lib/invoice-collector';
+import {isColonelBranchConflict} from '../../lib/colonel-core';
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
 
 export const dynamic='force-dynamic';
@@ -10,7 +11,9 @@ const schema=[
  "CREATE TABLE IF NOT EXISTS colonel_days (day TEXT PRIMARY KEY NOT NULL, invoices_complete INTEGER NOT NULL DEFAULT 0, confirmed_at TEXT NOT NULL, confirmed_by TEXT NOT NULL DEFAULT 'operator')",
  "CREATE TABLE IF NOT EXISTS colonel_transfer_days (transfer_no TEXT PRIMARY KEY NOT NULL, invoice_day TEXT NOT NULL, reason TEXT NOT NULL, updated_at TEXT NOT NULL)",
  "CREATE TABLE IF NOT EXISTS colonel_events (id TEXT PRIMARY KEY NOT NULL, event_type TEXT NOT NULL, entity_no TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL)",
- "CREATE TABLE IF NOT EXISTS colonel_day_signoffs (day TEXT PRIMARY KEY NOT NULL, fingerprint TEXT NOT NULL, source_key TEXT NOT NULL, signed_at TEXT NOT NULL)"
+ "CREATE TABLE IF NOT EXISTS colonel_day_signoffs (day TEXT PRIMARY KEY NOT NULL, fingerprint TEXT NOT NULL, source_key TEXT NOT NULL, signed_at TEXT NOT NULL)",
+ "CREATE TABLE IF NOT EXISTS colonel_branch_exceptions (transfer_no TEXT PRIMARY KEY NOT NULL, issue_text TEXT NOT NULL, source_key TEXT NOT NULL, reason TEXT NOT NULL, confirmed_at TEXT NOT NULL)",
+ "CREATE TABLE IF NOT EXISTS colonel_prior_period_links (transfer_no TEXT PRIMARY KEY NOT NULL, counterpart_no TEXT NOT NULL, counterpart_date TEXT NOT NULL, note TEXT NOT NULL, updated_at TEXT NOT NULL)"
 ];
 let init:Promise<unknown>|undefined;
 const ensure=()=>init??=db().batch(schema.map(s=>db().prepare(s))).catch(error=>{init=undefined;throw error});
@@ -26,7 +29,7 @@ export async function GET(request:Request){
   await ensure();
   const month=new URL(request.url).searchParams.get('month')||'';
   if(!monthValid(month))return json({error:'اختر شهرًا صالحًا بصيغة YYYY-MM.'},400);
-  const [states,assignments,decisions,events,edited,signoffs]=await Promise.all([
+  const [states,assignments,decisions,events,edited,signoffs,branchExceptions,priorPeriodLinks]=await Promise.all([
    db().prepare('SELECT day,invoices_complete,confirmed_at,confirmed_by FROM colonel_days WHERE day LIKE ? ORDER BY day')
     .bind(month+'-%').all(),
    db().prepare('SELECT transfer_no,invoice_day,reason,updated_at FROM colonel_transfer_days ORDER BY updated_at DESC').all(),
@@ -35,9 +38,12 @@ export async function GET(request:Request){
    db().prepare('SELECT id,branch,updated FROM reconciliations ORDER BY updated DESC LIMIT 100').all(),
    db().prepare('SELECT day,fingerprint,source_key,signed_at FROM colonel_day_signoffs WHERE day LIKE ? ORDER BY day')
     .bind(month+'-%').all(),
+   db().prepare('SELECT transfer_no,issue_text,reason,confirmed_at FROM colonel_branch_exceptions ORDER BY confirmed_at DESC').all(),
+   db().prepare('SELECT transfer_no,counterpart_no,counterpart_date,note,updated_at FROM colonel_prior_period_links ORDER BY updated_at DESC').all(),
   ]);
   return json({days:states.results,assignments:assignments.results,decisions:decisions.results,
-   events:events.results,recentProjectEdits:edited.results,signoffs:signoffs.results});
+   events:events.results,recentProjectEdits:edited.results,signoffs:signoffs.results,
+    branchExceptions:branchExceptions.results,priorPeriodLinks:priorPeriodLinks.results});
  }catch(error){return json({error:issue(error)},500)}
 }
 export async function POST(request:Request){
@@ -50,6 +56,43 @@ export async function POST(request:Request){
   const number=typeof data.transferNo==='string'?data.transferNo.trim():'';
   const reason=typeof data.reason==='string'?data.reason.trim():'';
   const now=new Date().toISOString();
+  if(action==='approve-branch-conflict'||action==='reopen-branch-conflict'){
+   if(!numberValid(number))return json({error:'رقم الترحيل غير صالح.'},400);
+   if(action==='approve-branch-conflict'){
+    const issueText=typeof data.issueText==='string'?data.issueText.trim():'';
+    const sourceKey=typeof data.sourceKey==='string'?data.sourceKey.trim():'';
+    if(issueText.length>500||!isColonelBranchConflict(issueText)||sourceKey.length>250||!sourceKey)
+     return json({error:'هذا الإجراء يسمح فقط باعتماد تعارض اسم الفرع المثبت بين حقل SAP والملاحظات.'},400);
+    await db().batch([
+     db().prepare('INSERT INTO colonel_branch_exceptions (transfer_no,issue_text,source_key,reason,confirmed_at) VALUES (?,?,?,?,?) ON CONFLICT(transfer_no) DO UPDATE SET issue_text=excluded.issue_text,source_key=excluded.source_key,reason=excluded.reason,confirmed_at=excluded.confirmed_at')
+      .bind(number,issueText,sourceKey,'اعتماد اختلاف اسم الفرع فقط؛ لا يغيّر الفرع الأصلي ولا رصيد أو حركة SAP',now),
+     log('approve-branch-conflict',number,issueText+' — استثناء اسم الفرع فقط، لا أصناف أو كميات.',now),
+    ]);
+   }else await db().batch([
+    db().prepare('DELETE FROM colonel_branch_exceptions WHERE transfer_no=?').bind(number),
+    log('reopen-branch-conflict',number,'إعادة فتح اختلاف اسم الفرع للتحقق.',now),
+   ]);
+   return json({ok:true});
+  }
+  if(action==='link-prior-period'||action==='clear-prior-period'){
+   if(!numberValid(number))return json({error:'رقم ترحيل التصحيح غير صالح.'},400);
+   if(action==='link-prior-period'){
+    const counterpart=typeof data.counterpartNo==='string'?data.counterpartNo.trim():'';
+    const counterpartDate=typeof data.counterpartDate==='string'?data.counterpartDate.trim():'';
+    const note=typeof data.note==='string'?data.note.trim():'';
+    if(!numberValid(counterpart)||counterpart===number||!dayValid(counterpartDate)||note.length<6||note.length>500)
+     return json({error:'أدخل رقم المستند المقابل الصحيح وتاريخه وملاحظة التوثيق (6–500 حرف).'},400);
+    await db().batch([
+     db().prepare('INSERT INTO colonel_prior_period_links (transfer_no,counterpart_no,counterpart_date,note,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(transfer_no) DO UPDATE SET counterpart_no=excluded.counterpart_no,counterpart_date=excluded.counterpart_date,note=excluded.note,updated_at=excluded.updated_at')
+      .bind(number,counterpart,counterpartDate,note,now),
+     log('link-prior-period',number,'مرتبط بالمستند '+counterpart+' بتاريخ '+counterpartDate+'؛ '+note+' (ربط إداري لا يثبت إلغاء SAP ولا يغيّر الفترة المحاسبية أو الرصيد)',now),
+    ]);
+   }else await db().batch([
+    db().prepare('DELETE FROM colonel_prior_period_links WHERE transfer_no=?').bind(number),
+    log('clear-prior-period',number,'إلغاء ربط الفترة السابقة الإداري.',now),
+   ]);
+   return json({ok:true});
+  }
   if(action==='complete-day'||action==='reopen-day'||action==='close-day'){
    if(!dayValid(day))return json({error:'تاريخ اليوم غير صالح.'},400);
    if(action!=='reopen-day'){
