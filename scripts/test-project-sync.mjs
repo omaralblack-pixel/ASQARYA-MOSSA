@@ -24,6 +24,8 @@ assert.equal(api.shouldPublishProjectChange('POST','/api/aqaba',200),true);
 assert.equal(api.shouldPublishProjectChange('POST','/api/colonel',200),true);
 assert.ok(api.affectedScreens('reconcile').includes('reconciliation'));
 assert.ok(api.affectedScreens('sap').includes('reassurance'));
+assert.ok(api.affectedScreens('sap').includes('instant'));
+assert.ok(api.affectedScreens('reconcile').includes('instant'));
 const worker=fs.readFileSync('worker/index.ts','utf8');
 assert.match(worker,/await publishChange\(request,response,env\)/);
 assert.match(worker,/await publishChange\(request,downstream,env\)/);
@@ -36,7 +38,7 @@ assert.match(page,/ProjectSyncIndicator/);
 const soldier=fs.readFileSync('app/reconciliation/SerialSoldier.tsx','utf8');
 assert.match(soldier,/readSerialWorkbook\(buffer\)/);
 assert.match(soldier,/evaluateSerial\(parsed\.rows,saved,parsed\.period\)/);
-const scopes=['Colonel','Reassurance','FirstLieutenant','SerialSoldier','SapFiles','StockReport','AqabaWorkspace'];
+const scopes=['Colonel','Reassurance','FirstLieutenant','SerialSoldier','SapFiles','StockReport','AqabaWorkspace','InstantMatch'];
 for(const name of scopes){
  const source=fs.readFileSync('app/reconciliation/'+name+'.tsx','utf8');
  assert.match(source,/syncVersion/,'missing sync subscription: '+name);

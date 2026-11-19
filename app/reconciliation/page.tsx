@@ -817,7 +817,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
  </div>}
  {error&&!edit&&<div className="banner error" role="alert"><span>{error}</span><button type="button" aria-label="إغلاق التنبيه" onClick={()=>E('')}>×</button></div>}{notice&&<div className="banner success" role="status"><span>{notice}</span><button type="button" aria-label="إغلاق الرسالة" onClick={()=>N('')}>×</button></div>}{loading?<section className="panel">جاري تحميل المرجع…</section>:<>
 {(tab==='aqaba'||tab.startsWith('aqaba-'))&&<AqabaWorkspace syncVersion={sync.signal.version} syncScope={sync.signal.scope} section={tab==='aqaba'?'invoices':tab.slice('aqaba-'.length) as 'prices'|'stock'|'documents'|'queries'} catalog={reference} onEditPrice={(sapCode,name)=>void openSapLink(sapCode,name)}/>}
-{tab==='instant'&&<InstantMatch reference={reference} branches={branches} onDetailed={(picked,sources)=>{if(!replaceWorkingDraft(withInvoiceDates(picked)))return;setTransferSources(sources);PAGE('all');Q('');E('');T('work')}}/>}
+{tab==='instant'&&<InstantMatch syncVersion={sync.signal.version} reference={reference} branches={branches} onDetailed={(picked,sources)=>{if(!replaceWorkingDraft(withInvoiceDates(picked)))return;setTransferSources(sources);PAGE('all');Q('');E('');T('work')}}/>}
  {tab==='replace'&&<CatalogReplacement reference={reference} onSaved={items=>REF(items)}/>}
  {tab==='stock'&&<StockReport syncVersion={sync.signal.version} syncScope={sync.signal.scope}/>}
  {tab==='reassurance'&&<Reassurance syncVersion={sync.signal.version} syncScope={sync.signal.scope} branches={branches} onOpenRecord={id=>{void run(()=>openRecord(id));}}

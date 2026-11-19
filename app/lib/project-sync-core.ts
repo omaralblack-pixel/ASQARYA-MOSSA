@@ -18,6 +18,6 @@ export function affectedScreens(scope:ProjectSyncScope){
  // All open ledgers can contain related decisions. Reload only the mounted
  // screen, not every screen's full project datasets.
  return scope==='aqaba'?['aqaba','lieutenant','reassurance','colonel']:
-  scope==='sap'?['sap-files','lieutenant','colonel','reassurance','serial-soldier','monthly','stock']:
-  ['reconciliation','colonel','lieutenant','reassurance','serial-soldier','monthly','history','invoices','aqaba'];
+  scope==='sap'?['sap-files','instant','lieutenant','colonel','reassurance','serial-soldier','monthly','stock']:
+  ['reconciliation','instant','colonel','lieutenant','reassurance','serial-soldier','monthly','history','invoices','aqaba'];
 }
