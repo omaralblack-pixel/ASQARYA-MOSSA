@@ -225,6 +225,8 @@ export default function InstantMatch({
   },[isAqaba]);
 
   function update(next:Draft) {
+    if(draft&&(draft.branch!==next.branch||JSON.stringify(draft.transfers)!==JSON.stringify(next.transfers)))
+      setVerifiedReverse([]);
     setDraft(withInvoiceDates(next));
     setNotice('');
   }
@@ -244,7 +246,7 @@ export default function InstantMatch({
     const saved = readReconciliationRecord(data.record.payload);
     if(!saved)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
     setDraft(withInvoiceDates(fillSearchedAmount({...saved,mode:'manual',id:data.record.id,version:data.record.version,checks:saved.checks||{}},target,searchKind)));
-    setSources({});
+    setSources({});setVerifiedReverse([]);setReverseChoice(null);
     setNotice('تم استرجاع الكشف المحفوظ. تقدر تعدّل الأسعار أو تضيف ترحيل بدون إنشاء سجل مكرر.');
   }
 
@@ -373,6 +375,7 @@ export default function InstantMatch({
 
       // The committed daily snapshot is authoritative. A browser may still
       // have the previous shared preview while the new snapshot is published.
+      let reviewEvidence=queued;
       let candidate = groupSapEvidence(queued,searched,searchKind,branches)||
         (!hasCommittedSnapshot.current?imports.find(group=>group.members.some(member=>
           searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched)):undefined);
@@ -393,7 +396,10 @@ export default function InstantMatch({
           // Preserve every known transfer when replacing a stale queued result
           // with the original SAP evidence. Never lose a flagged transfer.
           if(proposal&&(!candidate||candidate.members.every(member=>
-            proposal.members.some(original=>original.transfer.number===member.transfer.number))))candidate=proposal;
+            proposal.members.some(original=>original.transfer.number===member.transfer.number)))){
+              candidate=proposal;
+              reviewEvidence=archived.hits;
+            }
           if(archived.unreadable>0){
             setFileWarning('تعذّر قراءة '+archived.unreadable+' ملف SAP مؤرشف؛ النتائج قد تكون ناقصة، ولا يُعتبر غياب الرقم إثباتًا لعدم وجود الفاتورة.');
             if(!candidate)throw Error('الفحص غير مكتمل: لم تُقرأ بعض ملفات SAP المؤرشفة. لا تنشئ فاتورة مكررة قبل مراجعة الأصول.');
@@ -403,7 +409,7 @@ export default function InstantMatch({
       if (candidate) {
         const reviewReasons=[...new Set([...candidate.members.flatMap(sapMemberReviewReasons),...candidate.issues])];
         if(candidate.members.some(member=>member.reverseMovement)){
-          const choice=reverseChoiceFor(candidate,searched,searchKind,'lookup',queued);
+          const choice=reverseChoiceFor(candidate,searched,searchKind,'lookup',reviewEvidence);
           setReverseChoice(choice);
           setNotice('تم العثور على حركة عكسية من المستودع 011. اختر إضافتها للمطابقة الفورية أو فتح المطابقة العادية؛ اتجاه الحركة لا يثبت إلغاء المستند.');
         }else{
@@ -454,24 +460,27 @@ export default function InstantMatch({
       }
       if (stored && stored.recordId===draft.id) throw Error('الترحيل موجود مسبقًا في السجل الحالي.');
       let member = imports.flatMap(group=>group.members).find(item=>item.transfer.number===searched);
+      let linked:SapImportGroup|null|undefined;
+      let reviewEvidence:SapEvidence[]=[];
       if(!member){
-        let linked=groupSapEvidence(await searchImportedSap(searched),searched,'transfer',branches);
+        reviewEvidence=await searchImportedSap(searched);
+        linked=groupSapEvidence(reviewEvidence,searched,'transfer',branches);
         if(!linked || linked.members.every(item=>!item.invoices.length)){
           const archived=await searchArchivedSapEvidence(searched,'transfer',branches);
           const found=groupSapEvidence(archived.hits,searched,'transfer',branches);
-          if(found)linked=found;
+          if(found){linked=found;reviewEvidence=archived.hits;}
           if(archived.unreadable>0&&!linked)
             throw Error('لم تكتمل قراءة الأصول المؤرشفة للتحقق من رقم الترحيل '+searched+'.');
         }
         member=linked?.members.find(item=>item.transfer.number===searched);
-        if(linked?.issues.length)throw Error(linked.issues.join(' · '));
+        if(linked?.issues.length&&!member?.reverseMovement)throw Error(linked.issues.join(' · '));
       }
       if(member?.reverseMovement){
-        const evidence=await searchImportedSap(searched);
-        const linkedGroup=groupSapEvidence(evidence,searched,'transfer',branches)
+        if(!linked)reviewEvidence=await searchImportedSap(searched);
+        const linkedGroup=linked||groupSapEvidence(reviewEvidence,searched,'transfer',branches)
           ||imports.find(group=>group.members.some(item=>item.transfer.number===searched));
         if(!linkedGroup)throw Error('تعذّر استرجاع أصل SAP للحركة العكسية.');
-        setReverseChoice(reverseChoiceFor(linkedGroup,searched,'transfer','append',evidence));
+        setReverseChoice(reverseChoiceFor(linkedGroup,searched,'transfer','append',reviewEvidence));
         setNotice('الحركة العكسية '+searched+' تحتاج مراجعتك. اختر إضافتها للمطابقة الفورية أو فتح المطابقة العادية.');
         return;
       }
