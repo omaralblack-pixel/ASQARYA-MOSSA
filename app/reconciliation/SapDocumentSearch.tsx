@@ -186,7 +186,7 @@ export default function SapDocumentSearch({branches,onOpenSaved,onOpenDraft}:Pro
       {matches.length
         ?<><p className="hint">اختر المستند لفتحه في المطابقة الأساسية. لا يُعتمد ولا يُحفظ تلقائيًا.</p>
           <div className="cards-grid">{matches.slice(0,40).map(hit=>
-            <button type="button" key={hit.kind+':'+hit.number} className="button secondary"
+            <button type="button" key={hit.kind+':'+hit.number+':'+(hit.recordId||hit.origin)} className="button secondary"
               disabled={busy} onClick={()=>{void openHit(hit);}}>
               <span dir="ltr">{hit.number}</span>
               <span>{hit.kind==='invoice'?'فاتورة زرقاء':'ترحيل SAP'}</span>
