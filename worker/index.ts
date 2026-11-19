@@ -3,6 +3,7 @@ import { runWithConnectorBinding } from "../lib/connector-context";
 import type { ConnectorBinding } from "../lib/connector-contract.mjs";
 
 import { handleInstitution } from "./institution";
+import {replaceSapSnapshot} from './sap-snapshot';
 import {projectSyncScope,shouldPublishProjectChange} from "../app/lib/project-sync-core";
 
 const changeSchema='CREATE TABLE IF NOT EXISTS institution_sync_events (id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,method TEXT NOT NULL,path TEXT NOT NULL,created_at TEXT NOT NULL)';
@@ -35,6 +36,8 @@ const worker = {
     let response: Response | undefined;
     try {
       response = await handleInstitution(request, env);
+      if(!response&&new URL(request.url).pathname==='/api/sap-snapshot')
+        response=await replaceSapSnapshot(request,env);
     } catch (error) {
       console.error("Institution gateway failed before application routing", error);
       if (!new URL(request.url).pathname.startsWith("/api/")) throw error;

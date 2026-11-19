@@ -45,7 +45,6 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   if(!isUnifiedSapSource(text))return;
   const sections=splitUnifiedSapSource(text);
   const parts=[
-   {kind:'transfers',body:sections.transfers,date:'',count:sections.counts.TRANSFER},
    {kind:'opening',body:sections.opening,date:sections.from,count:sections.counts.OPENING},
    {kind:'balance',body:sections.closing,date:sections.to,count:sections.counts.CLOSING},
   ] as const;
@@ -92,9 +91,6 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   if(!parseLieutenantTransfers(sharedText,[]).transfers.length)return;
   const previous=await readSavedSapImport();
   if(previous?.text===sharedText)return;
-  const last=(source:string)=>parseLieutenantTransfers(source,[]).transfers.reduce((max,x)=>x.transfer.date>max?x.transfer.date:max,'');
-  // An old export can be archived/processed without replacing a newer shared view.
-  if(previous&&last(previous.text)>last(sharedText))return;
   await saveSapImport({name:file.name,text:sharedText});
  }
  async function processUnifiedFile(file:SapArchiveFile,text:string):Promise<void>{
@@ -110,6 +106,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   const hash=file.key.split('__')[1];
   if(!/^[a-f0-9]{32}$/.test(hash))throw Error('بصمة أصل SAP غير صالحة.');
   let finished=0,review=0;
+  const transferKeys:string[]=[];
   for(const part of parts)for(let i=0;i<part.chunks.length;i++){
    if(!mounted.current)return;
    const name='sap-'+hash+'-'+part.kind+'-'+String(i+1).padStart(4,'0')+
@@ -123,6 +120,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    },body:bytes});
    const saved=await readSapJson<{key:string}>(response,'أرشفة جزء SAP رقم '+(finished+1));
    if(!saved.key)throw Error('الخادم لم يؤكد أرشفة الجزء '+(finished+1));
+   if(part.kind==='transfers')transferKeys.push(saved.key);
    await verifyArchivedSource(saved.key,bytes.buffer as ArrayBuffer);
    const child:SapArchiveFile={key:saved.key,name,
     kind:part.kind==='transfers'?'transfers':'other',
@@ -133,19 +131,24 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
     throw Error('توقفت معالجة الجزء '+(finished+1)+' من '+total+
      '؛ المكتمل محفوظ. اضغط «حالة / استكمال» على الأصل لاستكمال الباقي.');
    if(status.status==='review')review++;
+   if(part.kind==='transfers')await sapRequest('/api/sap-snapshot',{action:'stage',key:file.key,child:child.key});
    finished++;
   }
   // Never publish an individual chunk to the shared SAP full-export view.
+  if(review)throw Error('اكتملت الدفعات مع أخطاء قراءة؛ راجعها قبل استبدال النسخة السابقة.');
   await archiveUnifiedParts(file,text);
+  const replacement=await sapRequest<{deleted:number}>('/api/sap-snapshot',{
+   key:file.key,children:transferKeys,documents:parseLieutenantTransfers(sections.transfers,[]).transfers.length,
+  });
   await publishShared(file,text);
   M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة.'+
    (review?' توجد ملاحظات قراءة في '+review+' أجزاء.':' جميع الدفعات ناجحة.')+
-   ' الأصل محفوظ، ويمكن رفع نسخة الغد بنفس الاسم.');
+   ' تم تفعيل النسخة الجديدة وحذف '+replacement.deleted+' ملفات سابقة.');
  }
  async function processFile(file:SapArchiveFile,text?:string,recheck=false,fromUnified=false):Promise<void>{
   const current=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));
   let state=current.job;
-  if(!state&&!fromUnified&&(file.kind==='unified'||file.kind==='other')){
+  if(!fromUnified&&(file.kind==='unified'||file.kind==='other')){
    const source=text??await readSapArchive(file);
    if(isUnifiedSapSource(source))return processUnifiedFile(file,source);
   }
@@ -172,7 +175,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   remember(state);
   // Unified imports are already preserved as immutable originals and D1 receipts.
   // Never replace the legacy shared full export with a shorter date-window subset.
-  if(state.kind==='transfers'&&!fromUnified)await publishShared(file,text??await readSapArchive(file));
+
   // Only unfinished batches are requested. Finished batches survive reloads and
   // independent tabs; the server lease serializes claims for the same batch.
   for(const batch of state.batches.filter(x=>x.state!=='complete')){
@@ -188,6 +191,11 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   if(state.kind==='unified'){
    try{await archiveUnifiedParts(file,text??await readSapArchive(file))}
    catch(e){archiveWarning=' تعذّر أرشفة أحد الأجزاء المشتقة: '+(e instanceof Error?e.message:'خطأ غير معروف')+'؛ يبقى الملف الأصلي محفوظًا.';}
+  }
+  if(state.kind==='transfers'&&!fromUnified&&state.status==='complete'){
+   await sapRequest('/api/sap-snapshot',{action:'stage',key:file.key,child:file.key});
+   await sapRequest('/api/sap-snapshot',{key:file.key,children:[file.key],documents:state.documents.length});
+   await publishShared(file,text??await readSapArchive(file));
   }
   M((state.total===state.done?'انتهت جميع الدفعات المطلوبة. '+(state.issues.length?'توجد ملاحظات قراءة تحتاج مراجعة.':'البيانات متاحة للشاشات المرتبطة.'):'المعالجة غير مكتملة.')+archiveWarning);
  }
@@ -273,7 +281,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    (filter==='all'||actual===filter)&&(!balanceFrom||!!snapshot&&snapshot>=balanceFrom)&&(!balanceTo||!!snapshot&&snapshot<=balanceTo)&&(!uploadFrom||uploaded>=uploadFrom)&&(!uploadTo||uploaded<=uploadTo);
  });
  return <div className="sap-files">
-  <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع نسخة SAP الجديدة كل يوم حتى تبقى البيانات محدّثة. يحفظ النظام كل نسخة أصلية مستقلة ببصمتها، دون تكرار الترحيلات.</p></div><FileArchive size={32}/></div>
+  <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع ملف SAP الكامل كل يوم. بعد اكتمال المعالجة تُستبدل بيانات SAP السابقة وتُحذف الأصول القديمة، وتبقى المطابقات والتصحيحات اليدوية محفوظة.</p></div><FileArchive size={32}/></div>
   <section className="panel"><h2>رفع ملف SAP جديد</h2><div className="table-controls">
    <label>نوع الملف المتوقع (يُصحّح تلقائيًا)<select value={kind} disabled={busy} onChange={e=>K(e.target.value as SapKind)}>{Object.entries(sapKinds).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></label>
    {kind!=='unified'&&<><label>تاريخ الرصيد الفعلي<input type="date" max={today()} value={date} disabled={busy} onChange={e=>D(e.target.value)}/></label>

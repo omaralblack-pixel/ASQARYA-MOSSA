@@ -1,0 +1,138 @@
+import {lieutenantFiles} from './institution';
+import {parseLieutenantTransfers} from '../app/lib/lieutenant';
+import {decodeArchivedSapSource} from '../app/lib/sap-source-integrity';
+import branches from '../app/branches.json';
+
+type ArchiveFile={key:string;name:string;kind:string;created:string};
+
+/** Commit a fully processed daily SAP snapshot, then remove superseded originals.
+ * Reconciliations and all manual decisions live in separate tables.
+ */
+export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Promise<Response>{
+ const reply=(value:unknown,status=200)=>Response.json(value,{status,headers:{'Cache-Control':'no-store'}});
+ if(request.method!=='POST'||request.headers.get('origin')!==new URL(request.url).origin)
+  return reply({error:'طلب غير مسموح.'},403);
+ try{
+  const body=await request.json() as {action?:string;key:string;child?:string;children:string[];documents:number};
+  if(!env.DB)throw Error('قاعدة البيانات غير متاحة.');
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sap_snapshot_rows
+    (root_key TEXT NOT NULL,child_key TEXT NOT NULL,number TEXT NOT NULL,doc_date TEXT NOT NULL,payload TEXT NOT NULL,
+    PRIMARY KEY(root_key,number))`).run();
+  const validChild=(key:string)=>typeof key==='string'&&
+    (key===body.key&&body.key.startsWith('lieutenant/transfers__')||
+      new RegExp('^lieutenant/transfers__[a-f0-9]{32}__sap-'+body.key.split('__')[1]+'-transfers-\\d{4}-of-\\d{4}\\.txt$').test(key));
+  if(body.action==='stage'){
+   if(!/^lieutenant\/(unified|transfers)__[a-f0-9]{32}__[^/\\]{1,120}$/.test(body.key)||!body.child||!validChild(body.child))
+    return reply({error:'جزء SAP غير صالح.'},400);
+   const response=await lieutenantFiles(new Request(new URL('/api/lieutenant-files?key='+encodeURIComponent(body.child),request.url)),env);
+   if(!response.ok)throw Error('تعذّر استرجاع جزء SAP المحفوظ.');
+   const bytes=new Uint8Array(await response.arrayBuffer());
+   const savedBranches=await env.DB.prepare("SELECT value FROM settings WHERE key='branches'").first<{value:string}>();
+   const scan=parseLieutenantTransfers(decodeArchivedSapSource(bytes,body.child),savedBranches?JSON.parse(savedBranches.value):branches);
+   if(scan.issues.length||!scan.transfers.length)throw Error('تعذّر تجهيز الترحيلات: '+scan.issues.join('، '));
+   const rows=scan.transfers.map(row=>({number:row.transfer.number,date:row.transfer.date,payload:JSON.stringify(row)}));
+   await env.DB.batch([
+    env.DB.prepare('DELETE FROM sap_snapshot_rows WHERE root_key=? AND child_key=?').bind(body.key,body.child),
+    env.DB.prepare(`INSERT INTO sap_snapshot_rows(root_key,child_key,number,doc_date,payload)
+      SELECT ?,?,json_extract(value,'$.number'),json_extract(value,'$.date'),json_extract(value,'$.payload') FROM json_each(?)`)
+      .bind(body.key,body.child,JSON.stringify(rows)),
+   ]);
+   return reply({staged:rows.length});
+  }
+  if(!env.DB||!/^lieutenant\/(unified|transfers)__[a-f0-9]{32}__[^/\\]{1,120}$/.test(body.key)||
+    !Array.isArray(body.children)||!body.children.length||body.children.length>200||
+    !Number.isSafeInteger(body.documents)||body.documents<1)
+   return reply({error:'بيانات نسخة SAP غير مكتملة.'},400);
+  const hash=body.key.split('__')[1];
+  if(new Set(body.children).size!==body.children.length||body.children.some(key=>typeof key!=='string'||
+    !(key===body.key&&body.key.startsWith('lieutenant/transfers__')||
+      new RegExp('^lieutenant/transfers__[a-f0-9]{32}__sap-'+hash+'-transfers-\\d{4}-of-\\d{4}\\.txt$').test(key))))
+   return reply({error:'أجزاء SAP لا تنتمي إلى الأصل المحدد.'},400);
+  if(body.key.startsWith('lieutenant/unified__')){
+   const positions=body.children.map(key=>key.match(/-(\d{4})-of-(\d{4})\.txt$/));
+   if(positions.some(match=>!match||Number(match[2])!==body.children.length)||
+     new Set(positions.map(match=>Number(match![1]))).size!==body.children.length||
+     positions.some(match=>Number(match![1])<1||Number(match![1])>body.children.length))
+    return reply({error:'أجزاء الترحيلات غير مكتملة؛ لم يتم الاستبدال.'},409);
+  }
+  const files:ArchiveFile[]=[];
+  let page:number|null=0;
+  do{
+   const response=await lieutenantFiles(new Request(new URL('/api/lieutenant-files?page='+page,request.url)),env);
+   if(!response.ok)throw Error('تعذّر التحقق من أصول SAP المحفوظة.');
+   const data=await response.json() as {files:ArchiveFile[];nextPage:number|null};
+   files.push(...data.files);page=data.nextPage;
+  }while(page!==null);
+  const root=files.find(file=>file.key===body.key);
+  if(!root||!root.created||body.children.some(key=>!files.some(file=>file.key===key)))
+   return reply({error:'أصل SAP أو أحد أجزائه غير محفوظ.'},409);
+  if(files.some(file=>file.kind===root.kind&&file.key!==root.key&&file.created>root.created))
+   return reply({error:'توجد نسخة أحدث؛ استكمل النسخة الأحدث قبل الاستبدال.'},409);
+  const keys=JSON.stringify(body.children);
+  const jobs=await env.DB.prepare(`SELECT j.key,j.total,COUNT(b.idx) AS actual,
+    SUM(CASE WHEN b.state='complete' THEN 1 ELSE 0 END) AS done
+    FROM sap_file_jobs j LEFT JOIN sap_file_batches b ON b.file_key=j.key
+    WHERE j.key IN (SELECT value FROM json_each(?)) GROUP BY j.key`).bind(keys)
+   .all<{key:string;total:number;actual:number;done:number}>();
+  if(jobs.results.length!==body.children.length||jobs.results.some(job=>job.total!==job.actual||job.done!==job.total))
+   return reply({error:'لم تكتمل جميع دفعات النسخة الجديدة؛ النسخة السابقة ما زالت فعّالة.'},409);
+  const source=`FROM sap_snapshot_rows WHERE root_key=? AND child_key IN (SELECT value FROM json_each(?))`;
+  const counts=await env.DB.prepare(`SELECT COUNT(*) AS count,COUNT(DISTINCT number) AS uniqueCount ${source}`)
+   .bind(body.key,keys).first<{count:number;uniqueCount:number}>();
+  if(counts?.count!==body.documents||counts.uniqueCount!==body.documents)
+   return reply({error:'عدد ترحيلات النسخة الجديدة غير مطابق؛ لم يتم الاستبدال.'},409);
+  const now=new Date().toISOString();
+  // One D1 transaction switches every SAP queue row together. Reviewed records,
+  // invoice keys, branch exceptions and cancellation decisions are preserved.
+  await env.DB.batch([
+   env.DB.prepare(`SELECT json(CASE WHEN
+    COALESCE((SELECT json_extract(value,'$.created') FROM settings WHERE key='sapCurrentSnapshot'),'')<=?
+    AND (SELECT COUNT(*) ${source})=?
+    AND NOT EXISTS(SELECT 1 FROM sap_file_batches WHERE file_key IN (SELECT value FROM json_each(?)) AND state<>'complete')
+    THEN '{}' ELSE 'snapshot changed during commit' END)`)
+    .bind(root.created,body.key,keys,body.documents,keys),
+   env.DB.prepare('DELETE FROM lieutenant_queue'),
+   env.DB.prepare(`INSERT INTO lieutenant_queue(transfer_no,doc_date,payload,source_file,created)
+    SELECT number,doc_date,payload,?,? ${source}`).bind(body.key,now,body.key,keys),
+   env.DB.prepare("INSERT INTO settings(key,value) VALUES('sapCurrentSnapshot',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .bind(JSON.stringify({key:body.key,created:root.created,committed:now,documents:body.documents})),
+   ...(root.kind==='unified'?[
+    env.DB.prepare('DELETE FROM sap_file_batches WHERE file_key=?').bind(body.key),
+    env.DB.prepare(`INSERT INTO sap_file_jobs(key,version,generation,kind,plan,total,updated)
+      VALUES(?,1,?,'unified',?,0,?) ON CONFLICT(key) DO UPDATE SET
+      version=excluded.version,generation=excluded.generation,kind=excluded.kind,plan=excluded.plan,total=0,updated=excluded.updated`)
+     .bind(body.key,crypto.randomUUID(),JSON.stringify({kind:'unified',count:body.documents,issues:[],documents:[]}),now),
+   ]:[]),
+  ]);
+  const obsolete=files.filter(file=>file.key!==root.key&&
+   (file.created<=root.created||file.name.startsWith('sap-'+hash+'-')));
+  const historical=await env.DB.prepare('SELECT key,updated FROM sap_file_jobs WHERE updated<=?').bind(root.created)
+   .all<{key:string;updated:string}>();
+  // Storage cleanup follows the database commit. Retrying cleanup cannot erase
+  // the active original or another upload that arrived after this snapshot.
+  const storage=new URL('/storage/v1/object/institution-sap',env.SUPABASE_URL).href;
+  let deleted=0;
+  for(let i=0;i<obsolete.length;i+=100){
+   const response=await fetch(storage,{method:'DELETE',headers:{apikey:env.SUPABASE_STORAGE_SECRET!,
+    'Content-Type':'application/json'},body:JSON.stringify({prefixes:obsolete.slice(i,i+100).map(file=>file.key)})});
+   if(!response.ok)return reply({committed:true,deleted,error:'تم الاستبدال؛ تعذّر تنظيف بعض الأصول القديمة. أعد استكمال النسخة لتنظيف الباقي.'},502);
+   const removed=await response.json() as unknown[];deleted+=removed.length;
+  }
+  // Completed processing histories are no longer needed once the new snapshot
+  // is active. Keep any genuinely newer uploads available for their own resume.
+  const obsoleteKeys=JSON.stringify([...new Set([...obsolete.map(file=>file.key),
+   ...historical.results.filter(job=>job.key!==root.key&&!files.some(file=>file.key===job.key)).map(job=>job.key)])]);
+  await env.DB.batch([
+   env.DB.prepare('DELETE FROM sap_file_batches WHERE file_key IN (SELECT value FROM json_each(?))').bind(obsoleteKeys),
+   env.DB.prepare('DELETE FROM sap_batch_history WHERE file_key IN (SELECT value FROM json_each(?))').bind(obsoleteKeys),
+   env.DB.prepare('DELETE FROM sap_job_history WHERE key IN (SELECT value FROM json_each(?))').bind(obsoleteKeys),
+   env.DB.prepare('DELETE FROM sap_file_jobs WHERE key IN (SELECT value FROM json_each(?))').bind(obsoleteKeys),
+   env.DB.prepare('DELETE FROM sap_snapshot_rows WHERE root_key=? OR root_key IN (SELECT value FROM json_each(?))').bind(body.key,obsoleteKeys),
+  ]);
+  return reply({committed:true,documents:body.documents,deleted,key:body.key});
+ }catch(error){
+  console.error('SAP snapshot replacement failed',error);
+  return reply({error:error instanceof Error?error.message:'تعذّر استبدال نسخة SAP.'},500);
+ }
+}
+

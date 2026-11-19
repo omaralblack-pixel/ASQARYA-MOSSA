@@ -2,6 +2,7 @@ import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
 import {validateCancellationDecision} from '../../lib/lieutenant-cancellation-decisions';
 import {collectInvoicesByDate} from '../../lib/invoice-collector';
 import {env} from 'cloudflare:workers';
+import {lieutenantFiles} from '../../../worker/institution';
 import defaults from '../../reference.json';
 import {isAqabaBranch,aqabaMatchReference} from '../../lib/aqaba-instant-reference';
 import type {BlueLine} from '../../lib/aqaba';
@@ -37,6 +38,7 @@ function ensureBranchExceptionSchema(){
  return branchExceptionSchemaReady??=db().prepare(statement).run().catch(error=>{branchExceptionSchemaReady=undefined;throw error});
 }
 export async function GET(req:Request){try{const u=new URL(req.url);
+if(u.searchParams.has('version'))return json({commit:typeof __ASQARYA_COMMIT__==='string'?__ASQARYA_COMMIT__:'unknown',workerVersion:env.CF_VERSION_METADATA?.id||null});
 if(u.searchParams.has('branchExceptions')){
  await ensureBranchExceptionSchema();
  const transferNo=digits(u.searchParams.get('branchExceptions')||'').trim();
@@ -65,7 +67,7 @@ if(u.searchParams.has('sapLookup')){
  const hits=rows.results.flatMap(row=>{
    try{
      const value=JSON.parse(row.payload) as {transfer?:{number?:string;date?:string;paste?:string;id?:string};branch?:string;remarks?:string;
-       invoiceNumbers?:string[];reverse?:boolean;cancellationState?:string};
+       invoiceNumbers?:string[];reverse?:boolean;cancellationState?:string;issues?:string[]};
      const transfer=value.transfer;
      if(!transfer||typeof transfer.paste!=='string'||transfer.number!==row.transfer_no)return [];
      const invoiceNumbers=[...new Set([...(Array.isArray(value.invoiceNumbers)?value.invoiceNumbers:[]),
@@ -74,7 +76,7 @@ if(u.searchParams.has('sapLookup')){
      return [{transfer:{id:String(transfer.id||'sap-'+row.transfer_no),number:row.transfer_no,
          date:String(transfer.date||row.doc_date),paste:transfer.paste},
        branch:String(value.branch||''),remarks:String(value.remarks||''),
-       invoiceNumbers,reverse:value.reverse===true,
+       invoiceNumbers,reverse:value.reverse===true,issues:Array.isArray(value.issues)?value.issues.filter(x=>typeof x==='string'):[],
        cancellationState:String(value.cancellationState||'unknown'),sourceFile:row.source_file}];
    }catch{return [];}
  });
@@ -177,7 +179,7 @@ if(u.searchParams.has('lieutenant')){
  const last=records.at(-1);
  return json({records,hasMore:results.length>batchSize,
    nextCursor:last?{updated:last.updated,id:last.id}:null});
-}if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,status,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array' AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object') AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object') THEN json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) ELSE payload END ELSE payload END AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch{return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
+}if(u.searchParams.has('id')){const r=await db().prepare('SELECT * FROM reconciliations WHERE id=?').bind(u.searchParams.get('id')).first();return r?json({record:r}):json({error:'السجل غير موجود'},404)}if(u.searchParams.has('transfer'))return await findSavedTransfer((u.searchParams.get('transfer')||'').trim()); if(u.searchParams.has('export')){const r=await db().prepare('SELECT id,branch,doc_date,status,payload FROM reconciliations ORDER BY updated DESC').all();return json({records:r.results})} if(u.searchParams.has('records')){const r=await db().prepare(`SELECT id,branch,driver,doc_date,status,created,updated,version,CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.transfers')='array' AND json_type(payload,'$.invoices')='array' AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object') AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object') THEN json_object('summary',json(json_extract(payload,'$.summary')),'transfers',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'))) FROM json_each(payload,'$.transfers'))),'invoices',json((SELECT json_group_array(json_object('number',json_extract(value,'$.number'),'complete',json(CASE WHEN json_extract(value,'$.complete')=1 THEN 'true' ELSE 'false' END),'date',json_extract(value,'$.date'),'amount',json_extract(value,'$.amount'))) FROM json_each(payload,'$.invoices')))) ELSE payload END ELSE payload END AS payload FROM reconciliations ORDER BY updated DESC`).all();return json({records:r.results})}const settings=await db().prepare("SELECT key,value FROM settings WHERE key IN ('branches','drivers')").all();const shared=Object.fromEntries((settings.results as any[]).map(r=>[r.key,JSON.parse(r.value)]));return json({reference:await refs(),branches:shared.branches||branches,drivers:shared.drivers||drivers})}catch(error){console.error('Reconciliation GET failed',error);return json({error:'تعذّر تحميل البيانات. أعد المحاولة.'},500)}}
 type StoredReconciliation = {
   id: string;
   branch: string;
@@ -580,6 +582,22 @@ if (b.action === 'lieutenantImport') {
  if(!/^lieutenant\/[a-z]+__[a-f0-9]{32}__[^/]{1,120}$/.test(sourceFile)||
    !Array.isArray(input)||!input.length||input.length>50)
    return json({error:'احفظ ملف SAP على Supabase أولًا، ثم أرسل دفعة من 1 إلى 50 ترحيلًا.'},400);
+ const activeSnapshot=await db().prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'").first<{value:string}>();
+ const snapshotValue=activeSnapshot?.value||'';
+ if(activeSnapshot){
+  const active=JSON.parse(activeSnapshot.value) as {key:string;created:string};
+  if(sourceFile!==active.key&&!sourceFile.includes('__sap-'+active.key.split('__')[1]+'-')){
+   let page:number|null=0,created='';
+   do{
+    const response=await lieutenantFiles(new Request(new URL('/api/lieutenant-files?page='+page,req.url)),env);
+    if(!response.ok)return json({error:'تعذّر التحقق من حداثة أصل SAP.'},503);
+    const archive=await response.json() as {files:{key:string;created:string}[];nextPage:number|null};
+    created=archive.files.find(file=>file.key===sourceFile)?.created||'';
+    page=archive.nextPage;
+   }while(!created&&page!==null);
+   if(!created||created<=active.created)return json({error:'هذا أصل SAP قديم؛ استكمل النسخة اليومية الحالية.'},409);
+  }
+ }
  const incoming:{number:string;date:string;paste:string;branch:string;remarks:string;reverse:boolean;cancellationState:string;cancellationMentioned:boolean;invoiceNumbers:string[]}[]=[];
  const seen=new Set<string>();
  for(const row of input){
@@ -642,8 +660,8 @@ if (b.action === 'lieutenantImport') {
  const inserted=rows.length?await db().prepare(`INSERT OR IGNORE INTO lieutenant_queue
    (transfer_no,doc_date,payload,source_file,created)
    SELECT json_extract(value,'$.number'),json_extract(value,'$.date'),json_extract(value,'$.payload'),?,?
-   FROM json_each(?) RETURNING transfer_no`)
-   .bind(sourceFile,new Date().toISOString(),JSON.stringify(rows)).all<{transfer_no:string}>():{results:[]};
+   FROM json_each(?) WHERE COALESCE((SELECT value FROM settings WHERE key='sapCurrentSnapshot'),'')=? RETURNING transfer_no`)
+   .bind(sourceFile,new Date().toISOString(),JSON.stringify(rows),snapshotValue).all<{transfer_no:string}>():{results:[]};
  const addedNumbers=new Set(inserted.results.map(row=>row.transfer_no));
  const added=addedNumbers.size;
  return json({added,existing:incoming.length-added,total:incoming.length,

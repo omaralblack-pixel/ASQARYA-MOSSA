@@ -6,7 +6,7 @@ export const projectSyncScopes:ProjectSyncScope[]=['reconcile','colonel','sap','
 export function projectSyncScope(pathname:string):ProjectSyncScope|null{
  if(pathname==='/api/reconcile'||pathname==='/api/data')return 'reconcile';
  if(pathname==='/api/colonel')return 'colonel';
- if(pathname==='/api/lieutenant-files'||pathname==='/api/sap-processing')return 'sap';
+ if(pathname==='/api/lieutenant-files'||pathname==='/api/sap-processing'||pathname==='/api/sap-snapshot')return 'sap';
  if(pathname==='/api/aqaba')return 'aqaba';
  return null;
 }
