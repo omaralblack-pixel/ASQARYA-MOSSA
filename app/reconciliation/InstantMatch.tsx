@@ -631,7 +631,7 @@ export default function InstantMatch({
           <button type="button" className="button secondary" disabled={busy}
             onClick={()=>void acceptReverseChoice(true)}>فتح المستند في المطابقة العادية</button>
         </div>
-      </section>
+      </section>}
     </section>
 
     {draft&&<div style={{display:'grid',gap:16}}>
