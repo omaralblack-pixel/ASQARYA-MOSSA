@@ -153,4 +153,20 @@ assert.equal(blocked.reversal,true,'Canceled documents are not auto-approved as 
 const mixed=groupSapEvidence(report.hits.map((row,i)=>({...row,branch:i?'22 — Other':'21 — السرو'})),
   '2623224070','invoice');
 assert.ok(mixed.issues.some(note=>note.includes('فروع مختلفة')));
-console.log('PASS: SAP archived invoice 2623224070 / transfers 2616485 and 2616486, newer Remarks, no old overwrite, cancellation and branch guards.');
+// A reverse 011 movement is review-only evidence, never proof of cancellation.
+const reverseRow=row('2616818','2623224070').replace('\t001\t011','\t011\t001');
+const reverseParsed=parseLieutenantTransfers(header+'\n'+reverseRow,branches);
+assert.equal(reverseParsed.transfers.length,1);
+assert.equal(reverseParsed.transfers[0].reverse,true);
+const reverseGroup=groupSapEvidence([{
+  transfer:reverseParsed.transfers[0].transfer,
+  branch:reverseParsed.transfers[0].branch,
+  remarks:reverseParsed.transfers[0].remarks,
+  invoiceNumbers:reverseParsed.transfers[0].invoiceNumbers,
+  reverse:reverseParsed.transfers[0].reverse,
+  cancellationState:'active',
+  sourceFile:'sap-reverse.txt'
+}], '2616818','transfer',branches);
+assert.equal(reverseGroup?.members[0].reverseMovement,true);
+assert.equal(reverseGroup?.draft.transfers[0].number,'2616818');
+console.log('PASS: SAP archived invoice 2623224070 / transfers 2616485 and 2616486, 011 reverse movement, cancellation and branch guards.');
