@@ -90,7 +90,16 @@ if(u.searchParams.has('lieutenantCancellationDecisions')){
  ).all();
  return json({decisions:rows.results});
 }
-if(u.searchParams.has('lieutenant')){
+if(u.searchParams.has('lieutenantMeta')){
+  // Lightweight companion for the same paginated invoice source read by Colonel.
+  // Used when the bulk lieutenant projection fails; no invoices are guessed.
+  const [queue,openingStock]=await Promise.all([
+   db().prepare('SELECT transfer_no FROM lieutenant_queue ORDER BY doc_date,transfer_no').all(),
+   db().prepare('SELECT snapshot_date,warehouse,sap_code,item_name,unit,quantity,source,approved_at FROM lieutenant_opening_stock ORDER BY snapshot_date,sap_code,unit').all(),
+  ]);
+  return json({queue:queue.results,openingStock:openingStock.results});
+ }
+ if(u.searchParams.has('lieutenant')){
  const [records,queue,openingStock]=await Promise.all([
   // Keep reviewed SAP quantities to verify approval against the current file,
   // while dropping bulky attachments and item-reference snapshots.
