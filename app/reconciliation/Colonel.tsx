@@ -1,5 +1,5 @@
 'use client';
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {Fragment,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,CalendarCheck,CheckCircle2,ClipboardCheck,FileSpreadsheet,RefreshCw,ShieldCheck,ArrowLeftRight} from 'lucide-react';
 import {listSapFiles,readSapArchive} from '../lib/sap-files-client';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -67,14 +67,14 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
 }){
  const [month,setMonth]=useState(currentMonth);
  const lastSync=useRef(syncVersion);
- const [selectedDay,setSelectedDay]=useState(today());
+ const [selectedDay,setSelectedDay]=useState('');
  const [records,setRecords]=useState<ColonelRecord[]>([]);
  const [sap,setSap]=useState<LieutenantTransfer[]>([]);
  const [archiveFiles,setArchiveFiles]=useState<SapArchiveActivity[]>([]);
  const [control,setControl]=useState<Control>(empty);
  const [sourceName,setSourceName]=useState('');
  const [sourceKey,setSourceKey]=useState('');
- const [fingerprint,setFingerprint]=useState('');
+ const [fingerprints,setFingerprints]=useState<Record<string,string>>({});
  const [sourceIssues,setSourceIssues]=useState<string[]>([]);
  const [loaded,setLoaded]=useState(false);
  const [busy,setBusy]=useState(false);
@@ -110,34 +110,44 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
   month,records,sap,control.decisions,control.assignments,control.days,
   !!sourceName&&!sourceIssues.length,
  ):null,[month,records,sap,control,loaded,sourceName,sourceIssues.length]);
- const current=report?.days.find(day=>day.day===selectedDay)||report?.days[0];
+ const current=report?.days.find(day=>day.day===selectedDay)||null;
  const missingPaper=current?.invoices.filter(inv=>!inv.complete||!/^\d{8,20}$/.test(inv.number))||[];
 
- // A signoff is valid only while its invoice/transfer snapshot and SAP source
- // exactly match what was displayed when the operator approved the day.
- const auditSnapshot=useMemo(()=>JSON.stringify({
-  sourceKey,issues:sourceIssues,day:current?.day||'',
-  invoices:current?.invoices.map(i=>[i.number,i.date,i.amount,i.branch,i.complete,i.recordId,i.dateSource,i.transfers])||[],
-  settlementRecords:current?.nonInvoices.map(row=>[row.recordId,row.date,row.state,row.transfers,row.counterparts,row.note])||[],
-  transfers:current?.transfers.map(t=>[t.number,t.state,t.postingDate,t.invoiceDay,t.needsAction,t.counterparts,t.note])||[],
-  globalOpen:report?.unassigned.filter(t=>t.needsAction).map(t=>[t.number,t.state,t.note])||[],
- }),[current,report,sourceKey,sourceIssues]);
+ // Each day is signed against its own project invoices and SAP transfers.
+ // A new, unrelated SAP file must not reopen a previously reviewed day.
+ const auditSnapshots=useMemo(()=>report?.days.map(day=>[day.day,JSON.stringify({
+  day:day.day,issues:sourceIssues,
+  invoices:day.invoices.map(i=>[i.number,i.date,i.amount,i.branch,i.complete,i.recordId,i.dateSource,i.transfers]),
+  settlementRecords:day.nonInvoices.map(row=>[row.recordId,row.date,row.state,row.transfers,row.counterparts,row.note]),
+  transfers:day.transfers.map(t=>[t.number,t.state,t.postingDate,t.invoiceDay,t.needsAction,t.counterparts,t.note]),
+ })] as const)||[],[report,sourceIssues]);
  useEffect(()=>{
-  let active=true;setFingerprint('');
-  void crypto.subtle.digest('SHA-256',new TextEncoder().encode(auditSnapshot)).then(bytes=>{
-   if(active)setFingerprint(Array.from(new Uint8Array(bytes),value=>value.toString(16).padStart(2,'0')).join(''));
-  }).catch(()=>{if(active)setFingerprint('')});
+  let active=true;setFingerprints({});
+  void Promise.all(auditSnapshots.map(async ([day,snapshot])=>{
+   const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(snapshot));
+   return [day,Array.from(new Uint8Array(bytes),value=>value.toString(16).padStart(2,'0')).join('')] as const;
+  })).then(rows=>{if(active)setFingerprints(Object.fromEntries(rows))})
+   .catch(()=>{if(active)setFingerprints({})});
   return ()=>{active=false};
- },[auditSnapshot]);
- const signoff=control.signoffs.find(s=>s.day===current?.day);
- const signoffCurrent=!!current?.ready&&!!fingerprint&&signoff?.fingerprint===fingerprint&&
-  signoff?.source_key===sourceKey;
+ },[auditSnapshots]);
+ const hasConfirmedPaper=(day:NonNullable<typeof current>)=>day.invoices.length>0&&
+  day.invoices.every(inv=>inv.complete&&/^\\d{8,20}$/.test(inv.number)&&inv.dateSource!=='transfer');
+ const canCloseDay=(day:NonNullable<typeof current>)=>
+  hasConfirmedPaper(day)&&day.openCount===0&&!!sourceKey&&!sourceIssues.length&&!!fingerprints[day.day];
+ const dayIsClosed=(day:NonNullable<typeof current>)=>{
+  const signature=control.signoffs.find(s=>s.day===day.day);
+  return !!signature&&!!fingerprints[day.day]&&signature.fingerprint===fingerprints[day.day];
+ };
+ const signoff=current?control.signoffs.find(s=>s.day===current.day):null;
+ const signoffCurrent=!!current&&dayIsClosed(current);
+ const fingerprint=current?fingerprints[current.day]||'':'';
  const unmatched=report?.unassigned.filter(t=>t.needsAction)||[];
  const activities=useMemo(()=>{
   const actions=control.events.map(e=>({when:e.created_at,title:
    e.event_type==='complete-day'?'اعتماد إدخال فواتير اليوم':
    e.event_type==='reopen-day'?'إعادة فتح اليوم':
-   e.event_type==='signoff-day'?'اعتماد اليوم جاهز بعد مراجعة SAP':
+   e.event_type==='close-day'?'إغلاق اليوم بعد مراجعة الفواتير والترحيلات':
+    e.event_type==='signoff-day'?'اعتماد اليوم جاهز بعد مراجعة SAP':
    e.event_type==='assign-transfer'?'تحديد تاريخ فاتورة للترحيل':'إلغاء ربط يوم الترحيل',
    description:e.entity_no+' — '+e.note}));
   const reviews=control.decisions.map(e=>({when:e.updated_at,title:'قرار محفوظ لدى الملازم أول',
@@ -202,6 +212,26 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
   }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر حفظ القرار.')}
   finally{setBusy(false)}
  }
+ async function toggleDayReview(day:NonNullable<typeof current>){
+  setSelectedDay(day.day);setError('');setNotice('');
+  if(dayIsClosed(day)){
+   if(!window.confirm('إعادة فتح يوم '+day.day+' وإلغاء علامة إغلاقه الإداري؟'))return;
+   await action({action:'reopen-day',day:day.day});
+   return;
+  }
+  if(!canCloseDay(day)){
+   const reasons=[
+    !day.invoices.length?'لا توجد فواتير زرقاء مسجلة لهذا اليوم':'',
+    day.invoices.some(i=>!i.complete||!/^\\d{8,20}$/.test(i.number))?'توجد فواتير ناقصة أو غير مؤكدة في المشروع':'',
+    day.invoices.some(i=>i.dateSource==='transfer')?'تاريخ فاتورة مستنتج من SAP ولم يثبت بتاريخ الورق':'',
+    day.openCount?'يوجد '+day.openCount+' حالة تحتاج إجراء داخل اليوم':'',
+    !sourceKey||sourceIssues.length?'مصدر SAP غير مكتمل أو غير محفوظ':'',
+   ].filter(Boolean);
+   setError('لا يمكن إغلاق يوم '+day.day+' قبل معالجة: '+reasons.join('؛ ')+'. تفاصيل اليوم مفتوحة تحت سطره مباشرة.');
+   return;
+  }
+  await action({action:'close-day',day:day.day,fingerprint:fingerprints[day.day],sourceKey});
+ }
  return <div>
   <div className="page-title"><div><p className="eyebrow">مركز القيادة والرقابة</p>
    <h1>العقيد — الفواتير والترحيلات والإلغاءات</h1>
@@ -237,31 +267,44 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
    <section className="panel">
     <div className="section-title"><CalendarCheck size={20}/><div><h2>أيام الفواتير الزرقاء</h2>
      <p>الجمعة تظهر أيضًا إذا عليها فواتير محفوظة؛ لا تنتقل الفواتير ليوم آخر تلقائيًا.</p></div></div>
-    <div className="table-scroll"><table><thead><tr><th>اليوم</th><th>الفواتير</th><th>الترحيلات المرتبطة</th>
-     <th>بانتظار إجراء</th><th>الحالة</th><th>فتح</th></tr></thead>
-     <tbody>{report.days.map(d=><tr key={d.day} style={d.day===current?.day?{background:'var(--theme-info-surface)'}:undefined}>
-      <td dir="ltr">{d.day}</td><td>{d.invoices.length}</td><td>{d.transfers.length}</td>
-      <td>{d.openCount}</td><td>{d.ready?'جاهز للمراجعة النهائية':d.invoicesComplete?'الفواتير مكتملة — رقابة الترحيلات مفتوحة':'لم تعتمد الفواتير مكتملة'}</td>
-      <td><button className="button secondary small" onClick={()=>setSelectedDay(d.day)}>تفاصيل اليوم</button></td>
-     </tr>)}</tbody></table></div>
-   </section>
-   {current&&<section className="panel">
+    <div className="table-scroll"><table><thead><tr>
+     <th>اليوم</th><th>الفواتير</th><th>الترحيلات المرتبطة</th><th>بانتظار إجراء</th><th>الحالة</th><th>فتح</th><th>تشييك اليوم</th>
+    </tr></thead><tbody>{report.days.map(d=><Fragment key={d.day}>
+     <tr style={d.day===selectedDay?{background:'var(--theme-info-surface)'}:undefined}>
+      <td dir="ltr"><button type="button" className="text-button" onClick={()=>setSelectedDay(previous=>previous===d.day?'':d.day)}>{d.day}</button></td>
+      <td>{d.invoices.length}</td><td>{d.transfers.length}</td><td>{d.openCount}</td>
+      <td>{dayIsClosed(d)?'تم التشييك وإغلاق اليوم':hasConfirmedPaper(d)
+       ?d.openCount===0?'كل الفواتير مؤكدة — بانتظار تشييكك':'الفواتير مؤكدة — ترحيل أو تسوية قيد المراجعة'
+       :d.invoices.length?'توجد فواتير ناقصة أو غير مؤكدة':'لا فواتير مسجلة لهذا اليوم'}</td>
+      <td><button type="button" className="button secondary small" aria-expanded={selectedDay===d.day}
+       onClick={()=>{setSelectedDay(previous=>previous===d.day?'':d.day);setError('')}}>{selectedDay===d.day?'إخفاء التفاصيل':'تفاصيل اليوم'}</button></td>
+      <td><button type="button" disabled={busy||!fingerprints[d.day]} onClick={()=>void toggleDayReview(d)}
+       aria-label={dayIsClosed(d)?'إعادة فتح يوم '+d.day:'تشييك وإغلاق يوم '+d.day}
+       title={dayIsClosed(d)?'مغلق بعد مراجعتك؛ اضغط لإعادة فتحه':'أحمر حتى تراجع اليوم وتغلقه'}
+       style={{width:30,height:30,borderRadius:6,border:'1px solid transparent',
+        background:dayIsClosed(d)?'#15803d':'#b91c1c',color:'#fff',cursor:'pointer',
+        display:'inline-flex',alignItems:'center',justifyContent:'center'}}>
+       {dayIsClosed(d)?<CheckCircle2 size={19}/>:<AlertTriangle size={18}/>}</button></td>
+     </tr>
+     {selectedDay===d.day&&current&&<tr className="colonel-inline-day-details"><td colSpan={7}
+      style={{padding:12,background:'var(--theme-info-surface)'}}>
+      {current&&<section className="panel">
     <div className="section-title"><ClipboardCheck size={20}/><div><h2>تفاصيل {current.day}</h2><p>{current.reason}</p></div></div>
-    <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center'}}>
-     {current.invoicesComplete?
-      <button className="button secondary" disabled={busy} onClick={()=>void action({action:'reopen-day',day:current.day})}>إعادة فتح إدخال فواتير اليوم</button>:
-      <button className="button primary" disabled={busy||missingPaper.length>0||!current.invoices.length}
-       onClick={()=>void action({action:'complete-day',day:current.day})}>
-       <CheckCircle2 size={17}/> فواتير {current.day} مكتملة</button>}
-     <span className="hint">هذا تأكيد إدخال الورق، وليس إلغاء SAP أو إغلاق المخزون.</span>
-     {current.ready&&!signoffCurrent&&<button className="button primary"
-       disabled={busy||!fingerprint||!sourceKey}
-       onClick={()=>void action({action:'signoff-day',day:current.day,fingerprint,sourceKey})}>
-       <CalendarCheck size={17}/> اعتماد يوم {current.day} جاهز</button>}
-     {signoffCurrent&&<strong style={{color:'var(--theme-success-text)'}}>تم اعتماد اليوم جاهز بعد مراجعة كشف SAP المحفوظ.</strong>}
-     {!!signoff&&!signoffCurrent&&<strong className="amber">تغيّرت حالة اليوم أو مصدر SAP بعد آخر اعتماد؛ يحتاج إعادة تدقيق.</strong>}
-    </div>
-    {missingPaper.length>0&&<p className="amber">يوجد {missingPaper.length} فاتورة زرقاء حقيقية غير مؤكدة أو ناقصة الرقم؛ يجب تصحيحها في سجل المشروع قبل اعتماد اليوم. حركات الإلغاء والعكسي تظهر في قسم التسويات أدناه ولا تُحسب كفواتير ناقصة.</p>}
+    <p className="hint">حالة الفواتير مؤكدة من سجلات المشروع مباشرة. مربع التشييك الأحمر/الأخضر في صف اليوم أعلاه هو إغلاق إداري منفصل؛ لا يغيّر SAP أو رصيد 011.</p>
+     {signoffCurrent&&<p className="banner success" role="status">تمت مراجعة اليوم وإغلاقه إداريًا. أي تغيير في فواتيره أو ترحيلاته يعيده للمراجعة.</p>}
+     {!!signoff&&!signoffCurrent&&<p className="amber">تغيّرت بيانات اليوم منذ آخر تشييك؛ يلزم مراجعتها مجددًا.</p>}
+     {current.invoices.length>0&&!hasConfirmedPaper(current)&&<p className="amber">بعض الفواتير الورقية غير مؤكدة في المشروع أو تاريخها غير مثبت.</p>}
+     {current.openCount>0&&<div className="banner error" role="alert">
+      يوجد {current.openCount} حالة تحتاج إجراء في اليوم؛ ليست بالضرورة فاتورة ناقصة.
+      <ul>{current.transfers.filter(t=>t.needsAction).map(t=><li key={t.number}>
+       الترحيل <b dir="ltr">{t.number}</b> — {stateLabels[t.state]||t.state} — {t.note||'يحتاج تدقيق SAP'}
+      </li>)}
+      {current.nonInvoices.filter(doc=>doc.state!=='settled'&&!doc.transfers.some(no=>current.transfers.some(t=>t.number===no&&t.needsAction)))
+       .map(doc=><li key={doc.recordId}>التسوية <b dir="ltr">{doc.transfers.join('، ')}</b> — {doc.note}</li>)}
+      </ul>
+     </div>}
+     {!current.invoicesComplete&&hasConfirmedPaper(current)&&<p className="hint">كل أوراق فواتير اليوم مؤكدة؛ لا تحتاج لضغط اعتماد إدخال منفصل. مربّع التشييك بجانب اليوم يحفظ إغلاقك بعد المراجعة.</p>}
+     {missingPaper.length>0&&<p className="amber">يوجد {missingPaper.length} فاتورة زرقاء حقيقية غير مؤكدة أو ناقصة الرقم؛ يجب تصحيحها في سجل المشروع قبل اعتماد اليوم. حركات الإلغاء والعكسي تظهر في قسم التسويات أدناه ولا تُحسب كفواتير ناقصة.</p>}
     <label>بحث داخل اليوم <input value={search} onChange={e=>setSearch(e.target.value)}
       placeholder="رقم فاتورة، ترحيل، فرع أو مجموعة"/></label>
     <h3>الفواتير الزرقاء ({current.invoices.length})</h3>
@@ -297,6 +340,9 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
        <td>{t.needsAction?<strong>يحتاج إجراء. </strong>:null}{t.note||'—'}</td>
       </tr>)}</tbody></table></div>
    </section>}
+     </td></tr>}
+    </Fragment>)}</tbody></table></div>
+   </section>
    <section className="panel">
     <div className="section-title"><ArrowLeftRight size={20}/><div><h2>إرسال الترحيلات الناقصة للملازم أول</h2>
      <p>فقط ترحيلات SAP الواردة وغير الموجودة في سجلات المشروع، مع أصلها المحفوظ؛ لا تُنشأ فواتير تلقائيًا، ولا تُرسل الإلغاءات أو الكاش فان كفواتير.</p></div></div>
