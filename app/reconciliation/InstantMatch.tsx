@@ -14,6 +14,7 @@ type SavedTransfer = {transfer:Transfer; invoiceNumbers:string[]; recordId:strin
 type SearchKind = 'invoice' | 'transfer';
 type SearchFilter = SearchKind | 'all';
 type DocumentHit = {kind:SearchKind; number:string; branch:string; origin:'saved'|'sap'};
+type ReverseChoice = {group:SapImportGroup;number:string;kind:SearchKind;mode:'lookup'|'append';notes:string[];blockers:string[]};
 
 const localDate = () => new Date().toLocaleDateString('en-CA', {timeZone:'Asia/Amman'});
 const uuid = () => crypto.randomUUID();
@@ -135,6 +136,8 @@ export default function InstantMatch({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [showItems, setShowItems] = useState(false);
+  const [reverseChoice,setReverseChoice] = useState<ReverseChoice|null>(null);
+  const [verifiedReverse,setVerifiedReverse] = useState<string[]>([]);
   const [aqabaPricing,setAqabaPricing] = useState<{reference:Item[];priceCount:number}|null>(null);
   const [aqabaPricingError,setAqabaPricingError] = useState('');
   const [aqabaPricingLoading,setAqabaPricingLoading] = useState(false);
@@ -243,6 +246,93 @@ export default function InstantMatch({
     setDraft(withInvoiceDates(fillSearchedAmount({...saved,mode:'manual',id:data.record.id,version:data.record.version,checks:saved.checks||{}},target,searchKind)));
     setSources({});
     setNotice('تم استرجاع الكشف المحفوظ. تقدر تعدّل الأسعار أو تضيف ترحيل بدون إنشاء سجل مكرر.');
+  }
+
+  // Reverse 011 -> 001/002/009 decreases stock in the net quantity.
+  // Direction alone is never proof that SAP canceled the transfer.
+  function reverseChoiceFor(group:SapImportGroup,number:string,kind:SearchKind,mode:ReverseChoice['mode'],evidence:SapEvidence[]=[]):ReverseChoice{
+    const notes=[...new Set([...group.members.flatMap(sapMemberReviewReasons),...group.issues])];
+    const blockers=[
+      ...group.members.flatMap(member=>member.issues.map(issue=>'الترحيل '+member.transfer.number+': '+issue)),
+      ...group.members.filter(member=>member.reversal&&!member.reverseMovement).map(member=>'الترحيل '+member.transfer.number+': إشارة إلغاء أو تصحيح مستقلة عن اتجاه 011.'),
+      ...group.members.filter(member=>!!member.canceledTransferNo||/has been cancel(?:ed|led)|ملغى/.test(member.remarks)).map(member=>'الترحيل '+member.transfer.number+': دليل إلغاء في ملاحظات SAP.'),
+      ...evidence.filter(item=>group.members.some(member=>member.transfer.number===item.transfer.number)
+        &&['canceled','cancellation'].includes(item.cancellationState)).map(item=>'الترحيل '+item.transfer.number+': مستند SAP معلّم كإلغاء.'),
+      ...group.issues.filter(issue=>!issue.startsWith('ترحيل عكسي —'))
+    ];
+    return {group,number,kind,mode,notes,blockers:[...new Set(blockers)]};
+  }
+
+  async function prepareSapDraft(group:SapImportGroup,searched:string,searchKind:SearchKind){
+    const rows=await refreshRecords();
+    const proposed=fillSearchedAmount(fromSap(group,searched,searchKind),searched,searchKind);
+    const occupied=proposed.transfers.flatMap(item=>rows
+      .filter(row=>matchesRecord(row,item.number,'transfer'))
+      .map(row=>({row,number:item.number})));
+    if(occupied.some(({row})=>(recordDraft(row).invoices||[]).some(inv=>invoiceDocumentNo(inv.number)))){
+      throw Error('في ترحيل مرتبط بفاتورة زرقاء محفوظة. افتح الفاتورة من السجل بدل تكرارها.');
+    }
+    const first=occupied[0];
+    if(!first)return {draft:proposed,sources:{} as Record<string,TransferSource>,
+      message:'تم جلب ترحيلات SAP دون حفظها. أدخل مبالغ الفواتير وراجع الكميات.'};
+    const original=await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(first.row.id));
+    const base=readReconciliationRecord(original.record.payload);
+    if(!base)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
+    const other=proposed.transfers.filter(row=>row.number!==first.number);
+    const baseTransfer=base.transfers.find(row=>transferNumbers(row.number).includes(first.number));
+    if(!baseTransfer||transferNumbers(baseTransfer.number).length!==1)
+      throw Error('الترحيل محفوظ مع أرقام أخرى في نفس البطاقة. افتحه من سجل المطابقات أولًا.');
+    const nextSources:Record<string,TransferSource>={};
+    for(const item of other){
+      const owner=occupied.find(entry=>entry.number===item.number);
+      if(owner&&owner.row.id!==first.row.id)
+        nextSources[item.id]={number:item.number,recordId:owner.row.id,version:owner.row.version};
+    }
+    return {draft:withInvoiceDates({...proposed,id:original.record.id,version:original.record.version,
+      transfers:[{...baseTransfer},...other],branch:proposed.branch||base.branch,
+      referenceSnapshot:base.referenceSnapshot,useCurrentReference:true}),
+      sources:nextSources,message:'تم فتح سجل ترحيل محفوظ دون فاتورة، دون إنشاء ترحيل مكرر.'};
+  }
+
+  async function acceptReverseChoice(openDetailed=false){
+    const choice=reverseChoice;
+    if(!choice||busy)return;
+    if(!openDetailed&&choice.blockers.length){
+      setError('هناك ملاحظات SAP أخرى غير اتجاه 011؛ راجعها في المطابقة العادية: '+choice.blockers.join('؛ '));
+      return;
+    }
+    setBusy(true);setError('');
+    try{
+      if(choice.mode==='append'){
+        if(!draft)throw Error('لا يوجد كشف مفتوح لإضافة الحركة العكسية.');
+        const member=choice.group.members.find(item=>item.transfer.number===choice.number);
+        if(!member)throw Error('تعذّر استرجاع تفاصيل الترحيل العكسي.');
+        const latest=await refreshRecords();
+        if(latest.some(row=>matchesRecord(row,choice.number,'transfer')&&row.id!==draft.id))
+          throw Error('الترحيل مسجل في كشف آخر؛ افتح السجل الأصلي قبل إضافة نسخة.');
+        if(draft.transfers.some(item=>transferNumbers(item.number).includes(choice.number)))
+          throw Error('الترحيل موجود مسبقًا في الكشف الحالي.');
+        if(draft.transfers.length>=30)throw Error('وصلت إلى الحد الأقصى للترحيلات.');
+        if(draft.branch&&member.branch&&draft.branch!==member.branch)
+          throw Error('الترحيل العكسي تابع لفرع '+member.branch+' وليس فرع الفاتورة الحالية.');
+        const next=withInvoiceDates({...draft,transfers:[...draft.transfers,{...member.transfer,id:uuid()}]});
+        if(openDetailed)onDetailed(next,sources);
+        else{
+          setDraft(next);
+          setNotice('تمت إضافة الحركة العكسية '+choice.number+' بصافي سالب. شيّكها مع مؤسسة الفرع وأكّد مراجعتها قبل الحفظ.');
+        }
+      }else{
+        const prepared=await prepareSapDraft(choice.group,choice.number,choice.kind);
+        if(openDetailed)onDetailed(prepared.draft,prepared.sources);
+        else{
+          setDraft(prepared.draft);setSources(prepared.sources);
+          setVerifiedReverse([]);
+          setNotice('تمت إضافة الحركة العكسية للمطابقة الفورية بصافي سالب. راجع الفرع والكميات ومبالغ الفواتير، ثم ضع علامة التشييك.');
+        }
+      }
+      setReverseChoice(null);
+    }catch(e){setError(e instanceof Error?e.message:'تعذّر فتح الترحيل العكسي.');}
+    finally{setBusy(false);}
   }
 
   async function lookup(query=number, selectedKind:SearchFilter=kind) {
