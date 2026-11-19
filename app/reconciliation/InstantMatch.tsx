@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
 import GroupLookup from './GroupLookup';
 import {isAqabaBranch} from '../lib/aqaba-instant-reference';
@@ -113,6 +113,9 @@ export default function InstantMatch({
   branches:string[];
   onDetailed:(draft:Draft, sources:Record<string,TransferSource>)=>void;
 }) {
+  const searchStart = useRef<HTMLDivElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const [records, setRecords] = useState<Summary[]>([]);
   const [imports, setImports] = useState<SapImportGroup[]>([]);
   const [queueMatches,setQueueMatches]=useState<SapEvidence[]>([]);
@@ -134,6 +137,13 @@ export default function InstantMatch({
   const [aqabaPricingError,setAqabaPricingError] = useState('');
   const [aqabaPricingLoading,setAqabaPricingLoading] = useState(false);
   const isAqaba=!!draft&&isAqabaBranch(draft.branch);
+
+  // Wait for the saved draft to leave the DOM before restoring the search position.
+  useEffect(()=>{
+    if (!searchFocusRequest) return;
+    searchStart.current?.scrollIntoView({behavior:'instant',block:'start'});
+    searchInput.current?.focus({preventScroll:true});
+  },[searchFocusRequest]);
 
   const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind,queueMatches),[records,imports,number,kind,queueMatches]);
 
@@ -455,15 +465,16 @@ export default function InstantMatch({
       }
       setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setSuggestionsOpen(false);
       setNotice('تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
+      setSearchFocusRequest(current=>current+1);
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر حفظ المطابقة.')}
     finally {setBusy(false);}
   }
 
-  return <div className="instant-match" dir="rtl">
+  return <div ref={searchStart} className="instant-match" dir="rtl">
     <div className="page-title">
       <div><p className="eyebrow">سير عمل سريع</p><h1>مطابقة فورية</h1>
         <p>اكتب رقم الفاتورة الزرقاء، اسحب ترحيلات SAP، أدخل مبالغ الفواتير، وراجع الفرق مباشرة.</p></div>
-      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setError('');setNotice('');setSuggestionsOpen(false)}}>
+      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setError('');setNotice('');setSuggestionsOpen(false);setSearchFocusRequest(current=>current+1)}}>
         <RefreshCw size={16}/>مطابقة جديدة</button>
     </div>
     <section className="panel">
@@ -474,7 +485,7 @@ export default function InstantMatch({
         </select></label>
         <div className="instant-document-search">
           <label htmlFor="instant-document-number">ابحث برقم الفاتورة الزرقاء أو الترحيل
-            <input id="instant-document-number" dir="ltr" inputMode="numeric" autoComplete="off"
+            <input ref={searchInput} id="instant-document-number" dir="ltr" inputMode="numeric" autoComplete="off"
               value={number} onChange={e=>{setNumber(e.target.value);setQueueMatches([]);setSuggestionsOpen(true);setError('')}}
               onFocus={()=>setSuggestionsOpen(true)}
               onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();void lookup()}}}
