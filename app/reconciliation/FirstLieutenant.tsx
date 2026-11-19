@@ -6,6 +6,7 @@ import CashVanAudit from './CashVanAudit';
 import CancelledTransferReview from './CancelledTransferReview';
 import {AlertTriangle,CheckCircle2,Copy,RefreshCw,Search,ShieldCheck} from 'lucide-react';
 import {type LieutenantTransfer} from '../lib/lieutenant';
+import {isColonelBranchConflict,type ColonelBranchException} from '../lib/colonel-core';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -318,10 +319,11 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [dailyError,setDailyError]=useState('');
   const [rowLimit,setRowLimit]=useState(50);
   const [priorLinks,setPriorLinks]=useState<PriorPeriodLink[]>([]);
+  const [branchExceptions,setBranchExceptions]=useState<ColonelBranchException[]>([]);
   const [priorLoadingError,setPriorLoadingError]=useState('');
   const loadPriorLinks=async()=>{
-   const data=await checkedJson<{priorPeriodLinks:PriorPeriodLink[]}>('/api/colonel?month='+from.slice(0,7));
-   setPriorLinks(data.priorPeriodLinks||[]);setPriorLoadingError('');
+   const data=await checkedJson<{priorPeriodLinks:PriorPeriodLink[];branchExceptions:ColonelBranchException[]}>('/api/colonel?month='+from.slice(0,7));
+   setPriorLinks(data.priorPeriodLinks||[]);setBranchExceptions(data.branchExceptions||[]);setPriorLoadingError('');
   };
   useEffect(()=>{void loadPriorLinks().catch(error=>setPriorLoadingError(
    error instanceof Error?error.message:'تعذّر قراءة مراجع الفترات السابقة.'))},[from.slice(0,7)]);
@@ -329,6 +331,17 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const closingSelectedRef=useRef(false);
   const openingSelectedRef=useRef(false);
   const periodEditedRef=useRef(false);
+  const reviewedTransfers=useMemo(()=>transfers.map(source=>{
+   const exception=branchExceptions.find(item=>item.transfer_no===source.transfer.number);
+   if(!exception||!source.issues.includes(exception.issue_text)||!isColonelBranchConflict(exception.issue_text))
+    return source;
+   return {...source,issues:source.issues.filter(issue=>issue!==exception.issue_text)};
+  }),[transfers,branchExceptions]);
+  // Only label discrepancies are excluded from stock-movement validity.
+  // The source data, actual warehouse direction, sign and quantity never change.
+  const movementTransfers=useMemo(()=>transfers.map(source=>
+   source.issues.some(isColonelBranchConflict)?{...source,
+    issues:source.issues.filter(issue=>!isColonelBranchConflict(issue))}:source),[transfers]);
   const unreadableRecords=useMemo(()=>snapshot.records.filter(record=>{
     try{const value=JSON.parse(record.payload);return !value||!Array.isArray(value.invoices)||!Array.isArray(value.transfers)}
     catch{return true}
@@ -460,9 +473,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   },[syncVersion,syncScope]);
 
   const dailyReport=useMemo(()=>
-    dailyInvoices&&selectedTransfer&&transfers.length?
-      auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference):null,
-    [dailyInvoices,selectedTransfer,transfers,invoiceAsOf,reference]);
+    dailyInvoices&&selectedTransfer&&reviewedTransfers.length?
+      auditInvoicesForDay(dailyInvoices,reviewedTransfers,invoiceAsOf,reference):null,
+    [dailyInvoices,selectedTransfer,reviewedTransfers,invoiceAsOf,reference]);
   const dailyCounts=useMemo(()=>{
     const totals:Record<DayInvoiceState,number>={match:0,late:0,pending:0,short:0,extra:0,review:0,
       'cashvan-settled':0,'cashvan-pending':0};
@@ -491,9 +504,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     return [...totals.values()].sort((a,b)=>a.uncertain===b.uncertain?
       Math.abs(b.expected-b.posted)-Math.abs(a.expected-a.posted):a.uncertain?1:-1);
   },[dailyReport]);
-  const approvals=useMemo(()=>lieutenantApprovals(transfers,snapshot.records),[transfers,snapshot.records]);
-  const rows=useMemo(()=>makeRows(transfers,snapshot,to,approvals).filter(row=>
-    row.source.transfer.date>=from&&row.source.transfer.date<=to),[transfers,snapshot,from,to,approvals]);
+  const approvals=useMemo(()=>lieutenantApprovals(reviewedTransfers,snapshot.records),[reviewedTransfers,snapshot.records]);
+  const rows=useMemo(()=>makeRows(reviewedTransfers,snapshot,to,approvals).filter(row=>
+    row.source.transfer.date>=from&&row.source.transfer.date<=to),[reviewedTransfers,snapshot,from,to,approvals]);
   const pending=rows.filter(row=>!completeStatuses.has(row.status));
   const visible=rows.filter(row=>(filter==='all'||(filter==='pending'?!completeStatuses.has(row.status):row.status===filter))&&
     (!query||[row.source.transfer.number,row.source.branch,row.source.remarks,row.note].some(value=>value.includes(query))));
@@ -516,11 +529,11 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       for(const item of draft.transfers)
         for(const number of transferNumbers(item.number||''))assigned.add(number);
     }
-    const movements=analyzeLieutenantMovements(transfers,to);
-    return new Set(transfers.filter(row=>assigned.has(row.transfer.number)&&!row.reverse&&
+    const movements=analyzeLieutenantMovements(reviewedTransfers,to);
+    return new Set(reviewedTransfers.filter(row=>assigned.has(row.transfer.number)&&!row.reverse&&
       movements.get(row.transfer.number)?.kind==='normal')
       .map(row=>row.transfer.number));
-  },[transfers,to,snapshot.records,recordsReady]);
+  },[reviewedTransfers,to,snapshot.records,recordsReady]);
   const stockRows=useMemo(()=>{
     if(!closing?.items.length)return [];
     const byKey=new Map<string,StockItem>();
@@ -536,15 +549,15 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     // dated and clean opening export can prove zero for an omitted item.
     const openingConfirmed=completeOpeningSnapshot(opening,from);
     return auditLieutenantStock(closing.items,[...byKey.values()],
-      canCompare?transfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to,
+      canCompare?movementTransfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to,
       reference,invoiceRequiredNumbers,openingConfirmed);
-  },[closing,opening,snapshot.openingStock,from,to,transfers,approvedTransferNumbers,canCompare,reference,invoiceRequiredNumbers]);
+  },[closing,opening,snapshot.openingStock,from,to,movementTransfers,approvedTransferNumbers,canCompare,reference,invoiceRequiredNumbers]);
   const coverageReady=canCompare&&recordsReady;
   const uncoveredItems=stockRows.filter(item=>item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001);
   const incompleteItems=stockRows.filter(item=>!item.movementComplete||item.opening===null||item.quantity===null);
   const [stockQueryText,setStockQueryText]=useState('');
   const [stockFilter,setStockFilter]=useState('all');
-  const stockEvidence=useMemo(()=>stockDifferenceEvidence(transfers,from,to),[transfers,from,to]);
+  const stockEvidence=useMemo(()=>stockDifferenceEvidence(movementTransfers,from,to),[movementTransfers,from,to]);
   const visibleStockRows=stockRows.filter(item=>(!canCompare||stockFilter==='all'||
     (stockFilter==='difference'?item.difference!==null&&Math.abs(item.difference)>0.000001:
     !coverageReady?true:
@@ -968,6 +981,6 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       {counts.review>0&&<p className="hint">هناك {counts.review} حركة تحتاج تدقيق العكسي أو الإلغاء أو بيانات المصدر. العكسي المطابق ليس إلغاء SAP؛ لا يُرسل كاش فان للجندي لمجرد عدم وجود فاتورة زرقاء.</p>}
     </section>
     </>}
-    <MovementSummary transfers={transfers} from={from} to={to}/>
+    <MovementSummary transfers={movementTransfers} from={from} to={to}/>
   </div>;
 }
