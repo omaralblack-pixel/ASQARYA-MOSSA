@@ -25,7 +25,55 @@ type OpeningStock={snapshot_date:string;warehouse:string;sap_code:string;item_na
 type RecordSnapshot={records:SavedRecord[];queue:QueueRecord[];openingStock:OpeningStock[]};
 type ReviewStatus='approved'|'paper'|'linked'|'unlinked'|'queued'|'missing'|'review'|'reversed'|'reverse'|'sap-canceled'|'sap-cancel-doc'|'cashvan-pending'|'cancellation-review';
 type ReviewRow={source:LieutenantTransfer;status:ReviewStatus;recordId?:string;note:string;counterparts?:string[]};
+type PriorPeriodLink={transfer_no:string;counterpart_no:string;counterpart_date:string;note:string;updated_at:string};
 
+/** Historical linkage is an audited reference only, not proof of stock offset or SAP cancellation. */
+function PriorPeriodEditor({source,saved,onSaved}:{
+ source:LieutenantTransfer;saved?:PriorPeriodLink;onSaved:()=>Promise<void>;
+}){
+ const [editing,setEditing]=useState(false);
+ const [number,setNumber]=useState(saved?.counterpart_no||'');
+ const [date,setDate]=useState(saved?.counterpart_date||'');
+ const [note,setNote]=useState(saved?.note||'التصحيح يخص فترة سابقة وتمت معالجته بمستند مقابل');
+ const [busy,setBusy]=useState(false);
+ const [error,setError]=useState('');
+ async function submit(clear=false){
+  if(clear&&!window.confirm('إزالة توثيق الفترة السابقة؟ لا يتغير شيء على SAP.'))return;
+  setBusy(true);setError('');
+  try{
+   await checkedJson<{ok:boolean}>('/api/colonel',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(clear?{action:'clear-prior-period',transferNo:source.transfer.number}:{
+     action:'link-prior-period',transferNo:source.transfer.number,
+     counterpartNo:number.trim(),counterpartDate:date,note:note.trim()
+    })});
+   await onSaved();setEditing(false);
+  }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر حفظ المرجع.')}
+  finally{setBusy(false)}
+ }
+ return <div style={{marginTop:8}}>
+  {saved&&<p className="hint">مرجع شهر سابق موثق: <b dir="ltr">{saved.counterpart_no}</b> — {saved.counterpart_date}.
+   <span style={{display:'block'}}>{saved.note}</span>
+   <span style={{display:'block'}}>مرجع إداري، لا يغيّر تاريخ أو رصيد SAP ولا يثبت إلغاءه.</span>
+  </p>}
+  <button type="button" className="button secondary small" disabled={busy}
+   onClick={()=>{setEditing(value=>!value);setNumber(saved?.counterpart_no||'');setDate(saved?.counterpart_date||'');
+    setNote(saved?.note||'التصحيح يخص فترة سابقة وتمت معالجته بمستند مقابل')}}>
+   {editing?'إخفاء':'توثيق تصحيح مرتبط بشهر سابق'}</button>
+  {saved&&<button type="button" className="button secondary small" disabled={busy}
+   onClick={()=>void submit(true)}>إلغاء المرجع</button>}
+  {editing&&<div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'end',marginTop:8}}>
+   <label>الترحيل المقابل <input aria-label="رقم المستند المقابل" value={number}
+    onChange={e=>setNumber(e.target.value)} placeholder="2615694"/></label>
+   <label>تاريخه <input type="date" aria-label="تاريخ الترحيل المقابل" value={date} onChange={e=>setDate(e.target.value)}/></label>
+   <label>ملاحظة <input aria-label="سبب الربط بالفترة السابقة" value={note}
+    onChange={e=>setNote(e.target.value)}/></label>
+   <button type="button" className="button primary small" disabled={busy||!/^[0-9]{4,20}$/.test(number)||!date||note.trim().length<6}
+    onClick={()=>void submit()}>حفظ مرجع الفترة</button>
+  </div>}
+  {error&&<p role="alert" className="amber">{error}</p>}
+ </div>;
+}
 const fileKinds:Record<FileKind,string>={
   transfers:'جميع ترحيلات SAP من وإلى 011',
   opening:'رصيد 011 الافتتاحي',
@@ -269,6 +317,14 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [dailyLoading,setDailyLoading]=useState(false);
   const [dailyError,setDailyError]=useState('');
   const [rowLimit,setRowLimit]=useState(50);
+  const [priorLinks,setPriorLinks]=useState<PriorPeriodLink[]>([]);
+  const [priorLoadingError,setPriorLoadingError]=useState('');
+  const loadPriorLinks=async()=>{
+   const data=await checkedJson<{priorPeriodLinks:PriorPeriodLink[]}>('/api/colonel?month='+from.slice(0,7));
+   setPriorLinks(data.priorPeriodLinks||[]);setPriorLoadingError('');
+  };
+  useEffect(()=>{void loadPriorLinks().catch(error=>setPriorLoadingError(
+   error instanceof Error?error.message:'تعذّر قراءة مراجع الفترات السابقة.'))},[from.slice(0,7)]);
   const transferSelectedRef=useRef(false);
   const closingSelectedRef=useRef(false);
   const openingSelectedRef=useRef(false);
@@ -856,12 +912,15 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           {Object.entries(statusText).map(([key,text])=><option key={key} value={key}>{text}</option>)}
         </select>
       </div>
+      {!!priorLoadingError&&<p className="banner warn" role="alert">تعذّر استعادة ربط التصحيحات السابقة: {priorLoadingError}</p>}
       {!recordsReady&&<p className="banner warn" role="alert">{unreadableRecords?
         'هناك '+unreadableRecords+' سجل مطابقة غير قابل للقراءة. لا يمكن تأكيد تغطية الفواتير قبل مراجعته.':
         'حالات الفواتير لم تُحمّل بعد؛ لا تُعتبر الترحيلات مفقودة أو غير معتمدة قبل اكتمال القراءة. استخدم «تحديث الأرشيف» لإعادة المحاولة.'}</p>}
       {selectedTransfer&&<p className="hint">مصدر الترحيلات الحالي: <strong>{transferSourceName}</strong>
         — {transfers.length} ترحيلًا من الملف. إذا كانت الترحيلات موزعة على عدة ملفات، استخدم كشفًا شاملًا للفترة.
         فتح الأرشيف للقراءة فقط ولا ينشئ فواتير.</p>}
+      {!recordsReady&&<button type="button" className="button secondary" disabled={busy}
+       onClick={()=>void refreshSnapshot().catch(cause=>setError(cause instanceof Error?cause.message:'تعذّر قراءة الفواتير.'))}>إعادة محاولة قراءة سجلات الفواتير</button>}
       <div className="stats">
         <div className="stat"><span>ترحيلات الفترة</span><strong>{selectedTransfer&&periodValid?rows.length:'—'}</strong></div>
         <div className="stat"><span>مطابقة ومعتمدة</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.approved:'—'}</strong></div>
@@ -885,7 +944,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         <td>{row.source.cancellationState==='cancellation'?'إلغاء SAP':row.source.signedAdjustment?'تصحيح موقّع':row.source.reverse?'عكسي من 011':'وارد إلى 011'}</td>
         <td><span className={'badge '+(completeStatuses.has(row.status)?'match':row.status==='review'||row.status==='missing'?'difference':'review')}>
           {completeStatuses.has(row.status)?<CheckCircle2 size={13}/>:<AlertTriangle size={13}/>}
-          {recordsReady?statusText[row.status]:'حالة الفاتورة غير متاحة'}
+          {recordsReady?statusText[row.status]:'تدقيق الفاتورة غير مكتمل — ليست حالة إلغاء SAP'}
            {recordsReady&&row.status==='reversed'&&!!row.counterparts?.length&&
              <small style={{display:'block'}}>العكسي: <b dir="ltr">{row.counterparts.join('، ')}</b></small>}
            </span>
@@ -893,7 +952,12 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           {row.source.cancellationState==='cancellation'&&<small style={{display:'block'}}>حالة SAP: مستند إلغاء (C)</small>}
           {row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>حالة الإلغاء غير مذكورة</small>}
           {row.source.cancellationMentioned&&row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>Remarks تذكر إلغاء دون إثبات</small>}</td>
-        <td>{recordsReady?row.note:'تعذّر قراءة سجل المطابقات بالكامل؛ لا يمكن تحديد تغطية هذا الترحيل بعد.'}</td>
+        <td>{recordsReady?row.note:
+          'حالة الفاتورة غير مقروءة بعد؛ تصنيف حركة SAP مستقل عن حالة وصول الورق. لا يجوز اعتبار المستند منتهيًا.'}
+          {row.source.signedAdjustment&&<PriorPeriodEditor key={row.source.transfer.number}
+           source={row.source} saved={priorLinks.find(link=>link.transfer_no===row.source.transfer.number)}
+           onSaved={loadPriorLinks}/>}
+        </td>
         <td>{row.recordId?<button type="button" className="button secondary small" onClick={()=>onOpenRecord(row.recordId!)}>{['approved','linked','paper'].includes(row.status)?'فتح الفاتورة':'فتح سجل الترحيل'}</button>:
           <span className="hint">للملازم أول — ترحيل فقط</span>}</td>
       </tr>)}</tbody></table></div>}
