@@ -1001,6 +1001,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           {row.source.cancellationMentioned&&row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>Remarks تذكر إلغاء دون إثبات</small>}</td>
         <td>{recordsReady?row.note:
           'حالة الفاتورة غير مقروءة بعد؛ تصنيف حركة SAP مستقل عن حالة وصول الورق. لا يجوز اعتبار المستند منتهيًا.'}
+          {branchExceptions.some(exception=>exception.transfer_no===row.source.transfer.number&&
+            transfers.find(source=>source.transfer.number===row.source.transfer.number)?.issues.includes(exception.issue_text))&&
+            <small style={{display:'block'}}>اختلاف اسم الفرع معتمد إداريًا لدى العقيد؛ لم يتغير SAP أو حركة المخزون.</small>}
           {row.source.signedAdjustment&&<PriorPeriodEditor key={row.source.transfer.number}
            source={row.source} saved={priorLinks.find(link=>link.transfer_no===row.source.transfer.number)}
            onSaved={loadPriorLinks}/>}
