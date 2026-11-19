@@ -1,4 +1,5 @@
 import {decodeLieutenantFile} from './lieutenant-file';
+import type {SapJob} from './sap-processing';
 export type SapArchiveFile={key:string;name:string;kind:string;created:string;snapshotDate?:string;size?:number};
 /**
  * The Cloudflare edge may return an HTML error page (often HTTP 503) instead of
@@ -28,13 +29,50 @@ export async function readSapJson<T>(res:Response,operation:string):Promise<T>{
  if(!res.ok)throw Error('تعذّر '+operation+': HTTP '+res.status+'؛ '+(typeof apiError==='string'&&apiError?apiError:'الخدمة غير متاحة حاليًا. الدفعات المكتملة محفوظة.'));
  return data as T;
 }
-export async function sapRequest<T>(url:string,body?:unknown):Promise<T>{
- const res=await fetch(url,{cache:'no-store',...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});
+class SapRequestFailure extends Error{
+ constructor(message:string,readonly status:number|null,readonly retryable:boolean){super(message);}
+}
+const temporaryStatuses=new Set([408,429,500,502,503,504,520,521,522,523,524]);
+const retryDelay=(attempt:number)=>new Promise<void>(resolve=>setTimeout(resolve,1000*2**attempt));
+async function sapRequestOnce<T>(url:string,body?:unknown):Promise<T>{
  const task=url.startsWith('/api/sap-processing')?
   (body&&typeof body==='object'&&'action' in body?
     (String((body as {action:unknown}).action)==='batch'?'استكمال دفعة SAP رقم '+(Number((body as {index?:number}).index)+1):'بدء أو إعادة فحص معالجة SAP'):'قراءة حالة معالجة SAP') :
   'قراءة أرشيف SAP';
- return readSapJson<T>(res,task);
+ let res:Response;
+ try{res=await fetch(url,{cache:'no-store',...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});}
+ catch{throw new SapRequestFailure('تعذّر الاتصال أثناء '+task+'؛ الدفعات المكتملة محفوظة.',null,true);}
+ try{return await readSapJson<T>(res,task);}
+ catch(error){throw new SapRequestFailure(error instanceof Error?error.message:'تعذّر '+task,res.status,temporaryStatuses.has(res.status));}
+}
+export async function sapRequest<T>(url:string,body?:unknown):Promise<T>{
+ const batch=body&&typeof body==='object'?body as {action?:unknown;key?:unknown;index?:unknown}:null;
+ if(url!=='/api/sap-processing'||batch?.action!=='batch'||typeof batch.key!=='string'||!Number.isSafeInteger(batch.index))
+  return sapRequestOnce<T>(url,body);
+ for(let attempt=0;;attempt++){
+  try{return await sapRequestOnce<T>(url,body);}
+  catch(error){
+   if(!(error instanceof SapRequestFailure)||!error.retryable)throw error;
+   // A gateway error may arrive after D1 committed the batch. Read its exact
+   // durable state before retrying; never reset a plan or bypass its lease.
+   let state:SapJob|null=null;
+   for(let probe=0;probe<3;probe++){
+    try{
+     state=(await sapRequestOnce<{job:SapJob|null}>(url+'?key='+encodeURIComponent(batch.key))).job;
+     break;
+    }catch(readError){
+     if(!(readError instanceof SapRequestFailure)||!readError.retryable)throw readError;
+     if(probe<2)await retryDelay(probe);
+    }
+   }
+   const saved=state?.key===batch.key?state.batches.find(item=>item.idx===batch.index):undefined;
+   if(!state||!saved)throw error;
+   if(saved.state==='complete'||saved.state==='failed')return {job:state} as T;
+   if(saved.state==='running')return {job:state,busy:true} as T;
+   if(attempt>=2)throw error;
+   await retryDelay(attempt);
+  }
+ }
 }
 export async function listSapFiles():Promise<SapArchiveFile[]>{
  const files:SapArchiveFile[]=[];let page:number|null=0;
