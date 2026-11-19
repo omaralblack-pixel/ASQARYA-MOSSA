@@ -24,7 +24,7 @@ import WorkspaceNav from '../../components/WorkspaceNav';
 import './reconciliation.css';
 import {fractionalQuantityNotes} from '../lib/fractional-quantity-notes';
 import {ArrowLeftRight,Check,CheckCircle2,AlertTriangle,Plus,Trash2,ClipboardPaste,FileText,CalendarDays,History,Settings2,Search,Save,Printer,Upload,ChevronDown,ArrowUpRight,RefreshCw,Copy,PackageCheck} from 'lucide-react';
-import {prepareReconciliation,readReconciliationRecord,withInvoiceDates,editInvoiceDate,addTransferToDraft,withSapInvoiceNumbers,invoiceDocumentNo,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,monthlyColumns,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource, type BranchException, unmatchedBranchSources} from '../lib/reconcile';
+import {prepareReconciliation,readReconciliationRecord,withInvoiceDates,editInvoiceDate,addTransferToDraft,withSapInvoiceNumbers,invoiceDocumentNo,markSearchedPaperInvoice,matchesInvoiceNumbers,sapReferences,checkSignature,parseTransfer,monthly,monthlyColumns,serialHeaders,isTransferNumber,transferNumbers,pageNumber,digits,numeric,fils,money,num,labels,type Draft,type Item,type Invoice,type SapAlias,type Transfer,type TransferSource, type BranchException, unmatchedBranchSources} from '../lib/reconcile';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
 const uid=()=>typeof crypto.randomUUID==='function'?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const newInvoice=():Invoice=>({id:uid(),number:'',date:'',amount:'',complete:false,quantities:{},attachments:[]});
@@ -623,7 +623,7 @@ function replaceWorkingDraft(next:OrderedDraft){
  setRemoteConflict('');D(next);
  return true;
 }
-async function openRecord(id:string,invoiceId?:string){
+async function openRecord(id:string,invoiceId?:string,searchedPaperInvoice?:string){
   if(draftBaseline.current&&draft&&JSON.stringify(draft)!==draftBaseline.current&&
     !window.confirm('لديك تعديلات غير محفوظة في الكشف المفتوح. هل تريد تجاهل المسودة وفتح كشف آخر؟'))return;
   const [data,settings]=await Promise.all([api(undefined,'?id='+encodeURIComponent(id)),api()]);
@@ -637,11 +637,12 @@ async function openRecord(id:string,invoiceId?:string){
       throw Error('لا توجد ترحيلات محفوظة في كشف هذه الفاتورة.');
     page=String(index+1);
   }
-  const next=withInvoiceDates({...saved,mode:'manual',checks:saved.checks||{},id:data.record.id,version:data.record.version,useCurrentReference:false});
+  const original=withInvoiceDates({...saved,mode:'manual',checks:saved.checks||{},id:data.record.id,version:data.record.version,useCurrentReference:false});
+  const next=searchedPaperInvoice?markSearchedPaperInvoice(original,searchedPaperInvoice):original;
   REF(settings.reference);
     setTransferSources({});
   focusOpenedTransfers.current=invoiceId!==undefined;
-  draftBaseline.current=JSON.stringify(next);
+  draftBaseline.current=JSON.stringify(original);
   setRemoteConflict('');D(next);PAGE(page);Q('');T('work');
 }
 async function loadRecord(r:{id:string}){await run(()=>openRecord(r.id))}
@@ -846,7 +847,7 @@ return <div className="recon-app"><header className="topbar"><a className="brand
  {draft?.branchExceptions?.some(row=>row.targetBranch===draft.branch&&draft.transfers.some(t=>transferNumbers(t.number).includes(row.transferNo)))&&
 <div className="banner info"><b>استثناءات فرع معتمدة:</b> {draft.branchExceptions.filter(row=>row.targetBranch===draft.branch&&draft.transfers.some(t=>transferNumbers(t.number).includes(row.transferNo))).map(row=>row.transferNo+' ('+row.sourceBranch+' ← '+row.targetBranch+'؛ '+row.reason+')').join('، ')}. لم تتغير بيانات SAP الأصلية.</div>}
 <div className="page-title"><div><p className="eyebrow">{draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))?'مطابقة الفاتورة الزرقاء':draft.id?'ترحيل محفوظ':'ترحيل جديد'}</p><h1>ابحث عن الفاتورة الزرقاء أو الترحيل، ثم راجع المطابقة.</h1><p>البحث من بيانات المشروع وSAP المحفوظة، مع إمكانية إضافة الترحيلات يدويًا عند الحاجة.</p></div><button className="button secondary" onClick={()=>{if(draft.transfers.some(t=>t.paste.trim())&&!confirm('فتح ترحيل جديد؟ احفظ التعديلات الحالية أولًا إذا أردت الاحتفاظ بها.'))return;setTransferSources({});D(blank());PAGE('all');Q('');N('');E('')}}><Plus size={16}/>ترحيل جديد</button></div>{draft.id&&!draft.useCurrentReference&&<div className="banner info">تُستخدم الأسعار والشدّات المسجلة وقت الحفظ، وتُستكمل التعريفات الناقصة من المرجع المعتمد.<button className="text-button" onClick={()=>change({useCurrentReference:true})}>إعادة المطابقة بالمرجع الحالي</button></div>}<div className="stats"><div className={'stat status-stat '+result.status}><span>نتيجة المطابقة</span><strong><Badge state={result.status} label={acceptedDifference?'مطابق باعتمادك':undefined}/></strong><small>{result.differences} فروقات أصناف · {result.review} بحاجة مراجعة</small></div><div className="stat"><span>مجموع مبالغ الفواتير</span><strong>{money(result.total)} <small>د.أ</small></strong><small>{draft.invoices.length} فواتير مرتبطة</small></div><div className="stat"><span>{aqabaWork?'قيمة الترحيلات حسب أسعار العقبة':'قيمة الترحيلات حسب أسعار المؤسسة'}</span><strong>{money(result.expected)} <small>د.أ</small></strong><small>{draft.transfers.length} ترحيلات مرتبطة</small></div><div className={'stat '+(result.priceDifference?'warn':'')}><span>فرق القيمة</span><strong dir="ltr">{money(result.priceDifference)} <small>د.أ</small></strong><small>الفواتير − قيمة الترحيلات</small></div></div><SapDocumentSearch branches={branches}
-  onOpenSaved={id=>{void loadRecord({id});}}
+  onOpenSaved={(id,invoiceNumber)=>{void run(()=>openRecord(id,undefined,invoiceNumber));}}
   onOpenDraft={(imported,group,notes)=>{
     if(!replaceWorkingDraft(imported))return;
     setTransferSources({});
