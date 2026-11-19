@@ -4,7 +4,7 @@ import {AlertTriangle,CalendarCheck,CheckCircle2,ClipboardCheck,FileSpreadsheet,
 import {listSapFiles,readSapArchive} from '../lib/sap-files-client';
 import {readSavedSapImport} from '../lib/saved-sap-import';
 import {restoreLieutenantSource} from '../lib/lieutenant-source';
-import {buildColonelReport,colonelPaperIssues,type ColonelRecord,type ColonelAssignment,type ColonelDayState} from '../lib/colonel-core';
+import {buildColonelReport,colonelPaperIssues,type ColonelRecord,type ColonelAssignment,type ColonelDayState,type ColonelBranchException} from '../lib/colonel-core';
 import type {LieutenantTransfer} from '../lib/lieutenant';
 import type {CancellationDecision} from '../lib/lieutenant-cancellation-decisions';
 
@@ -12,13 +12,15 @@ type Event={event_type:string;entity_no:string;note:string;created_at:string};
  type ProjectEdit={id:string;branch:string;updated:string};
 type SapArchiveActivity={key:string;name:string;kind:string;created:string};
 type Signoff={day:string;fingerprint:string;source_key:string;signed_at:string};
+type PriorLink={transfer_no:string;counterpart_no:string;counterpart_date:string;note:string;updated_at:string};
 type Control={days:ColonelDayState[];assignments:ColonelAssignment[];
- decisions:CancellationDecision[];events:Event[];recentProjectEdits:ProjectEdit[];signoffs:Signoff[]};
+ decisions:CancellationDecision[];events:Event[];recentProjectEdits:ProjectEdit[];signoffs:Signoff[];
+ branchExceptions:ColonelBranchException[];priorPeriodLinks:PriorLink[]};
 const currentMonth=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit'})
  .format(new Date()).slice(0,7);
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'})
  .format(new Date());
-const empty:Control={days:[],assignments:[],decisions:[],events:[],recentProjectEdits:[],signoffs:[]};
+const empty:Control={days:[],assignments:[],decisions:[],events:[],recentProjectEdits:[],signoffs:[],branchExceptions:[],priorPeriodLinks:[]};
 const stateLabels:Record<string,string>={
  normal:'ترحيل وارد',reversed:'عكسي مطابق',reverse:'حركة عكسية',
  'sap-canceled':'ملغى رسميًا في SAP','sap-cancel-doc':'مستند إلغاء SAP',
@@ -108,7 +110,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
  },[syncVersion,syncScope,reload]);
  const report=useMemo(()=>loaded?buildColonelReport(
   month,records,sap,control.decisions,control.assignments,control.days,
-  !!sourceName&&!sourceIssues.length,
+  !!sourceName&&!sourceIssues.length,undefined,control.branchExceptions,
  ):null,[month,records,sap,control,loaded,sourceName,sourceIssues.length]);
  const current=report?.days.find(day=>day.day===selectedDay)||null;
  const paperIssues=current?colonelPaperIssues(current.invoices):[];
@@ -145,7 +147,10 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
   const actions=control.events.map(e=>({when:e.created_at,title:
    e.event_type==='complete-day'?'اعتماد إدخال فواتير اليوم':
    e.event_type==='reopen-day'?'إعادة فتح اليوم':
-   e.event_type==='close-day'?'إغلاق اليوم بعد مراجعة الفواتير والترحيلات':
+   e.event_type==='approve-branch-conflict'?'اعتماد اختلاف الفرع للترحيل':
+    e.event_type==='reopen-branch-conflict'?'إعادة فتح اختلاف الفرع':
+    e.event_type==='link-prior-period'?'ربط تصحيح بفترة سابقة':
+    e.event_type==='close-day'?'إغلاق اليوم بعد مراجعة الفواتير والترحيلات':
     e.event_type==='signoff-day'?'اعتماد اليوم جاهز بعد مراجعة SAP':
    e.event_type==='assign-transfer'?'تحديد تاريخ فاتورة للترحيل':'إلغاء ربط يوم الترحيل',
    description:e.entity_no+' — '+e.note}));
@@ -296,6 +301,10 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
       يوجد {current.openCount} حالة تحتاج إجراء في اليوم؛ ليست بالضرورة فاتورة ناقصة.
       <ul>{current.transfers.filter(t=>t.needsAction).map(t=><li key={t.number}>
        الترحيل <b dir="ltr">{t.number}</b> — {stateLabels[t.state]||t.state} — {t.note||'يحتاج تدقيق SAP'}
+       {!!t.branchIssue&&!t.branchReviewed&&<button type="button" className="button secondary small"
+        disabled={busy} style={{marginInlineStart:8}}
+        onClick={()=>void action({action:'approve-branch-conflict',transferNo:t.number,
+         issueText:t.branchIssue,sourceKey})}>اعتماد اختلاف الفرع فقط</button>}
       </li>)}
       {current.nonInvoices.filter(doc=>doc.state!=='settled'&&!doc.transfers.some(no=>current.transfers.some(t=>t.number===no&&t.needsAction)))
        .map(doc=><li key={doc.recordId}>التسوية <b dir="ltr">{doc.transfers.join('، ')}</b> — {doc.note}</li>)}
@@ -335,7 +344,15 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
        <td dir="ltr">{t.number}</td><td dir="ltr">{t.postingDate||'غير مثبت'}</td>
        <td dir="ltr">{t.invoiceNumbers.join('، ')||'بلا فاتورة مثبتة'}</td>
        <td>{stateLabels[t.state]||t.state}{t.counterparts.length?' — مقابل '+t.counterparts.join('، '):''}</td>
-       <td>{t.needsAction?<strong>يحتاج إجراء. </strong>:null}{t.note||'—'}</td>
+       <td>{t.needsAction?<strong>يحتاج إجراء. </strong>:null}{t.note||'—'}
+        {control.priorPeriodLinks.filter(link=>link.transfer_no===t.number).map(link=>
+          <p key={link.transfer_no} className="hint">توثيق شهر سابق: الترحيل <b dir="ltr">{link.counterpart_no}</b>
+           بتاريخ {link.counterpart_date} — {link.note}. ليس إثبات إلغاء SAP ولا تغييرًا لرصيد 011.</p>)}
+        {!!t.branchIssue&&(t.branchReviewed?<button type="button" className="button secondary small" disabled={busy}
+          onClick={()=>void action({action:'reopen-branch-conflict',transferNo:t.number})}>إلغاء اعتماد اختلاف الفرع</button>:
+         <button type="button" className="button secondary small" disabled={busy}
+          onClick={()=>void action({action:'approve-branch-conflict',transferNo:t.number,issueText:t.branchIssue,sourceKey})}>اعتماد اختلاف الفرع فقط</button>)}
+       </td>
       </tr>)}</tbody></table></div>
    </section>}
      </td></tr>}
@@ -356,8 +373,18 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
       <td dir="ltr">{t.number}</td><td dir="ltr">{t.postingDate||'—'}</td>
       <td dir="ltr">{t.invoiceNumbers.join('، ')||'—'}</td><td>{stateLabels[t.state]||t.state}
        {t.counterparts.length?' — مقابل '+t.counterparts.join('، '):''}</td>
-      <td><button type="button" className="button secondary small"
-        onClick={()=>{setManualNo(t.number);setManualDay('');setManualReason('')}}>تحديد يوم الفاتورة</button></td>
+      <td>
+       {sap.find(source=>source.transfer.number===t.number)?.signedAdjustment&&
+        control.priorPeriodLinks.filter(link=>link.transfer_no===t.number).map(link=>
+         <p key={link.transfer_no} className="hint">تصحيح شهر سابق موثق: {link.counterpart_no} بتاريخ {link.counterpart_date}.
+          <span style={{display:'block'}}>التحقق من إلغاء SAP مستقل.</span>
+         </p>)}
+       <button type="button" className="button secondary small"
+        onClick={()=>{setManualNo(t.number);setManualDay('');setManualReason('')}}>تحديد يوم الفاتورة</button>
+       {sap.find(source=>source.transfer.number===t.number)?.signedAdjustment&&
+        <button type="button" className="button secondary small" onClick={()=>onNavigate('lieutenant')}>
+         توثيق المرجع لدى الملازم</button>}
+      </td>
      </tr>)}</tbody></table></div>
     {report.unassigned.length>180&&<p className="hint">يعرض أول 180 ترحيلًا؛ استخدم البحث للوصول للرقم المطلوب.</p>}
     {manualNo&&<div style={{border:'1px solid var(--theme-border)',padding:12,borderRadius:10,marginTop:12}}>

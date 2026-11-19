@@ -160,5 +160,37 @@ assert.match(colonelUi,/colonelPaperIssues\(day\.invoices\)/,
  'Day status and close action must use exactly the same invoice validation');
 assert.doesNotMatch(colonelUi,/\^\\\\d\{8,20\}/,
  'Never match a literal backslash-d instead of invoice digits');
+// The operator can accept ONLY the exact branch-name contradiction without
+// concealing stock quantity, SAP cancellation or any other source defect.
+const branchIssue='تعارض فرع SAP: حقل اسم الفرع 45 — الطيبة الشمالية يخالف الملاحظات 86 — الطيبة';
+const badBranch=sapRow('2615774','2026-11-05',{issues:[branchIssue]});
+const withoutApproval=buildColonelReport('2026-11',saved,[badBranch],[],[],day,true);
+const branchBefore=withoutApproval.days.find(d=>d.day==='2026-11-03').transfers[0];
+assert.equal(branchBefore.needsAction,true);
+assert.equal(branchBefore.branchIssue,branchIssue);
+const branchApproval=[{transfer_no:'2615774',issue_text:branchIssue,
+ source_key:'source',reason:'دققت اسم الفرع',confirmed_at:'2026-11-19'}];
+const branchResolved=buildColonelReport('2026-11',saved,[badBranch],[],[],day,true,undefined,branchApproval);
+const resolved=branchResolved.days.find(d=>d.day==='2026-11-03').transfers[0];
+assert.equal(resolved.needsAction,false,'Acknowledge the exact mismatch on the relevant transfer');
+assert.equal(resolved.branchReviewed,true);
+assert.match(resolved.note,/لم تتغير بيانات SAP/);
+const dangerous=buildColonelReport('2026-11',saved,
+ [{...badBranch,issues:[branchIssue,'كمية غير صالحة للصنف DAR00001']}],
+ [],[],day,true,undefined,branchApproval);
+assert.equal(dangerous.days.find(d=>d.day==='2026-11-03').transfers[0].needsAction,true,
+ 'Quantity or other SAP errors must remain open after branch acknowledgement');
+const stale=buildColonelReport('2026-11',saved,
+ [{...badBranch,issues:[branchIssue+' (بيانات مختلفة)']}],
+ [],[],day,true,undefined,branchApproval);
+assert.equal(stale.days.find(d=>d.day==='2026-11-03').transfers[0].needsAction,true,
+ 'A newer, changed branch conflict cannot silently reuse the earlier decision');
+const branchUi=fs.readFileSync('app/reconciliation/Colonel.tsx','utf8');
+assert.match(branchUi,/approve-branch-conflict/);
+assert.match(branchUi,/priorPeriodLinks/);
+const lieutenantUi=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
+assert.match(lieutenantUi,/readCompleteLieutenantSnapshot/);
+assert.match(lieutenantUi,/serialExport:'1'/);
+assert.match(lieutenantUi,/PriorPeriodEditor/);
 assert.throws(()=>buildColonelReport('2026-13',[],[]),/شهر/);
 console.log('PASS: Colonel uses blue-invoice date, preserves SAP posting, flags mismatches and does not assert fake cancellations.');

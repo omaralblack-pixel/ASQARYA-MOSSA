@@ -6,6 +6,7 @@ import CashVanAudit from './CashVanAudit';
 import CancelledTransferReview from './CancelledTransferReview';
 import {AlertTriangle,CheckCircle2,Copy,RefreshCw,Search,ShieldCheck} from 'lucide-react';
 import {type LieutenantTransfer} from '../lib/lieutenant';
+import {isColonelBranchConflict,type ColonelBranchException} from '../lib/colonel-core';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -25,7 +26,55 @@ type OpeningStock={snapshot_date:string;warehouse:string;sap_code:string;item_na
 type RecordSnapshot={records:SavedRecord[];queue:QueueRecord[];openingStock:OpeningStock[]};
 type ReviewStatus='approved'|'paper'|'linked'|'unlinked'|'queued'|'missing'|'review'|'reversed'|'reverse'|'sap-canceled'|'sap-cancel-doc'|'cashvan-pending'|'cancellation-review';
 type ReviewRow={source:LieutenantTransfer;status:ReviewStatus;recordId?:string;note:string;counterparts?:string[]};
+type PriorPeriodLink={transfer_no:string;counterpart_no:string;counterpart_date:string;note:string;updated_at:string};
 
+/** Historical linkage is an audited reference only, not proof of stock offset or SAP cancellation. */
+function PriorPeriodEditor({source,saved,onSaved}:{
+ source:LieutenantTransfer;saved?:PriorPeriodLink;onSaved:()=>Promise<void>;
+}){
+ const [editing,setEditing]=useState(false);
+ const [number,setNumber]=useState(saved?.counterpart_no||'');
+ const [date,setDate]=useState(saved?.counterpart_date||'');
+ const [note,setNote]=useState(saved?.note||'التصحيح يخص فترة سابقة وتمت معالجته بمستند مقابل');
+ const [busy,setBusy]=useState(false);
+ const [error,setError]=useState('');
+ async function submit(clear=false){
+  if(clear&&!window.confirm('إزالة توثيق الفترة السابقة؟ لا يتغير شيء على SAP.'))return;
+  setBusy(true);setError('');
+  try{
+   await checkedJson<{ok:boolean}>('/api/colonel',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(clear?{action:'clear-prior-period',transferNo:source.transfer.number}:{
+     action:'link-prior-period',transferNo:source.transfer.number,
+     counterpartNo:number.trim(),counterpartDate:date,note:note.trim()
+    })});
+   await onSaved();setEditing(false);
+  }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر حفظ المرجع.')}
+  finally{setBusy(false)}
+ }
+ return <div style={{marginTop:8}}>
+  {saved&&<p className="hint">مرجع شهر سابق موثق: <b dir="ltr">{saved.counterpart_no}</b> — {saved.counterpart_date}.
+   <span style={{display:'block'}}>{saved.note}</span>
+   <span style={{display:'block'}}>مرجع إداري، لا يغيّر تاريخ أو رصيد SAP ولا يثبت إلغاءه.</span>
+  </p>}
+  <button type="button" className="button secondary small" disabled={busy}
+   onClick={()=>{setEditing(value=>!value);setNumber(saved?.counterpart_no||'');setDate(saved?.counterpart_date||'');
+    setNote(saved?.note||'التصحيح يخص فترة سابقة وتمت معالجته بمستند مقابل')}}>
+   {editing?'إخفاء':'توثيق تصحيح مرتبط بشهر سابق'}</button>
+  {saved&&<button type="button" className="button secondary small" disabled={busy}
+   onClick={()=>void submit(true)}>إلغاء المرجع</button>}
+  {editing&&<div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'end',marginTop:8}}>
+   <label>الترحيل المقابل <input aria-label="رقم المستند المقابل" value={number}
+    onChange={e=>setNumber(e.target.value)} placeholder="2615694"/></label>
+   <label>تاريخه <input type="date" aria-label="تاريخ الترحيل المقابل" value={date} onChange={e=>setDate(e.target.value)}/></label>
+   <label>ملاحظة <input aria-label="سبب الربط بالفترة السابقة" value={note}
+    onChange={e=>setNote(e.target.value)}/></label>
+   <button type="button" className="button primary small" disabled={busy||!/^[0-9]{4,20}$/.test(number)||!date||note.trim().length<6}
+    onClick={()=>void submit()}>حفظ مرجع الفترة</button>
+  </div>}
+  {error&&<p role="alert" className="amber">{error}</p>}
+ </div>;
+}
 const fileKinds:Record<FileKind,string>={
   transfers:'جميع ترحيلات SAP من وإلى 011',
   opening:'رصيد 011 الافتتاحي',
@@ -153,6 +202,40 @@ async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
   return data;
 }
 
+/** Shared read path with Colonel: use cursor-paginated invoice records when
+ * the large lieutenant projection is unavailable. Never certify partial data. */
+async function readCompleteLieutenantSnapshot():Promise<RecordSnapshot>{
+ try{
+  const compact=await checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1');
+  if(!Array.isArray(compact.records)||!Array.isArray(compact.queue)||!Array.isArray(compact.openingStock))
+   throw Error('استجابة قراءة الملازم ناقصة.');
+  return compact;
+ }catch(primary){
+  const metadata=await checkedJson<Pick<RecordSnapshot,'queue'|'openingStock'>>('/api/reconcile?lieutenantMeta=1');
+  if(!Array.isArray(metadata.queue)||!Array.isArray(metadata.openingStock))
+   throw Error('تعذّر قراءة بيانات الملازم المساندة؛ لا يجوز افتراض اكتمال البيانات.');
+  const records:SavedRecord[]=[];
+  const known=new Set<string>();
+  let cursor:{updated:string;id:string}|null=null;
+  for(let page=0;page<250;page++){
+   const params=new URLSearchParams({serialExport:'1'});
+   if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id)}
+   const response=await checkedJson<{records:(SavedRecord&{updated:string})[];
+    hasMore:boolean;nextCursor:{updated:string;id:string}|null}>('/api/reconcile?'+params.toString());
+   if(!Array.isArray(response.records))throw Error('الدفعة '+(page+1)+' من سجلات الملازم غير مقروءة.');
+   for(const record of response.records){
+    if(!record.id||!record.payload||known.has(record.id))
+     throw Error('سجل مطابقة غير صالح أو مكرر أثناء استعادة الملازم.');
+    known.add(record.id);records.push(record);
+   }
+   if(response.hasMore===false)return {records,queue:metadata.queue,openingStock:metadata.openingStock};
+   if(!response.hasMore||!response.nextCursor||!response.records.length)
+    throw Error('قراءة السجلات المجزّأة لم تكتمل؛ لا يجوز اعتماد حالة الترحيلات.');
+   cursor=response.nextCursor;
+  }
+  throw Error('عدد السجلات تجاوز حد فحص الملازم؛ يلزم فحص إضافي.');
+ }
+}
 const completeStatuses=new Set<ReviewStatus>(['approved','linked','paper','reversed','reverse','sap-canceled','sap-cancel-doc']);
 // Any unassigned transfer remains with First Lieutenant. Never open an invoice
 // group merely because SAP contains a movement with no blue invoice.
@@ -269,10 +352,30 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [dailyLoading,setDailyLoading]=useState(false);
   const [dailyError,setDailyError]=useState('');
   const [rowLimit,setRowLimit]=useState(50);
+  const [priorLinks,setPriorLinks]=useState<PriorPeriodLink[]>([]);
+  const [branchExceptions,setBranchExceptions]=useState<ColonelBranchException[]>([]);
+  const [priorLoadingError,setPriorLoadingError]=useState('');
+  const loadPriorLinks=async()=>{
+   const data=await checkedJson<{priorPeriodLinks:PriorPeriodLink[];branchExceptions:ColonelBranchException[]}>('/api/colonel?month='+from.slice(0,7));
+   setPriorLinks(data.priorPeriodLinks||[]);setBranchExceptions(data.branchExceptions||[]);setPriorLoadingError('');
+  };
+  useEffect(()=>{void loadPriorLinks().catch(error=>setPriorLoadingError(
+   error instanceof Error?error.message:'تعذّر قراءة مراجع الفترات السابقة.'))},[from.slice(0,7)]);
   const transferSelectedRef=useRef(false);
   const closingSelectedRef=useRef(false);
   const openingSelectedRef=useRef(false);
   const periodEditedRef=useRef(false);
+  const reviewedTransfers=useMemo(()=>transfers.map(source=>{
+   const exception=branchExceptions.find(item=>item.transfer_no===source.transfer.number);
+   if(!exception||!source.issues.includes(exception.issue_text)||!isColonelBranchConflict(exception.issue_text))
+    return source;
+   return {...source,issues:source.issues.filter(issue=>issue!==exception.issue_text)};
+  }),[transfers,branchExceptions]);
+  // Only label discrepancies are excluded from stock-movement validity.
+  // The source data, actual warehouse direction, sign and quantity never change.
+  const movementTransfers=useMemo(()=>transfers.map(source=>
+   source.issues.some(isColonelBranchConflict)?{...source,
+    issues:source.issues.filter(issue=>!isColonelBranchConflict(issue))}:source),[transfers]);
   const unreadableRecords=useMemo(()=>snapshot.records.filter(record=>{
     try{const value=JSON.parse(record.payload);return !value||!Array.isArray(value.invoices)||!Array.isArray(value.transfers)}
     catch{return true}
@@ -315,7 +418,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   }
 
   async function refreshSnapshot(){
-    const state=await checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1');
+    const state=await readCompleteLieutenantSnapshot();
     setSnapshot(state);
     setSnapshotLoaded(true);
     return state;
@@ -352,7 +455,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     async function init(){
       const [archive,state]=await Promise.allSettled([
         listSapFiles().then(files=>({files:files as StoredFile[]})),
-        checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1'),
+        readCompleteLieutenantSnapshot(),
       ]);
       if(!active)return;
       const errors:string[]=[];
@@ -404,9 +507,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   },[syncVersion,syncScope]);
 
   const dailyReport=useMemo(()=>
-    dailyInvoices&&selectedTransfer&&transfers.length?
-      auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference):null,
-    [dailyInvoices,selectedTransfer,transfers,invoiceAsOf,reference]);
+    dailyInvoices&&selectedTransfer&&reviewedTransfers.length?
+      auditInvoicesForDay(dailyInvoices,reviewedTransfers,invoiceAsOf,reference):null,
+    [dailyInvoices,selectedTransfer,reviewedTransfers,invoiceAsOf,reference]);
   const dailyCounts=useMemo(()=>{
     const totals:Record<DayInvoiceState,number>={match:0,late:0,pending:0,short:0,extra:0,review:0,
       'cashvan-settled':0,'cashvan-pending':0};
@@ -435,9 +538,9 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     return [...totals.values()].sort((a,b)=>a.uncertain===b.uncertain?
       Math.abs(b.expected-b.posted)-Math.abs(a.expected-a.posted):a.uncertain?1:-1);
   },[dailyReport]);
-  const approvals=useMemo(()=>lieutenantApprovals(transfers,snapshot.records),[transfers,snapshot.records]);
-  const rows=useMemo(()=>makeRows(transfers,snapshot,to,approvals).filter(row=>
-    row.source.transfer.date>=from&&row.source.transfer.date<=to),[transfers,snapshot,from,to,approvals]);
+  const approvals=useMemo(()=>lieutenantApprovals(reviewedTransfers,snapshot.records),[reviewedTransfers,snapshot.records]);
+  const rows=useMemo(()=>makeRows(reviewedTransfers,snapshot,to,approvals).filter(row=>
+    row.source.transfer.date>=from&&row.source.transfer.date<=to),[reviewedTransfers,snapshot,from,to,approvals]);
   const pending=rows.filter(row=>!completeStatuses.has(row.status));
   const visible=rows.filter(row=>(filter==='all'||(filter==='pending'?!completeStatuses.has(row.status):row.status===filter))&&
     (!query||[row.source.transfer.number,row.source.branch,row.source.remarks,row.note].some(value=>value.includes(query))));
@@ -460,11 +563,11 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       for(const item of draft.transfers)
         for(const number of transferNumbers(item.number||''))assigned.add(number);
     }
-    const movements=analyzeLieutenantMovements(transfers,to);
-    return new Set(transfers.filter(row=>assigned.has(row.transfer.number)&&!row.reverse&&
+    const movements=analyzeLieutenantMovements(reviewedTransfers,to);
+    return new Set(reviewedTransfers.filter(row=>assigned.has(row.transfer.number)&&!row.reverse&&
       movements.get(row.transfer.number)?.kind==='normal')
       .map(row=>row.transfer.number));
-  },[transfers,to,snapshot.records,recordsReady]);
+  },[reviewedTransfers,to,snapshot.records,recordsReady]);
   const stockRows=useMemo(()=>{
     if(!closing?.items.length)return [];
     const byKey=new Map<string,StockItem>();
@@ -480,15 +583,15 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     // dated and clean opening export can prove zero for an omitted item.
     const openingConfirmed=completeOpeningSnapshot(opening,from);
     return auditLieutenantStock(closing.items,[...byKey.values()],
-      canCompare?transfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to,
+      canCompare?movementTransfers:[],canCompare?approvedTransferNumbers:new Set<string>(),from,to,
       reference,invoiceRequiredNumbers,openingConfirmed);
-  },[closing,opening,snapshot.openingStock,from,to,transfers,approvedTransferNumbers,canCompare,reference,invoiceRequiredNumbers]);
+  },[closing,opening,snapshot.openingStock,from,to,movementTransfers,approvedTransferNumbers,canCompare,reference,invoiceRequiredNumbers]);
   const coverageReady=canCompare&&recordsReady;
   const uncoveredItems=stockRows.filter(item=>item.uncoveredIncoming!==null&&item.uncoveredIncoming>0.000001);
   const incompleteItems=stockRows.filter(item=>!item.movementComplete||item.opening===null||item.quantity===null);
   const [stockQueryText,setStockQueryText]=useState('');
   const [stockFilter,setStockFilter]=useState('all');
-  const stockEvidence=useMemo(()=>stockDifferenceEvidence(transfers,from,to),[transfers,from,to]);
+  const stockEvidence=useMemo(()=>stockDifferenceEvidence(movementTransfers,from,to),[movementTransfers,from,to]);
   const visibleStockRows=stockRows.filter(item=>(!canCompare||stockFilter==='all'||
     (stockFilter==='difference'?item.difference!==null&&Math.abs(item.difference)>0.000001:
     !coverageReady?true:
@@ -856,12 +959,15 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           {Object.entries(statusText).map(([key,text])=><option key={key} value={key}>{text}</option>)}
         </select>
       </div>
+      {!!priorLoadingError&&<p className="banner warn" role="alert">تعذّر استعادة ربط التصحيحات السابقة: {priorLoadingError}</p>}
       {!recordsReady&&<p className="banner warn" role="alert">{unreadableRecords?
         'هناك '+unreadableRecords+' سجل مطابقة غير قابل للقراءة. لا يمكن تأكيد تغطية الفواتير قبل مراجعته.':
         'حالات الفواتير لم تُحمّل بعد؛ لا تُعتبر الترحيلات مفقودة أو غير معتمدة قبل اكتمال القراءة. استخدم «تحديث الأرشيف» لإعادة المحاولة.'}</p>}
       {selectedTransfer&&<p className="hint">مصدر الترحيلات الحالي: <strong>{transferSourceName}</strong>
         — {transfers.length} ترحيلًا من الملف. إذا كانت الترحيلات موزعة على عدة ملفات، استخدم كشفًا شاملًا للفترة.
         فتح الأرشيف للقراءة فقط ولا ينشئ فواتير.</p>}
+      {!recordsReady&&<button type="button" className="button secondary" disabled={busy}
+       onClick={()=>void refreshSnapshot().catch(cause=>setError(cause instanceof Error?cause.message:'تعذّر قراءة الفواتير.'))}>إعادة محاولة قراءة سجلات الفواتير</button>}
       <div className="stats">
         <div className="stat"><span>ترحيلات الفترة</span><strong>{selectedTransfer&&periodValid?rows.length:'—'}</strong></div>
         <div className="stat"><span>مطابقة ومعتمدة</span><strong>{selectedTransfer&&recordsReady&&periodValid?counts.approved:'—'}</strong></div>
@@ -885,7 +991,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
         <td>{row.source.cancellationState==='cancellation'?'إلغاء SAP':row.source.signedAdjustment?'تصحيح موقّع':row.source.reverse?'عكسي من 011':'وارد إلى 011'}</td>
         <td><span className={'badge '+(completeStatuses.has(row.status)?'match':row.status==='review'||row.status==='missing'?'difference':'review')}>
           {completeStatuses.has(row.status)?<CheckCircle2 size={13}/>:<AlertTriangle size={13}/>}
-          {recordsReady?statusText[row.status]:'حالة الفاتورة غير متاحة'}
+          {recordsReady?statusText[row.status]:'تدقيق الفاتورة غير مكتمل — ليست حالة إلغاء SAP'}
            {recordsReady&&row.status==='reversed'&&!!row.counterparts?.length&&
              <small style={{display:'block'}}>العكسي: <b dir="ltr">{row.counterparts.join('، ')}</b></small>}
            </span>
@@ -893,7 +999,15 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
           {row.source.cancellationState==='cancellation'&&<small style={{display:'block'}}>حالة SAP: مستند إلغاء (C)</small>}
           {row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>حالة الإلغاء غير مذكورة</small>}
           {row.source.cancellationMentioned&&row.source.cancellationState==='unknown'&&<small style={{display:'block'}}>Remarks تذكر إلغاء دون إثبات</small>}</td>
-        <td>{recordsReady?row.note:'تعذّر قراءة سجل المطابقات بالكامل؛ لا يمكن تحديد تغطية هذا الترحيل بعد.'}</td>
+        <td>{recordsReady?row.note:
+          'حالة الفاتورة غير مقروءة بعد؛ تصنيف حركة SAP مستقل عن حالة وصول الورق. لا يجوز اعتبار المستند منتهيًا.'}
+          {branchExceptions.some(exception=>exception.transfer_no===row.source.transfer.number&&
+            transfers.find(source=>source.transfer.number===row.source.transfer.number)?.issues.includes(exception.issue_text))&&
+            <small style={{display:'block'}}>اختلاف اسم الفرع معتمد إداريًا لدى العقيد؛ لم يتغير SAP أو حركة المخزون.</small>}
+          {row.source.signedAdjustment&&<PriorPeriodEditor key={row.source.transfer.number}
+           source={row.source} saved={priorLinks.find(link=>link.transfer_no===row.source.transfer.number)}
+           onSaved={loadPriorLinks}/>}
+        </td>
         <td>{row.recordId?<button type="button" className="button secondary small" onClick={()=>onOpenRecord(row.recordId!)}>{['approved','linked','paper'].includes(row.status)?'فتح الفاتورة':'فتح سجل الترحيل'}</button>:
           <span className="hint">للملازم أول — ترحيل فقط</span>}</td>
       </tr>)}</tbody></table></div>}
@@ -904,6 +1018,6 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       {counts.review>0&&<p className="hint">هناك {counts.review} حركة تحتاج تدقيق العكسي أو الإلغاء أو بيانات المصدر. العكسي المطابق ليس إلغاء SAP؛ لا يُرسل كاش فان للجندي لمجرد عدم وجود فاتورة زرقاء.</p>}
     </section>
     </>}
-    <MovementSummary transfers={transfers} from={from} to={to}/>
+    <MovementSummary transfers={movementTransfers} from={from} to={to}/>
   </div>;
 }

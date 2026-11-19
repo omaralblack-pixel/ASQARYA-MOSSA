@@ -297,7 +297,12 @@ assert.ok(endpoint.includes("u.searchParams.has('lieutenantInvoiceDay')"));
 assert.ok(endpoint.includes('collectInvoicesByDate(records.results,day,day)'));
 const screen=fs.readFileSync('app/reconciliation/FirstLieutenant.tsx','utf8');
 assert.ok(screen.includes('فحص جميع فواتير هذا اليوم'));
-assert.ok(screen.includes('auditInvoicesForDay(dailyInvoices,transfers,invoiceAsOf,reference)'));
+assert.ok(screen.includes('auditInvoicesForDay(dailyInvoices,reviewedTransfers,invoiceAsOf,reference)'),
+ 'Lieutenant daily invoice checks must consume the same persisted branch reviews as Colonel');
+assert.ok(screen.includes('readCompleteLieutenantSnapshot'),
+ 'Reconciliation snapshot fallback should be shared with Colonel paginated data retrieval');
+assert.ok(screen.includes('stockDifferenceEvidence(movementTransfers,from,to)'),
+ 'Stock 011 totals should not silently exclude valid quantities for branch label contradictions');
 assert.ok(!screen.includes('معتمدة ماليًا فقط'));
 assert.ok(screen.includes('dailyCounts.match+dailyCounts.late'));
 assert.ok(screen.includes('رقم الترحيل العكسي:'));
