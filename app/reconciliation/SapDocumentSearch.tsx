@@ -32,8 +32,12 @@ function documentHits(records:RecordRow[],sap:SapEvidence[],query:string,filter:
     if(filter!=='all'&&filter!==kind)return;
     const number=kind==='invoice'?invoiceDocumentNo(raw):digits(String(raw??'')).trim();
     if(!/^\d{4,20}$/.test(number)||!number.endsWith(query))return;
-    const key=kind+':'+number;
-    if(!matches.has(key)||origin==='saved')matches.set(key,{kind,number,branch,origin,recordId});
+    // Keep each stored owner visible if historical data contain duplicates;
+    // never silently choose one of two records with the same invoice number.
+    const key=kind+':'+number+(origin==='saved'?':'+recordId:'');
+    if(origin==='saved')matches.delete(kind+':'+number);
+    if(origin==='sap'&&[...matches.values()].some(hit=>hit.kind===kind&&hit.number===number&&hit.origin==='saved'))return;
+    if(!matches.has(key))matches.set(key,{kind,number,branch,origin,recordId});
   };
   for(const row of records){
     const saved=readReconciliationRecord(row.payload);
