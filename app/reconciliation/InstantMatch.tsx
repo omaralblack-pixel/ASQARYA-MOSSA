@@ -279,9 +279,11 @@ export default function InstantMatch({
       if (found.length>1) throw Error('رقم المستند مكرر في السجل؛ يلزم مراجعة المطابقة الأساسية.');
       if (found.length===1) { await loadRecord(found[0],searched,searchKind);return; }
 
-      let candidate = imports.find(group=>group.members.some(member=>
-        searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
-      if(!candidate)candidate=groupSapEvidence(queued,searched,searchKind,branches)||undefined;
+      // The committed daily snapshot is authoritative. A browser may still
+      // have the previous shared preview while the new snapshot is published.
+      let candidate = groupSapEvidence(queued,searched,searchKind,branches)||
+        imports.find(group=>group.members.some(member=>
+          searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
       // Imported records may hold old Remarks; only inspect full immutable SAP
       // originals after an explicit user search, never on each keystroke.
       if(!candidate ||
