@@ -202,6 +202,40 @@ async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
   return data;
 }
 
+/** Shared read path with Colonel: use cursor-paginated invoice records when
+ * the large lieutenant projection is unavailable. Never certify partial data. */
+async function readCompleteLieutenantSnapshot():Promise<RecordSnapshot>{
+ try{
+  const compact=await checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1');
+  if(!Array.isArray(compact.records)||!Array.isArray(compact.queue)||!Array.isArray(compact.openingStock))
+   throw Error('استجابة قراءة الملازم ناقصة.');
+  return compact;
+ }catch(primary){
+  const metadata=await checkedJson<Pick<RecordSnapshot,'queue'|'openingStock'>>('/api/reconcile?lieutenantMeta=1');
+  if(!Array.isArray(metadata.queue)||!Array.isArray(metadata.openingStock))
+   throw Error('تعذّر قراءة بيانات الملازم المساندة؛ لا يجوز افتراض اكتمال البيانات.');
+  const records:SavedRecord[]=[];
+  const known=new Set<string>();
+  let cursor:{updated:string;id:string}|null=null;
+  for(let page=0;page<250;page++){
+   const params=new URLSearchParams({serialExport:'1'});
+   if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id)}
+   const response=await checkedJson<{records:(SavedRecord&{updated:string})[];
+    hasMore:boolean;nextCursor:{updated:string;id:string}|null}>('/api/reconcile?'+params.toString());
+   if(!Array.isArray(response.records))throw Error('الدفعة '+(page+1)+' من سجلات الملازم غير مقروءة.');
+   for(const record of response.records){
+    if(!record.id||!record.payload||known.has(record.id))
+     throw Error('سجل مطابقة غير صالح أو مكرر أثناء استعادة الملازم.');
+    known.add(record.id);records.push(record);
+   }
+   if(response.hasMore===false)return {records,queue:metadata.queue,openingStock:metadata.openingStock};
+   if(!response.hasMore||!response.nextCursor||!response.records.length)
+    throw Error('قراءة السجلات المجزّأة لم تكتمل؛ لا يجوز اعتماد حالة الترحيلات.');
+   cursor=response.nextCursor;
+  }
+  throw Error('عدد السجلات تجاوز حد فحص الملازم؛ يلزم فحص إضافي.');
+ }
+}
 const completeStatuses=new Set<ReviewStatus>(['approved','linked','paper','reversed','reverse','sap-canceled','sap-cancel-doc']);
 // Any unassigned transfer remains with First Lieutenant. Never open an invoice
 // group merely because SAP contains a movement with no blue invoice.
@@ -384,7 +418,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   }
 
   async function refreshSnapshot(){
-    const state=await checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1');
+    const state=await readCompleteLieutenantSnapshot();
     setSnapshot(state);
     setSnapshotLoaded(true);
     return state;
@@ -421,7 +455,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     async function init(){
       const [archive,state]=await Promise.allSettled([
         listSapFiles().then(files=>({files:files as StoredFile[]})),
-        checkedJson<RecordSnapshot>('/api/reconcile?lieutenant=1'),
+        readCompleteLieutenantSnapshot(),
       ]);
       if(!active)return;
       const errors:string[]=[];
