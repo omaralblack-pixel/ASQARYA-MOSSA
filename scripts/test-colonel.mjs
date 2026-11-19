@@ -12,7 +12,7 @@ const source=fs.readFileSync('app/lib/colonel-core.ts','utf8')
  .replace("'./reconcile'","'"+rec+"'")
  .replace("'./invoice-collector'","'"+invoice+"'")
  .replace("'./lieutenant-counterparts'","'"+movements+"'");
-const {buildColonelReport}=await import(url(compile(source)));
+const {buildColonelReport,colonelPaperIssues}=await import(url(compile(source)));
 const noteSource=fs.readFileSync('app/lib/colonel-serial-notes.ts','utf8')
  .replace("'./lieutenant-counterparts'","'"+movements+"'");
 const {colonelSerialNotes}=await import(url(compile(noteSource)));
@@ -142,5 +142,23 @@ assert.equal(notManuallyCovered.days.find(row=>row.day==='2026-11-01')
  .nonInvoices.find(row=>row.transfers.includes('2615837')).state,'unverified',
  'a saved lieutenant administrative link is not evidence of physical SAP offset');
 
+// Regression: all valid, received paper on Nov 1 must NOT be shown as missing.
+const validNov1=withOfficialCancel.invoices;
+assert.ok(validNov1.length>0);
+assert.deepEqual(colonelPaperIssues(validNov1),[],
+ 'The confirmed real blue invoices must not be blocked by an escaped-regex typo');
+const badPaper=colonelPaperIssues([
+ {...validNov1[0],number:'2621609885',complete:false},
+ {...validNov1[0],number:'0',complete:true},
+ {...validNov1[0],number:'2621609886',complete:true,dateSource:'transfer'},
+]);
+assert.ok(badPaper.some(x=>x.number==='2621609885'&&x.problem.includes('غير مؤكد')));
+assert.ok(badPaper.some(x=>x.number==='0'&&x.problem.includes('رقم')));
+assert.ok(badPaper.some(x=>x.number==='2621609886'&&x.problem.includes('مستنتج')));
+const colonelUi=fs.readFileSync('app/reconciliation/Colonel.tsx','utf8');
+assert.match(colonelUi,/colonelPaperIssues\(day\.invoices\)/,
+ 'Day status and close action must use exactly the same invoice validation');
+assert.doesNotMatch(colonelUi,/\^\\\\d\{8,20\}/,
+ 'Never match a literal backslash-d instead of invoice digits');
 assert.throws(()=>buildColonelReport('2026-13',[],[]),/شهر/);
 console.log('PASS: Colonel uses blue-invoice date, preserves SAP posting, flags mismatches and does not assert fake cancellations.');
