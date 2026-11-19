@@ -107,10 +107,11 @@ function fromSap(group:SapImportGroup, number:string, kind:SearchKind):Draft {
 }
 
 export default function InstantMatch({
-  reference, branches, onDetailed
+  reference, branches, onDetailed, syncVersion=0
 }:{
   reference:Item[];
   branches:string[];
+  syncVersion?:number;
   onDetailed:(draft:Draft, sources:Record<string,TransferSource>)=>void;
 }) {
   const searchStart = useRef<HTMLDivElement>(null);
@@ -169,7 +170,7 @@ export default function InstantMatch({
       }).catch(()=>{if(active)setSuggestionStatus('error')});
     },350);
     return ()=>{active=false;clearTimeout(timer)};
-  },[number]);
+  },[number,branches,syncVersion]);
 
   async function refreshRecords() {
     const data = await getJson<{records:Summary[]}>('/api/reconcile?records=1');
@@ -182,6 +183,7 @@ export default function InstantMatch({
     if (!branches.length) return;
     let active = true;
     setLoading(true);
+    setFileWarning('');
     async function initialize() {
       const results = await Promise.allSettled([
         getJson<{records:Summary[]}>('/api/reconcile?records=1'),
@@ -201,7 +203,8 @@ export default function InstantMatch({
     }
     void initialize();
     return ()=>{active=false};
-  },[branches]);
+  // Refresh search evidence only; keep the operator's open draft and inputs.
+  },[branches,syncVersion]);
 
   useEffect(()=>{
     if(!isAqaba){setAqabaPricing(null);setAqabaPricingError('');setAqabaPricingLoading(false);return}
