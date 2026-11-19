@@ -80,7 +80,8 @@ if(u.searchParams.has('sapLookup')){
        cancellationState:String(value.cancellationState||'unknown'),sourceFile:row.source_file}];
    }catch{return [];}
  });
- return json({hits,partial:rows.results.length>400,source:'سجل ترحيلات SAP المستوردة'});
+ const snapshot=await db().prepare("SELECT json_extract(value,'$.key') AS key FROM settings WHERE key='sapCurrentSnapshot' AND json_valid(value)").first<{key:string}>();
+ return json({hits,partial:rows.results.length>400,snapshotKey:snapshot?.key||null,source:'سجل ترحيلات SAP المستوردة'});
 }
 if(u.searchParams.has('version'))return json({commit:typeof __ASQARYA_COMMIT__==='string'?__ASQARYA_COMMIT__:'unknown',workerVersion:env.CF_VERSION_METADATA?.id||null});
 if(u.searchParams.has('lieutenantCancellationDecisions')){

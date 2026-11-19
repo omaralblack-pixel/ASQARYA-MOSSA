@@ -116,6 +116,7 @@ export default function InstantMatch({
 }) {
   const searchStart = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const hasCommittedSnapshot=useRef(false);
   const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const [records, setRecords] = useState<Summary[]>([]);
   const [imports, setImports] = useState<SapImportGroup[]>([]);
@@ -146,10 +147,11 @@ export default function InstantMatch({
     searchInput.current?.focus({preventScroll:true});
   },[searchFocusRequest]);
 
-  const suggestions=useMemo(()=>matchingDocuments(records,imports,number,kind,queueMatches),[records,imports,number,kind,queueMatches]);
+  const suggestions=useMemo(()=>matchingDocuments(records,hasCommittedSnapshot.current?[]:imports,number,kind,queueMatches),[records,imports,number,kind,queueMatches]);
 
   async function searchImportedSap(number:string){
-    const data=await getJson<{hits:SapEvidence[];partial:boolean}>('/api/reconcile?sapLookup='+encodeURIComponent(number));
+    const data=await getJson<{hits:SapEvidence[];partial:boolean;snapshotKey?:string|null}>('/api/reconcile?sapLookup='+encodeURIComponent(number));
+    hasCommittedSnapshot.current=!!data.snapshotKey;
     if(data.partial)throw Error('نتائج الترحيلات المستوردة كثيرة وغير مكتملة. ابحث برقم المستند كاملًا.');
     // A previously imported queue may have an empty branch even when
     // the original SAP Remarks names exactly one official branch.
@@ -282,8 +284,8 @@ export default function InstantMatch({
       // The committed daily snapshot is authoritative. A browser may still
       // have the previous shared preview while the new snapshot is published.
       let candidate = groupSapEvidence(queued,searched,searchKind,branches)||
-        imports.find(group=>group.members.some(member=>
-          searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched));
+        (!hasCommittedSnapshot.current?imports.find(group=>group.members.some(member=>
+          searchKind==='invoice'?member.invoices.includes(searched):member.transfer.number===searched)):undefined);
       // Imported records may hold old Remarks; only inspect full immutable SAP
       // originals after an explicit user search, never on each keystroke.
       if(!candidate ||
