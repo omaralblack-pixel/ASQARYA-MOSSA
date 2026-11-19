@@ -310,8 +310,21 @@ export default function InstantMatch({
         const member=choice.group.members.find(item=>item.transfer.number===choice.number);
         if(!member)throw Error('تعذّر استرجاع تفاصيل الترحيل العكسي.');
         const latest=await refreshRecords();
-        if(latest.some(row=>matchesRecord(row,choice.number,'transfer')&&row.id!==draft.id))
-          throw Error('الترحيل مسجل في كشف آخر؛ افتح السجل الأصلي قبل إضافة نسخة.');
+        const owner=latest.find(row=>matchesRecord(row,choice.number,'transfer')&&row.id!==draft.id);
+        if(owner){
+          const data=await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(owner.id));
+          const saved=readReconciliationRecord(data.record.payload);
+          if(!saved)throw Error('هذا الترحيل محفوظ لكن بيانات كشفه غير مقروءة.');
+          if(openDetailed){
+            onDetailed(withInvoiceDates({...saved,id:data.record.id,version:data.record.version,mode:'manual'}),{});
+            setReverseChoice(null);
+            return;
+          }
+          throw Error('الترحيل محفوظ في كشف آخر. استخدم «فتح المستند في المطابقة العادية» لفتح أصله، بدل تكراره.');
+        }
+        if(member.invoices.length&&draft.invoices.some(invoice=>invoiceDocumentNo(invoice.number))
+          &&!matchesInvoiceNumbers(draft.invoices,member.invoices))
+          throw Error('الفواتير الزرقاء في SAP ('+member.invoices.join('، ')+') لا تطابق فواتير الكشف الحالي.');
         if(draft.transfers.some(item=>transferNumbers(item.number).includes(choice.number)))
           throw Error('الترحيل موجود مسبقًا في الكشف الحالي.');
         if(draft.transfers.length>=30)throw Error('وصلت إلى الحد الأقصى للترحيلات.');
