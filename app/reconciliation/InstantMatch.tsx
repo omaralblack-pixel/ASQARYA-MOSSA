@@ -253,12 +253,12 @@ export default function InstantMatch({
   function reverseChoiceFor(group:SapImportGroup,number:string,kind:SearchKind,mode:ReverseChoice['mode'],evidence:SapEvidence[]=[]):ReverseChoice{
     const notes=[...new Set([...group.members.flatMap(sapMemberReviewReasons),...group.issues])];
     const blockers=[
-      ...group.members.flatMap(member=>member.issues.map(issue=>'الترحيل '+member.transfer.number+': '+issue)),
+      ...group.members.flatMap(member=>member.issues.filter(issue=>!issue.includes('الفرع غير معروف')).map(issue=>'الترحيل '+member.transfer.number+': '+issue)),
       ...group.members.filter(member=>member.reversal&&!member.reverseMovement).map(member=>'الترحيل '+member.transfer.number+': إشارة إلغاء أو تصحيح مستقلة عن اتجاه 011.'),
       ...group.members.filter(member=>!!member.canceledTransferNo||/has been cancel(?:ed|led)|ملغى/.test(member.remarks)).map(member=>'الترحيل '+member.transfer.number+': دليل إلغاء في ملاحظات SAP.'),
       ...evidence.filter(item=>group.members.some(member=>member.transfer.number===item.transfer.number)
         &&['canceled','cancellation'].includes(item.cancellationState)).map(item=>'الترحيل '+item.transfer.number+': مستند SAP معلّم كإلغاء.'),
-      ...group.issues.filter(issue=>!issue.startsWith('ترحيل عكسي —'))
+      ...group.issues.filter(issue=>!issue.startsWith('ترحيل عكسي —')&&!issue.includes('الفرع غير معروف'))
     ];
     return {group,number,kind,mode,notes,blockers:[...new Set(blockers)]};
   }
@@ -467,10 +467,11 @@ export default function InstantMatch({
         if(linked?.issues.length)throw Error(linked.issues.join(' · '));
       }
       if(member?.reverseMovement){
-        const linkedGroup=groupSapEvidence(await searchImportedSap(searched),searched,'transfer',branches)
+        const evidence=await searchImportedSap(searched);
+        const linkedGroup=groupSapEvidence(evidence,searched,'transfer',branches)
           ||imports.find(group=>group.members.some(item=>item.transfer.number===searched));
         if(!linkedGroup)throw Error('تعذّر استرجاع أصل SAP للحركة العكسية.');
-        setReverseChoice(reverseChoiceFor(linkedGroup,searched,'transfer','append'));
+        setReverseChoice(reverseChoiceFor(linkedGroup,searched,'transfer','append',evidence));
         setNotice('الحركة العكسية '+searched+' تحتاج مراجعتك. اختر إضافتها للمطابقة الفورية أو فتح المطابقة العادية.');
         return;
       }
