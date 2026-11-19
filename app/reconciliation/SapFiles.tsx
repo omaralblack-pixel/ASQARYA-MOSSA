@@ -12,7 +12,7 @@ import {splitSapSectionIntoChunks,type UnifiedChunkKind} from '../lib/sap-unifie
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const uploadDay=(date:string)=>date&&Number.isFinite(Date.parse(date))?new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)):'';
 const uploadTime=(date:string)=>date&&Number.isFinite(Date.parse(date))?uploadDay(date)+' '+new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(date)):'';
-const statusNames={complete:'مكتمل',review:'اكتملت الدفعات — بحاجة مراجعة',archived:'محفوظ — نوع غير معروف',pending:'بانتظار المعالجة',running:'قيد المعالجة',failed:'دفعات فاشلة — يمكن استكمالها'};
+const statusNames={complete:'مكتمل',review:'اكتملت الدفعات — بحاجة مراجعة',archived:'محفوظ — نوع غير معروف',pending:'بانتظار الاستكمال',running:'قيد المعالجة',failed:'دفعات فاشلة — يمكن استكمالها'};
 /** Prove uploaded immutable bytes are retrievable before starting any D1 job.
  * Exact comparison runs in the browser, outside the CPU-limited Worker. */
 async function verifyArchivedSource(key:string,original:ArrayBuffer){
@@ -263,6 +263,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   F(prev=>[restored,...prev.filter(file=>file.key!==restored.key)]);
   M('تم التحقق من وجود ملف SAP وسلامة بصمته في Supabase: '+restored.name+'. يمكن فتحه واستكمال دفعاته.');
  }
+ const selectedJobFile=job?files.find(file=>file.key===job.key):undefined;
  const archiveUnlistedJobs=Object.values(jobs).filter(row=>!files.some(file=>file.key===row.key));
  const orphanActive=archiveUnlistedJobs.filter(row=>row.done<row.total);
  const orphanHistory=archiveUnlistedJobs.filter(row=>row.done>=row.total);
@@ -295,6 +296,18 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    {busy&&<p role="status">جارٍ حفظ الملف أو معالجة الدفعات. يمكن استكمال الدفعات المحفوظة بعد تحديث الصفحة.</p>}
    {error&&<p className="banner error" role="alert"><AlertTriangle size={16}/>{error}</p>}{message&&<p className="banner info" role="status">{message}</p>}{olderSnapshotNotice&&<p className="hint" role="status">{olderSnapshotNotice}</p>}
    {job?<><p role="status"><b>{statusNames[job.status]}</b> · {job.done} من {job.total} دفعة · {job.count} مستند/بند · وقت الدفعات: {(job.duration/1000).toFixed(2)} ثانية</p>
+    {job.done<job.total&&<div className="banner info">
+     <div>
+      <strong dir="auto">{selectedJobFile?.name||fromSapStorageFilename(job.key.split('__').at(-1)||'')}</strong>
+      {!busy&&<p>{job.running?'هناك دفعة مسجلة قيد التنفيذ؛ يمكن تحديث الحالة أو محاولة الاستكمال بعد انتهائها.':
+       'المعالجة غير مكتملة. اضغط استكمال لتشغيل الدفعات المتبقية؛ تحديث الحالة يعرض التقدم فقط.'}
+       {' '}الدفعات المكتملة محفوظة ولا تحتاج إعادة رفع الملف.</p>}
+      <button type="button" className="button primary" disabled={busy||loading}
+       onClick={()=>void exclusive(()=>selectedJobFile?processFile(selectedJobFile):verifyUnlistedOriginal(job))}>
+       <RefreshCw size={16}/>{selectedJobFile?'استكمال الدفعات المتبقية ('+(job.total-job.done)+')':'تحقق من الأصل للاستكمال'}
+      </button>
+     </div>
+    </div>}
     <progress aria-label="الدفعات المكتملة" value={job.total?job.done:['complete','review'].includes(job.status)?1:0} max={job.total||1} style={{width:'100%'}}/>
     {job.batches.filter(x=>x.state!=='complete').map(x=><p key={x.idx} className={x.error?'red':'hint'}>دفعة {x.idx+1}: {x.state==='failed'?'فشلت':x.state==='running'?'قيد المعالجة':'بانتظار المعالجة'} {x.error}</p>)}
     {!!job.issues.length&&<details open><summary>ملاحظات القراءة ({job.issues.length})</summary>{job.issues.map((issue,i)=><p className="red" key={i}>{issue}</p>)}</details>}
