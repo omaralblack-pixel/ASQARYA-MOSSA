@@ -2,7 +2,7 @@
 
 import {useState} from 'react';
 import {AlertTriangle, Search} from 'lucide-react';
-import {digits, invoiceDocumentNo, readReconciliationRecord, transferNumbers, withInvoiceDates, type Draft} from '../lib/reconcile';
+import {digits, invoiceDocumentNo, readReconciliationRecord, transferNumbers, withInvoiceDates, markSearchedPaperInvoice, type Draft} from '../lib/reconcile';
 import {groupSapEvidence, searchArchivedSapEvidence, type SapEvidence} from '../lib/sap-document-lookup';
 import type {SapImportGroup} from '../lib/sap-import';
 
@@ -13,7 +13,7 @@ type SearchHit = {kind:DocumentKind;number:string;branch:string;origin:'saved'|'
 type LookupResponse = {hits:SapEvidence[];partial:boolean;snapshotKey?:string|null};
 type Props = {
   branches:string[];
-  onOpenSaved:(id:string)=>void;
+  onOpenSaved:(id:string,invoiceNumber?:string)=>void;
   onOpenDraft:(draft:Draft,group:SapImportGroup,reviewNotes:string[])=>void;
 };
 
@@ -56,16 +56,16 @@ function documentHits(records:RecordRow[],sap:SapEvidence[],query:string,filter:
   });
 }
 
-function draftForReview(group:SapImportGroup):Draft {
+function draftForReview(group:SapImportGroup,invoiceNumber?:string):Draft {
   const makeId=()=>crypto.randomUUID();
-  return withInvoiceDates({
+  return markSearchedPaperInvoice(withInvoiceDates({
     mode:'manual',branch:group.draft.branch,driver:'',date:group.draft.date,notes:'',checks:{},
     transfers:group.draft.transfers.map(item=>({...item,id:makeId()})),
     invoices:group.draft.invoices.map(item=>({
       ...item,id:makeId(),manualNumber:!!invoiceDocumentNo(item.number),
       amount:'',complete:false,quantities:{},attachments:[]
     }))
-  });
+  }),invoiceNumber||'');
 }
 
 function reviewNotes(group:SapImportGroup,source:SapEvidence[]):string[] {
@@ -122,7 +122,7 @@ export default function SapDocumentSearch({branches,onOpenSaved,onOpenDraft}:Pro
 
   async function openHit(hit:SearchHit){
     setError('');
-    if(hit.recordId){onOpenSaved(hit.recordId);return;}
+    if(hit.recordId){onOpenSaved(hit.recordId,hit.kind==='invoice'?hit.number:undefined);return;}
     setBusy(true);
     try{
       // Search again by the full selected document number to include every
@@ -144,13 +144,13 @@ export default function SapDocumentSearch({branches,onOpenSaved,onOpenDraft}:Pro
       });
       if(owners.length){
         if(owners.length===1){
-          onOpenSaved(owners[0].id);
+          onOpenSaved(owners[0].id,hit.kind==='invoice'?hit.number:undefined);
           setWarning('هذا الترحيل مسجل بالفعل في المطابقة. فُتح سجله الأصلي بدل إنشاء نسخة مكررة. راجع الربط والفواتير داخله.');
           return;
         }
         throw Error('الترحيلات المطلوبة موزعة على '+owners.length+' سجلات محفوظة. افتح كل سجل من نتائج البحث وراجع الربط قبل الدمج، منعًا لتكرار الترحيلات.');
       }
-      onOpenDraft(draftForReview(group),group,reviewNotes(group,sap));
+      onOpenDraft(draftForReview(group,hit.kind==='invoice'?hit.number:undefined),group,reviewNotes(group,sap));
     }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر فتح المستند للمراجعة.');}
     finally{setBusy(false);}
   }
