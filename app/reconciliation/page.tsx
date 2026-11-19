@@ -404,7 +404,7 @@ async function findTransferForAddition(number: string, saved: StoredTransfer | n
   }
   const parsed = file && parseSapImport(file.text, branches);
   const member = parsed ? parsed.groups.flatMap(group => group.members).find(row => row.transfer.number === number) : undefined;
-  if(member?.reversal&&!member.reverseMovement)throw Error('الترحيل '+number+' ملغى في SAP؛ لا يجوز تجاوز الإلغاء باستثناء الفرع.');
+  if(member?.reversal&&!member.reverseMovement)throw Error('الترحيل '+number+' يحمل إشارة إلغاء أو تصحيح؛ يجب التحقق من حالة SAP قبل اعتماده، ولا يجوز تجاوز المراجعة باستثناء الفرع.');
   // Keep both independent SAP branch signals. The archived original can say
   // 56 while Remarks already identify 77; selecting 77 must not erase 56.
   const branchConflictOnly=!!member?.issues.length&&member.issues.every(issue=>issue.startsWith('تعارض فرع SAP:'));
