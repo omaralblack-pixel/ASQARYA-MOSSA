@@ -128,4 +128,59 @@ assert.ok(screen.includes('let archiveWarning=')&&screen.includes('await archive
 assert.ok(screen.indexOf('for(const batch of state.batches.filter')<
  screen.indexOf('let archiveWarning='),'Archive failure cannot run before batch resume');
 console.log('PASS: SAP HTML 503, invalid JSON, actionable endpoint diagnosis, partial batch resume and archive isolation.');
+
+// A 503 can precede a batch write or hide an already-committed write. Probe
+// durable state first; retry only confirmed pending work and keep lease guards.
+const {sapRequest}=load('app/lib/sap-files-client.ts');
+const batchKey='lieutenant/transfers__'+'c'.repeat(32)+'__retry.txt';
+const batchBody={action:'batch',key:batchKey,index:0};
+const batchJob=state=>({key:batchKey,total:1,done:state==='complete'?1:0,
+ batches:[{idx:0,state,error:'',duration:0}]});
+const batchUrl='/api/sap-processing';
+const previousTimer=globalThis.setTimeout;
+globalThis.setTimeout=(fn)=>{queueMicrotask(fn);return 0;};
+try{
+ for(const state of ['complete','running','failed','pending']){
+  const calls=[];let posts=0;
+  globalThis.fetch=async(url,init)=>{
+   const post=init?.method==='POST';calls.push(post?'POST':'GET');
+   if(!post){assert.equal(String(url),batchUrl+'?key='+encodeURIComponent(batchKey));return Response.json({job:batchJob(state)});}
+   assert.deepEqual(JSON.parse(init.body),batchBody);
+   if(++posts===1)return new Response('<html>503</html>',{status:503});
+   return Response.json({job:batchJob('complete')});
+  };
+  const resumed=await sapRequest(batchUrl,batchBody);
+  assert.deepEqual(calls,state==='pending'?['POST','GET','POST']:['POST','GET']);
+  assert.equal(resumed.job.batches[0].state,state==='pending'?'complete':state);
+  assert.equal(!!resumed.busy,state==='running');
+ }
+ let posts=0,reads=0;
+ globalThis.fetch=async(_,init)=>{
+  if(init?.method==='POST'){posts++;return new Response('<html>503</html>',{status:503});}
+  reads++;return Response.json({job:batchJob('pending')});
+ };
+ await assert.rejects(()=>sapRequest(batchUrl,batchBody),/HTTP 503/);
+ assert.equal(posts,3,'Transient batch retries are bounded');assert.equal(reads,3);
+ posts=0;reads=0;
+ globalThis.fetch=async(_,init)=>{
+  if(init?.method==='POST')posts++;else reads++;
+  return new Response('<html>503</html>',{status:503});
+ };
+ await assert.rejects(()=>sapRequest(batchUrl,batchBody),/HTTP 503/);
+ assert.equal(posts,1,'Do not repeat a write when durable state cannot be read');assert.equal(reads,3);
+ for(const status of [400,401,403,409,422,546]){
+  let calls=0;
+  globalThis.fetch=async()=>{calls++;return Response.json({error:'requires review'},{status});};
+  await assert.rejects(()=>sapRequest(batchUrl,batchBody));
+  assert.equal(calls,1,'Do not retry authentication, validation, conflicts or CPU-limit errors');
+ }
+ posts=0;
+ globalThis.fetch=async(_,init)=>{
+  if(init?.method==='POST'){posts++;throw new TypeError('network unavailable');}
+  return Response.json({job:batchJob('complete')});
+ };
+ assert.equal((await sapRequest(batchUrl,batchBody)).job.done,1);
+ assert.equal(posts,1,'A dropped response after commit cannot duplicate the write');
+}finally{globalThis.fetch=previousFetch;globalThis.setTimeout=previousTimer;}
+console.log('PASS: bounded SAP batch retries, committed-response readback, active leases, failed-batch review, network recovery and unavailable-state protection.');
 console.log('PASS: immutable original bytes, duplicate uploads, opening/closing dates independent of upload time, downloadable filenames, invalid dates, auth/same-origin guards, traversal rejection and full 205-file pagination.');
