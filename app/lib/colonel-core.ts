@@ -6,6 +6,13 @@ import type {CancellationDecision} from './lieutenant-cancellation-decisions';
 
 export type ColonelRecord={id:string;branch:string;status?:string;updated?:string;payload:string};
 export type ColonelAssignment={transfer_no:string;invoice_day:string;reason:string;updated_at:string};
+export type ColonelBranchException={transfer_no:string;issue_text:string;reason:string;confirmed_at:string};
+/** Only an SAP branch-name disagreement is dismissible in Colonel.
+ * Invalid quantities, transfer movement direction, codes, units and
+ * cancellation-status conflicts always remain actionable. */
+export function isColonelBranchConflict(issue:string):boolean{
+ return /^تعارض فرع SAP: حقل اسم الفرع .+ يخالف الملاحظات .+$/.test(issue);
+}
 export type ColonelDayState={day:string;invoices_complete:number;confirmed_at:string;confirmed_by:string};
 export type ColonelInvoice={number:string;date:string;branch:string;amount:string;recordId:string;
   complete:boolean;dateSource:string;transfers:string[];status:string};
@@ -29,7 +36,7 @@ export type ColonelNonInvoice={recordId:string;invoiceId:string;branch:string;da
   proofs:{number:string;counterparts:string[];detail:string}[]};
 export type ColonelTransfer={number:string;postingDate:string;invoiceDay:string;invoiceNumbers:string[];
   branch:string;state:string;note:string;counterparts:string[];needsAction:boolean;source:'sap'|'project';
-  recordIds:string[];inProject:boolean;decision:string};
+  recordIds:string[];inProject:boolean;decision:string;branchIssue:string;branchReviewed:boolean};
 export type ColonelDay={day:string;invoices:ColonelInvoice[];nonInvoices:ColonelNonInvoice[];transfers:ColonelTransfer[];
   invoicesComplete:boolean;confirmedAt:string;openCount:number;undatedCount:number;
   ready:boolean;reason:string};
@@ -63,6 +70,7 @@ export function buildColonelReport(
  month:string,records:ColonelRecord[],sap:LieutenantTransfer[],
  decisions:CancellationDecision[]=[],assignments:ColonelAssignment[]=[],
  dayStates:ColonelDayState[]=[],sourceReady=false,asOf?:string,
+ branchExceptions:ColonelBranchException[]=[],
 ):ColonelReport{
  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw Error('اختر شهرًا صحيحًا.');
  const end=month+'-'+String(new Date(Date.UTC(+month.slice(0,4),+month.slice(5),0)).getUTCDate()).padStart(2,'0');
@@ -138,6 +146,7 @@ export function buildColonelReport(
   byInvoice.set(invoice.number,dates);
  }
  const byDecision=new Map(decisions.map(d=>[d.transfer_no,d]));
+ const byBranchException=new Map(branchExceptions.map(e=>[e.transfer_no,e]));
  const byAssign=new Map(assignments.map(a=>[a.transfer_no,a]));
  const considered=new Set<string>();
  const transfers:ColonelTransfer[]=[];
@@ -162,15 +171,19 @@ export function buildColonelReport(
   const missingProject=!project;
   const cash=isCashVanTransfer(source);
   const noInvoice=!project||project.invoices.size===0;
-  const uncertain=source.issues.length>0||correction(kind)&&!m?.verifiedOffset||
+  const branchIssue=source.issues.find(isColonelBranchConflict)||'';
+   const branchReviewed=!!branchIssue&&byBranchException.get(number)?.issue_text===branchIssue;
+   const unresolvedIssues=source.issues.filter(issue=>!(branchReviewed&&issue===branchIssue));
+   const uncertain=unresolvedIssues.length>0||correction(kind)&&!m?.verifiedOffset||
     kind==='cashvan-pending'||(source.cancellationMentioned&&!matching&&kind==='normal');
   const administrativeIgnore=decision?.decision==='ignore'&&!!decision.note.trim();
-  const needsAction=source.issues.length>0||days.size>1||
+  const needsAction=unresolvedIssues.length>0||days.size>1||
     (!administrativeIgnore&&(uncertain||
     (!matching&&!cash&&!source.reverse&&!source.signedAdjustment&&noInvoice)||
     (!matching&&cash)));
   const note=[
-   ...(source.issues.length?source.issues:[]),
+   ...(unresolvedIssues.length?unresolvedIssues:[]),
+    branchReviewed?'اختلاف الفرع تمت مراجعته واعتماده إداريًا: '+branchIssue+' — لم تتغير بيانات SAP أو أصنافه أو كمياته':'',
    m?.note||'',
    missingProject?'غير مسجل ضمن مجموعة فواتير المشروع':'',
    !day?'لم يثبت تاريخ فاتورته الزرقاء؛ لا ينسب ليوم SAP تلقائيًا':'',
@@ -181,7 +194,7 @@ export function buildColonelReport(
    invoiceNumbers:linkNumbers,branch:source.branch,state:kind,note,counterparts:
     unique([...(m?.counterparts||[]),...(m?.counterpart?[m.counterpart]:[])]),
    needsAction,source:'sap',recordIds:project?[...project.records]:[],
-   inProject:!!project,decision:decision?.decision||''});
+   inProject:!!project,decision:decision?.decision||'',branchIssue,branchReviewed});
  }
  // Historical project transfers missing from the CURRENT SAP extract are not
  // proof of non-posting, or cancellation; they remain explicit audit exceptions.
@@ -194,7 +207,7 @@ export function buildColonelReport(
   const day=days.size===1?[...days][0]:'';
   transfers.push({number,postingDate:'',invoiceDay:day,invoiceNumbers:[...project.invoices],
    branch:'',state:'not-in-current-sap-source',note:'مسجل في المشروع وغير موجود في كشف SAP المقروء؛ لا يعني أنه غير مرحّل أو ملغى.',
-   counterparts:[],needsAction:true,source:'project',recordIds:[...project.records],inProject:true,decision:''});
+   counterparts:[],needsAction:true,source:'project',recordIds:[...project.records],inProject:true,decision:'',branchIssue:'',branchReviewed:false});
  }
  const states=new Map(dayStates.map(s=>[s.day,s]));
  const days:ColonelDay[]=[];
