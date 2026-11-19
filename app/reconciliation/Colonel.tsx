@@ -345,6 +345,9 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
        <td dir="ltr">{t.invoiceNumbers.join('، ')||'بلا فاتورة مثبتة'}</td>
        <td>{stateLabels[t.state]||t.state}{t.counterparts.length?' — مقابل '+t.counterparts.join('، '):''}</td>
        <td>{t.needsAction?<strong>يحتاج إجراء. </strong>:null}{t.note||'—'}
+        {control.priorPeriodLinks.filter(link=>link.transfer_no===t.number).map(link=>
+          <p key={link.transfer_no} className="hint">توثيق شهر سابق: الترحيل <b dir="ltr">{link.counterpart_no}</b>
+           بتاريخ {link.counterpart_date} — {link.note}. ليس إثبات إلغاء SAP ولا تغييرًا لرصيد 011.</p>)}
         {!!t.branchIssue&&(t.branchReviewed?<button type="button" className="button secondary small" disabled={busy}
           onClick={()=>void action({action:'reopen-branch-conflict',transferNo:t.number})}>إلغاء اعتماد اختلاف الفرع</button>:
          <button type="button" className="button secondary small" disabled={busy}
@@ -370,8 +373,18 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
       <td dir="ltr">{t.number}</td><td dir="ltr">{t.postingDate||'—'}</td>
       <td dir="ltr">{t.invoiceNumbers.join('، ')||'—'}</td><td>{stateLabels[t.state]||t.state}
        {t.counterparts.length?' — مقابل '+t.counterparts.join('، '):''}</td>
-      <td><button type="button" className="button secondary small"
-        onClick={()=>{setManualNo(t.number);setManualDay('');setManualReason('')}}>تحديد يوم الفاتورة</button></td>
+      <td>
+       {sap.find(source=>source.transfer.number===t.number)?.signedAdjustment&&
+        control.priorPeriodLinks.filter(link=>link.transfer_no===t.number).map(link=>
+         <p key={link.transfer_no} className="hint">تصحيح شهر سابق موثق: {link.counterpart_no} بتاريخ {link.counterpart_date}.
+          <span style={{display:'block'}}>التحقق من إلغاء SAP مستقل.</span>
+         </p>)}
+       <button type="button" className="button secondary small"
+        onClick={()=>{setManualNo(t.number);setManualDay('');setManualReason('')}}>تحديد يوم الفاتورة</button>
+       {sap.find(source=>source.transfer.number===t.number)?.signedAdjustment&&
+        <button type="button" className="button secondary small" onClick={()=>onNavigate('lieutenant')}>
+         توثيق المرجع لدى الملازم</button>}
+      </td>
      </tr>)}</tbody></table></div>
     {report.unassigned.length>180&&<p className="hint">يعرض أول 180 ترحيلًا؛ استخدم البحث للوصول للرقم المطلوب.</p>}
     {manualNo&&<div style={{border:'1px solid var(--theme-border)',padding:12,borderRadius:10,marginTop:12}}>
