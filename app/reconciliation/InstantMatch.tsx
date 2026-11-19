@@ -363,7 +363,7 @@ export default function InstantMatch({
     if (searchKind==='invoice'&&initialAmount.trim()&&fils(initialAmount)===null) {
       setError('أدخل مبلغ الفاتورة بشكل صحيح، مثل 186.400 دينار.');return;
     }
-    setBusy(true);setSuggestionsOpen(false);setError('');setNotice('');setShowItems(false);
+    setBusy(true);setSuggestionsOpen(false);setError('');setNotice('');setShowItems(false);setReverseChoice(null);setVerifiedReverse([]);
     try {
       const [rows,queued]=await Promise.all([refreshRecords(),searchImportedSap(searched)]);
       setQueueMatches(queued);
@@ -401,49 +401,18 @@ export default function InstantMatch({
         }
       }
       if (candidate) {
-        const reviewReasons=[...new Set([
-          ...candidate.members.flatMap(sapMemberReviewReasons),
-          ...candidate.issues
-        ])];
-        if (reviewReasons.length) {
-          throw Error('لا يمكن اعتماد المستند تلقائيًا: '+reviewReasons.slice(0,4).join('؛ ')+
+        const reviewReasons=[...new Set([...candidate.members.flatMap(sapMemberReviewReasons),...candidate.issues])];
+        if(candidate.members.some(member=>member.reverseMovement)){
+          const choice=reverseChoiceFor(candidate,searched,searchKind,'lookup',queued);
+          setReverseChoice(choice);
+          setNotice('تم العثور على حركة عكسية من المستودع 011. اختر إضافتها للمطابقة الفورية أو فتح المطابقة العادية؛ اتجاه الحركة لا يثبت إلغاء المستند.');
+        }else{
+          if(reviewReasons.length)throw Error('لا يمكن اعتماد المستند تلقائيًا: '+reviewReasons.slice(0,4).join('؛ ')+
             (reviewReasons.length>4?'؛ توجد ملاحظات أخرى.':'.')+
             ' افتح المطابقة الأساسية للمراجعة. خطأ القراءة لا يعني أن الترحيل ملغى.');
-        }
-        const proposed = fillSearchedAmount(fromSap(candidate,searched,searchKind),searched,searchKind);
-        const occupied = proposed.transfers.flatMap(item=>rows
-          .filter(row=>matchesRecord(row,item.number,'transfer'))
-          .map(row=>({row,number:item.number})));
-        if (occupied.some(({row})=>(recordDraft(row).invoices||[]).some(inv=>invoiceDocumentNo(inv.number)))) {
-          throw Error('في ترحيل مرتبط بفاتورة زرقاء محفوظة. افتح الفاتورة من السجل بدل تكرارها.');
-        }
-        const first = occupied[0];
-        if (first) {
-          // Keep a previously saved, invoice-free transfer as the owner of the new invoice.
-          const original = await getJson<{record:Summary}>('/api/reconcile?id='+encodeURIComponent(first.row.id));
-          const base = readReconciliationRecord(original.record.payload);
-          if(!base)throw Error('بيانات هذا الكشف غير مقروءة؛ لم يتم تعديلها.');
-          const other = proposed.transfers.filter(row=>row.number!==first.number);
-          const baseTransfer = base.transfers.find(row=>transferNumbers(row.number).includes(first.number));
-          if (!baseTransfer || transferNumbers(baseTransfer.number).length!==1)
-            throw Error('الترحيل محفوظ مع أرقام أخرى في نفس البطاقة. افتحه من سجل المطابقات أولًا.');
-          const all = [{...baseTransfer},...other];
-          const nextSources:Record<string,TransferSource> = {};
-          for (const item of other) {
-            const owner = occupied.find(entry=>entry.number===item.number);
-            if (owner && owner.row.id!==first.row.id) {
-              nextSources[item.id]={number:item.number,recordId:owner.row.id,version:owner.row.version};
-            }
-          }
-          setSources(nextSources);
-          setDraft(withInvoiceDates({...proposed,id:original.record.id,version:original.record.version,
-            transfers:all,branch:proposed.branch||base.branch,
-            referenceSnapshot:base.referenceSnapshot,useCurrentReference:true}));
-          setNotice('تم جلب الترحيلات من SAP وربط السجل السابق الذي لا يحمل فاتورة، بدون تكراره.');
-        } else {
-          setSources({});
-          setDraft(proposed);
-          setNotice('تم العثور على الترحيلات المرتبطة في كشف SAP. أدخل مبلغ كل فاتورة زرقاء.');
+          const prepared=await prepareSapDraft(candidate,searched,searchKind);
+          setDraft(prepared.draft);setSources(prepared.sources);
+          setNotice(prepared.message);
         }
       } else if (searchKind==='transfer') {
         const savedResponse = await fetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
@@ -497,9 +466,16 @@ export default function InstantMatch({
         member=linked?.members.find(item=>item.transfer.number===searched);
         if(linked?.issues.length)throw Error(linked.issues.join(' · '));
       }
-      if (member && (member.reversal || member.reverseMovement || member.issues.length)) {
-        throw Error(sapMemberReviewReasons(member).join('؛ ')+
-          '. راجع الترحيل في المطابقة الأساسية قبل إضافته؛ نقص البيانات ليس إثباتًا للإلغاء.');
+      if(member?.reverseMovement){
+        const linkedGroup=groupSapEvidence(await searchImportedSap(searched),searched,'transfer',branches)
+          ||imports.find(group=>group.members.some(item=>item.transfer.number===searched));
+        if(!linkedGroup)throw Error('تعذّر استرجاع أصل SAP للحركة العكسية.');
+        setReverseChoice(reverseChoiceFor(linkedGroup,searched,'transfer','append'));
+        setNotice('الحركة العكسية '+searched+' تحتاج مراجعتك. اختر إضافتها للمطابقة الفورية أو فتح المطابقة العادية.');
+        return;
+      }
+      if(member&&(member.reversal||member.issues.length)){
+        throw Error(sapMemberReviewReasons(member).join('؛ ')+'. راجع الترحيل في المطابقة الأساسية قبل إضافته.');
       }
       if (draft.transfers.length>0 && member?.invoices.length && !matchesInvoiceNumbers(draft.invoices,member.invoices)) {
         throw Error('فواتير الترحيل '+searched+' في SAP ('+member.invoices.join('، ')+') لا تطابق فواتير الكشف المفتوح.');
@@ -571,7 +547,7 @@ export default function InstantMatch({
     <div className="page-title">
       <div><p className="eyebrow">سير عمل سريع</p><h1>مطابقة فورية</h1>
         <p>اكتب رقم الفاتورة الزرقاء، اسحب ترحيلات SAP، أدخل مبالغ الفواتير، وراجع الفرق مباشرة.</p></div>
-      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setError('');setNotice('');setSuggestionsOpen(false);setSearchFocusRequest(current=>current+1)}}>
+      <button type="button" className="button secondary" disabled={busy||loading} onClick={()=>{setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setReverseChoice(null);setVerifiedReverse([]);setError('');setNotice('');setSuggestionsOpen(false);setSearchFocusRequest(current=>current+1)}}>
         <RefreshCw size={16}/>مطابقة جديدة</button>
     </div>
     <section className="panel">
@@ -583,7 +559,7 @@ export default function InstantMatch({
         <div className="instant-document-search">
           <label htmlFor="instant-document-number">ابحث برقم الفاتورة الزرقاء أو الترحيل
             <input ref={searchInput} id="instant-document-number" dir="ltr" inputMode="numeric" autoComplete="off"
-              value={number} onChange={e=>{setNumber(e.target.value);setQueueMatches([]);setSuggestionsOpen(true);setError('')}}
+              value={number} onChange={e=>{setNumber(e.target.value);setQueueMatches([]);setSuggestionsOpen(true);setError('');setReverseChoice(null)}}
               onFocus={()=>setSuggestionsOpen(true)}
               onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();void lookup()}}}
               aria-expanded={suggestionsOpen&&/^\d{4,20}$/.test(digits(number).trim())}
@@ -666,7 +642,7 @@ export default function InstantMatch({
         <div className="section-title"><h2>ترحيلات SAP</h2></div>
         <div className="form-grid">
           <label>أدخل رقم الترحيل لإضافته مباشرة<input dir="ltr" inputMode="numeric" value={transferNumber}
-            onChange={e=>setTransferNumber(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')void addTransfer()}}
+            onChange={e=>{setTransferNumber(e.target.value);setReverseChoice(null)}} onKeyDown={e=>{if(e.key==='Enter')void addTransfer()}}
             placeholder="2615834"/></label>
           <div style={{display:'flex',alignItems:'end'}}><button type="button" className="button secondary"
             disabled={busy} onClick={()=>void addTransfer()}><Plus size={16}/>إضافة الترحيل بالرقم</button></div>
