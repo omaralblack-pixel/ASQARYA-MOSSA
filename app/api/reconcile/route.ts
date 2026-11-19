@@ -585,6 +585,7 @@ if (b.action === 'lieutenantImport') {
    return json({error:'احفظ ملف SAP على Supabase أولًا، ثم أرسل دفعة من 1 إلى 50 ترحيلًا.'},400);
  const activeSnapshot=await db().prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'").first<{value:string}>();
  const snapshotValue=activeSnapshot?.value||'';
+ let deferToSnapshot=false;
  if(activeSnapshot){
   const active=JSON.parse(activeSnapshot.value) as {key:string;created:string};
   if(sourceFile!==active.key&&!sourceFile.includes('__sap-'+active.key.split('__')[1]+'-')){
@@ -597,6 +598,7 @@ if (b.action === 'lieutenantImport') {
     page=archive.nextPage;
    }while(!created&&page!==null);
    if(!created||created<=active.created)return json({error:'هذا أصل SAP قديم؛ استكمل النسخة اليومية الحالية.'},409);
+   deferToSnapshot=true;
   }
  }
  const incoming:{number:string;date:string;paste:string;branch:string;remarks:string;reverse:boolean;cancellationState:string;cancellationMentioned:boolean;invoiceNumbers:string[]}[]=[];
@@ -632,6 +634,8 @@ if (b.action === 'lieutenantImport') {
      invoiceNumbers:Array.isArray(item?.invoiceNumbers)?
        item.invoiceNumbers.filter((n:unknown)=>typeof n==='string'&&/^\d{10}$/.test(n)).slice(0,30):[]});
  }
+ if(deferToSnapshot)return json({added:0,existing:0,staged:incoming.length,total:incoming.length,
+  documents:incoming.map(row=>({number:row.number,state:'staged'}))});
  // Look up only transfer numbers, not every invoice's full multi-kilobyte payload.
  // transfer_keys covers current records; the compact legacy query also detects
  // combined old cards (e.g. "2616390 + 2616391") without downloading their items.

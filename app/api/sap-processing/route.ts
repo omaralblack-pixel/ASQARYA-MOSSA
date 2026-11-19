@@ -31,7 +31,7 @@ async function readJob(key:string,details=true):Promise<SapJob|null>{
   const byNumber=new Map(documents.map(x=>[x.number,x]));
   for(const row of rows.results)if(row.state==='complete'&&row.result){
    const result=JSON.parse(row.result) as {documents?:{number:string;state:string}[]};
-   for(const doc of result.documents||[]){const target=byNumber.get(doc.number);if(target){target.state=doc.state;target.reason=doc.state==='added'?'أكد الخادم حفظه':'موجود مسبقًا؛ لم يُكرر';}}
+   for(const doc of result.documents||[]){const target=byNumber.get(doc.number);if(target){target.state=doc.state;target.reason=doc.state==='added'?'أكد الخادم حفظه':doc.state==='staged'?'جاهز لتفعيل النسخة اليومية':'موجود مسبقًا؛ لم يُكرر';}}
   }
  }
  const status=failed?'failed':done===job.total&&rows.results.length===job.total?
@@ -147,7 +147,7 @@ export async function POST(req:Request){try{
   if(!response.ok)throw Error(result.error||'فشلت الدفعة: HTTP '+response.status);
   if(batch.action==='lieutenantImport'){
    const expected=batch.items as {number:string}[];
-   if(result.documents?.length!==expected.length||new Set(result.documents.map(x=>x.number)).size!==expected.length||expected.some(x=>!result.documents?.some(doc=>doc.number===x.number&&['added','existing'].includes(doc.state))))throw Error('لم يؤكد الخادم كل مستندات الدفعة.');
+   if(result.documents?.length!==expected.length||new Set(result.documents.map(x=>x.number)).size!==expected.length||expected.some(x=>!result.documents?.some(doc=>doc.number===x.number&&['added','existing','staged'].includes(doc.state))))throw Error('لم يؤكد الخادم كل مستندات الدفعة.');
   }else if((result.added||0)+(result.updated||0)+(result.unchanged||0)!==batch.items.length)throw Error('لم يؤكد الخادم كل بنود الدفعة.');
   await db().batch([
    ...(batch.action==='lieutenantImport'?[db().prepare(`INSERT INTO sap_document_receipts(number,fingerprint)
