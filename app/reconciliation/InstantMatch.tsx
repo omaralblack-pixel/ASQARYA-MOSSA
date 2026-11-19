@@ -516,13 +516,17 @@ export default function InstantMatch({
   const prepared=useMemo(()=>pricedDraft?prepareReconciliation(pricedDraft,matchingReference):null,[pricedDraft,matchingReference]);
   const originalResult=prepared?.result??null;
   const result=originalResult;
+  const reverseNumbers=useMemo(()=>draft?draft.transfers.filter(transfer=>
+    parseTransfer(transfer.paste,{allowReverse:true}).lines.some(line=>line.from==='011'))
+    .map(transfer=>transfer.number):[],[draft]);
+  const reverseChecked=reverseNumbers.every(number=>verifiedReverse.includes(number));
   const transferWarnings=useMemo(()=>draft ? draft.transfers.flatMap(transfer=>{
     const parsed=parseTransfer(transfer.paste,{allowReverse:true});
     return [...parsed.issues,...parsed.excluded].map(issue=>'الترحيل '+transfer.number+': '+issue);
   }):[],[draft]);
   const canSave=!!draft&&!!result&&(!isAqaba||!!aqabaPricing&&!aqabaPricingLoading&&!aqabaPricingError)
     &&result.status==='match'&&result.priceDifference===0
-    &&transferWarnings.length===0&&!!draft.branch
+    &&transferWarnings.length===0&&reverseChecked&&!!draft.branch
     &&draft.transfers.every(item=>item.number&&item.paste.trim()&&dateValue(item.date))
     &&draft.invoices.every(item=>invoiceDocumentNo(item.number)&&fils(item.amount)!==null&&dateValue(item.date));
   async function saveAndNext() {
@@ -536,7 +540,7 @@ export default function InstantMatch({
         setError('حُفظت الفاتورة، لكن المطابقة الأساسية لم تعتمدها. افتح المطابقة التفصيلية لإكمال الملاحظات.');
         return;
       }
-      setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setSuggestionsOpen(false);
+      setDraft(null);setSources({});setNumber('');setInitialAmount('');setTransferNumber('');setShowItems(false);setVerifiedReverse([]);setReverseChoice(null);setSuggestionsOpen(false);
       setNotice('تم حفظ المطابقة في السجل. أدخل رقم الفاتورة التالية.');
       setSearchFocusRequest(current=>current+1);
     } catch(e) {setError(e instanceof Error?e.message:'تعذّر حفظ المطابقة.')}
@@ -593,6 +597,18 @@ export default function InstantMatch({
       {fileWarning&&<p className="hint" role="status">{fileWarning}</p>}
       {error&&<p role="alert" className="banner danger"><AlertTriangle size={16}/> {error}</p>}
       {notice&&<p role="status" className="banner info"><CheckCircle2 size={16}/> {notice}</p>}
+      {reverseChoice&&<section className="panel" aria-label="خيارات مراجعة الترحيل العكسي">
+        <h3>الترحيل العكسي {reverseChoice.number} — صادر من المستودع 011</h3>
+        <p className="hint">الحركة العكسية تنقص صافي مخزون 011، وليست إثباتًا أن المستند ملغى. اختر المطابقة الفورية مع فرع المؤسسة أو المطابقة العادية.</p>
+        {reverseChoice.notes.length>0&&<p className="hint">{reverseChoice.notes.join('؛ ')}</p>}
+        {reverseChoice.blockers.length>0&&<p className="banner danger" role="alert">هناك مشاكل إضافية في بيانات SAP تمنع الاعتماد الفوري: {reverseChoice.blockers.join('؛ ')}</p>}
+        <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+          <button type="button" className="button primary" disabled={busy||!!reverseChoice.blockers.length}
+            onClick={()=>void acceptReverseChoice(false)}><Plus size={16}/>إضافة الترحيل العكسي للمطابقة الفورية</button>
+          <button type="button" className="button secondary" disabled={busy}
+            onClick={()=>void acceptReverseChoice(true)}>فتح المستند في المطابقة العادية</button>
+        </div>
+      </section>
     </section>
 
     {draft&&<div style={{display:'grid',gap:16}}>
@@ -675,6 +691,16 @@ export default function InstantMatch({
           <div className={'stat status-stat '+result.status}><span>الحالة</span>
             <strong>{result.status==='match'&&result.priceDifference===0&&!transferWarnings.length?(draft.invoices.length>1?'مطابق ماليًا — إجمالي المجموعة':'مطابق ماليًا') :result.status==='difference'||result.priceDifference!==null&&result.priceDifference!==0?'غير مطابق':'بحاجة مراجعة'}</strong></div>
         </div>
+        {reverseNumbers.length>0&&<div className="review-list" role="group" aria-label="تشييك الترحيلات العكسية">
+          <h3>مراجعة الحركات العكسية من 011 مع المؤسسة</h3>
+          <p className="hint">كل حركة عكسية تُخصم من الصافي. تأكد من الفرع والأصناف والكميات مع الورق قبل الاعتماد؛ التشييك لا يغيّر مستند SAP.</p>
+          {reverseNumbers.map(number=><label key={number} className="check-label">
+            <input type="checkbox" checked={verifiedReverse.includes(number)}
+              onChange={event=>setVerifiedReverse(previous=>event.target.checked?[...new Set([...previous,number])]:previous.filter(x=>x!==number))}/>
+            شيّكت الحركة العكسية {number} مع مؤسسة الفرع وتأكدت من الكميات
+          </label>)}
+          {!reverseChecked&&<p className="hint">الحفظ الفوري معطّل إلى أن تُشيّك جميع الحركات العكسية.</p>}
+        </div>}
         {draft.invoices.some(item=>!dateValue(item.date))&&<p className="hint" role="alert">حدّد تاريخ الفاتورة الزرقاء أو صحّح التاريخ التلقائي قبل الحفظ، حتى يظل محفوظًا في السجل.</p>}
                 {(result.problems.length>0||result.review>0||transferWarnings.length>0)&&<details open className="review-list"><summary>نقاط يجب مراجعتها ({result.problems.length+result.review+transferWarnings.length})</summary>
           {transferWarnings.map((text,index)=><p key={'transfer-'+index}>{text}</p>)}
