@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,pageNumber,monthly,monthlyColumns,parseTransfer,convert,dateValue,approvedBranchException,unmatchedBranchSources}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,pageNumber,monthly,monthlyColumns,parseTransfer,convert,dateValue,markSearchedPaperInvoice,approvedBranchException,unmatchedBranchSources}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -304,3 +304,17 @@ console.log('PASS: approved links, aliases and missing definitions apply to save
  assert.equal(monthlyColumns('Document Number\tDocument Date\tBranch\n2617000\t2026-11-14\tالسرو').number,0);
 }
 console.log('PASS: M2026 auto-detection selects real SAP document numbers over # counters and deduplicates item rows across 867 documents.');
+
+const searchedPaperDraft={
+  ...d,invoices:[
+    {id:'a',number:'2624002303',complete:false,amount:'1.000',date:'2026-11-01',quantities:{}},
+    {id:'b',number:'2624002304',complete:false,amount:'2.000',date:'2026-11-01',quantities:{}},
+  ]
+};
+const confirmedPaper=markSearchedPaperInvoice(searchedPaperDraft,'2624002303');
+assert.equal(confirmedPaper.invoices[0].complete,true,'Exact blue invoice number search means the physical paper is in hand');
+assert.equal(confirmedPaper.invoices[1].complete,false,'Do not confirm another invoice within the same group');
+assert.equal(searchedPaperDraft.invoices[0].complete,false,'Searching cannot persist an edit into original saved data');
+assert.equal(markSearchedPaperInvoice(searchedPaperDraft,'2616818').invoices[0].complete,false,'A transfer lookup is never paper confirmation');
+assert.equal(markSearchedPaperInvoice(searchedPaperDraft,'2624002303').invoices[0].amount,'1.000','Paper marking cannot modify invoice amount');
+console.log('PASS: Search-selected blue invoice is marked in memory only; transfer searches and other invoices remain unchanged.');
