@@ -3,11 +3,15 @@ import {dateValue,invoiceDocumentNo,readReconciliationRecord,transferNumbers} fr
 import {invoiceDate} from '../../lib/invoice-collector';
 import {isColonelBranchConflict} from '../../lib/colonel-core';
 import {readJsonRequest,JsonRequestError} from '../../lib/json-request';
+import reconciliationSchema from '../../lib/reconciliation-schema.json';
 
 export const dynamic='force-dynamic';
 const json=(body:unknown,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة بيانات المؤسسة غير متاحة');return env.DB};
+// Initialize shared read-only dependencies even when Colonel opens before reconciliation.
+// CREATE IF NOT EXISTS preserves all existing invoice and lieutenant rows.
 const schema=[
+ ...reconciliationSchema.filter(sql=>/^CREATE TABLE IF NOT EXISTS (?:reconciliations|lieutenant_cancellation_decisions) \(/i.test(sql)),
  "CREATE TABLE IF NOT EXISTS colonel_days (day TEXT PRIMARY KEY NOT NULL, invoices_complete INTEGER NOT NULL DEFAULT 0, confirmed_at TEXT NOT NULL, confirmed_by TEXT NOT NULL DEFAULT 'operator')",
  "CREATE TABLE IF NOT EXISTS colonel_transfer_days (transfer_no TEXT PRIMARY KEY NOT NULL, invoice_day TEXT NOT NULL, reason TEXT NOT NULL, updated_at TEXT NOT NULL)",
  "CREATE TABLE IF NOT EXISTS colonel_events (id TEXT PRIMARY KEY NOT NULL, event_type TEXT NOT NULL, entity_no TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL)",

@@ -20,14 +20,22 @@ function sessionSignature(value: string, secret: string) {
   return createHmac("sha256", secret).update(value).digest("hex");
 }
 
+let securitySchemaReady: Promise<unknown> | undefined;
 async function resolveSessionSecret(env: Cloudflare.Env) {
   if (env.INSTITUTION_SESSION_SECRET && env.INSTITUTION_SESSION_SECRET.length >= 32) {
     return env.INSTITUTION_SESSION_SECRET;
   }
   if (!env.DB) return null;
-  await env.DB.prepare(
+  // Initialize the D1 fallback table once per Worker isolate, not per request.
+  await (securitySchemaReady ??= env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS institution_security (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-  ).run();
+  ).run().catch(error => { securitySchemaReady = undefined; throw error; }));
+  // Routine authenticated requests are read-only; D1 can safely retry SELECT.
+  const existing = await env.DB.prepare(
+    "SELECT value FROM institution_security WHERE key = 'session_secret'",
+  ).first<{ value: string }>();
+  if (existing?.value) return existing.value;
+  // Concurrent cold starts must preserve the same durable session secret.
   await env.DB.prepare(
     "INSERT OR IGNORE INTO institution_security (key, value) VALUES ('session_secret', ?)",
   ).bind(randomBytes(32).toString("hex")).run();
