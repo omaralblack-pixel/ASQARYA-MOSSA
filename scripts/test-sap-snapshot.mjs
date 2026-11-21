@@ -74,7 +74,31 @@ try{
  assert.deepEqual(payload.invoiceNumbers,['2622912088']);
  assert.equal(payload.transfer.number,'2616732');
  assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),manualBefore);
- assert.deepEqual(files.map(file=>file.key),[root]);
+ assert.deepEqual(files.map(file=>file.key),[old,root,child],'Activation retains every immutable original and derived part');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_history_rows').get().count,1);
+ assert.equal(sqlite.prepare('SELECT payload FROM sap_snapshot_history_rows').get().payload,'{"remarks":"old","invoiceNumbers":[]}');
+ assert.equal((await committed.clone().json()).deleted,0);
  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM lieutenant_queue').get().count,1);
- console.log('PASS: atomic daily SAP replacement, exact invoice/transfer recovery, incomplete snapshot protection, archive cleanup and manual corrections preserved.');
+ const get=path=>new Request('https://example.com/api/sap-snapshot'+path);
+ const current=await (await replaceSapSnapshot(get('?rows=1'),env)).json();
+ assert.equal(current.snapshot.documents,1);assert.equal(current.rows.length,1);assert.equal(current.hasMore,false);
+ assert.equal(current.rows[0].transfer_no,'2616732');
+ assert.equal((await replaceSapSnapshot(get('?rows=1&key=wrong'),env)).status,409);
+ const {readActiveSap}=load('app/lib/active-sap.ts');
+ globalThis.fetch=async url=>replaceSapSnapshot(new Request('https://example.com'+url),env);
+ const active=await readActiveSap(new AbortController().signal);assert.equal(active.transfers.length,1);
+ // Mock an internally inconsistent count: even a successful HTTP response is insufficient.
+ globalThis.fetch=async()=>Response.json({...current,snapshot:{...current.snapshot,documents:2,activeCount:2}});
+ await assert.rejects(readActiveSap(new AbortController().signal),/جميع ترحيلات/);
+ globalThis.fetch=async()=>Response.json({...current,hasMore:true,next:null});
+ await assert.rejects(readActiveSap(new AbortController().signal),/تسلسل/);
+ globalThis.fetch=async()=>Response.json({...current,hasMore:true,next:'2616732'});
+ await assert.rejects(readActiveSap(new AbortController().signal),/تسلسل/);
+ // Corrupt one frozen row without changing its count. No match may be reported.
+ globalThis.fetch=async()=>Response.json({...current,rows:[{transfer_no:'2616732',payload:'{bad'}]});
+ await assert.rejects(readActiveSap(new AbortController().signal),/غير مقروءة/);
+ globalThis.fetch=async()=>Response.json({...current,rows:[{transfer_no:'2616732',payload:JSON.stringify({...payload,transfer:{...payload.transfer,number:'wrong'}})}]});
+ await assert.rejects(readActiveSap(new AbortController().signal),/غير مكتملة/);
+
+ console.log('PASS: atomic daily SAP replacement, exact invoice/transfer recovery, incomplete snapshot protection, rollback queue and all originals retained, manual corrections preserved.');
 }finally{globalThis.fetch=originalFetch;sqlite.close();}

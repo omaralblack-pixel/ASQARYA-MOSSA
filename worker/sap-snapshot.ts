@@ -5,7 +5,7 @@ import branches from '../app/branches.json';
 
 type ArchiveFile={key:string;name:string;kind:string;created:string};
 
-/** Commit a fully processed daily SAP snapshot, then remove superseded originals.
+/** Commit a fully processed daily SAP snapshot and retain rollback evidence.
  * Reconciliations and all manual decisions live in separate tables.
  */
 export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Promise<Response>{
@@ -25,13 +25,26 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    const count=await env.DB.prepare(
     'SELECT COUNT(*) AS count FROM lieutenant_queue WHERE source_file=?'
    ).bind(source.key).first<{count:number}>();
-   return reply({snapshot:{
+   const snapshot={
     key:source.key,
     created:typeof source.created==='string'?source.created:'',
     committed:typeof source.committed==='string'?source.committed:'',
     documents:source.documents,
     activeCount:Number(count?.count||0),
-   }});
+   };
+   const url=new URL(request.url);
+   if(url.searchParams.get('rows')==='1'){
+    if(url.searchParams.has('key')&&url.searchParams.get('key')!==source.key)
+     return reply({error:'تغيّرت نسخة SAP أثناء القراءة؛ أعد الفحص.'},409);
+    if(snapshot.activeCount!==snapshot.documents)return reply({error:'عدد ترحيلات D1 لا يطابق النسخة المعتمدة؛ الفحص غير مكتمل.'},409);
+    const after=url.searchParams.get('after')||'';
+    if(after.length>40)return reply({error:'مؤشر ترحيلات غير صالح.'},400);
+    const result=await env.DB.prepare('SELECT transfer_no,payload FROM lieutenant_queue WHERE source_file=? AND transfer_no>? ORDER BY transfer_no LIMIT 51')
+     .bind(source.key,after).all<{transfer_no:string;payload:string}>();
+    const rows=result.results.slice(0,50);
+    return reply({snapshot,rows,hasMore:result.results.length>50,next:rows.at(-1)?.transfer_no||null});
+   }
+   return reply({snapshot});
   }catch(error){
    console.error('Could not verify active SAP snapshot',error);
    return reply({error:'تعذّر التحقق من نسخة SAP المعتمدة في D1.'},503);
@@ -108,7 +121,14 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    .bind(body.key,keys).first<{count:number;uniqueCount:number}>();
   if(counts?.count!==body.documents||counts.uniqueCount!==body.documents)
    return reply({error:'عدد ترحيلات النسخة الجديدة غير مطابق؛ لم يتم الاستبدال.'},409);
+  // This additive history is only written on a user-requested activation.
+  // Keep the exact previous queue and pointer before atomically switching.
+  await env.DB.batch([
+   env.DB.prepare('CREATE TABLE IF NOT EXISTS sap_snapshot_history (id TEXT PRIMARY KEY,metadata TEXT NOT NULL,created TEXT NOT NULL)'),
+   env.DB.prepare('CREATE TABLE IF NOT EXISTS sap_snapshot_history_rows (snapshot_id TEXT NOT NULL,transfer_no TEXT NOT NULL,doc_date TEXT NOT NULL,payload TEXT NOT NULL,source_file TEXT NOT NULL,created TEXT NOT NULL,PRIMARY KEY(snapshot_id,transfer_no))'),
+  ]);
   const now=new Date().toISOString();
+  const backupId=crypto.randomUUID();
   // One D1 transaction switches every SAP queue row together. Reviewed records,
   // invoice keys, branch exceptions and cancellation decisions are preserved.
   await env.DB.batch([
@@ -118,6 +138,8 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
     AND NOT EXISTS(SELECT 1 FROM sap_file_batches WHERE file_key IN (SELECT value FROM json_each(?)) AND state<>'complete')
     THEN '{}' ELSE 'snapshot changed during commit' END)`)
     .bind(root.created,body.key,keys,body.documents,keys),
+   env.DB.prepare("INSERT INTO sap_snapshot_history(id,metadata,created) VALUES(?,COALESCE((SELECT value FROM settings WHERE key='sapCurrentSnapshot'),'{}'),?)").bind(backupId,now),
+   env.DB.prepare('INSERT INTO sap_snapshot_history_rows(snapshot_id,transfer_no,doc_date,payload,source_file,created) SELECT ?,transfer_no,doc_date,payload,source_file,created FROM lieutenant_queue').bind(backupId),
    env.DB.prepare('DELETE FROM lieutenant_queue'),
    env.DB.prepare(`INSERT INTO lieutenant_queue(transfer_no,doc_date,payload,source_file,created)
     SELECT number,doc_date,payload,?,? ${source}`).bind(body.key,now,body.key,keys),
@@ -131,32 +153,9 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
      .bind(body.key,crypto.randomUUID(),JSON.stringify({kind:'unified',count:body.documents,issues:[],documents:[]}),now),
    ]:[]),
   ]);
-  const obsolete=files.filter(file=>file.key!==root.key&&
-   (file.created<=root.created||file.name.startsWith('sap-'+hash+'-')));
-  const historical=await env.DB.prepare('SELECT key,updated FROM sap_file_jobs WHERE updated<=?').bind(root.created)
-   .all<{key:string;updated:string}>();
-  // Storage cleanup follows the database commit. Retrying cleanup cannot erase
-  // the active original or another upload that arrived after this snapshot.
-  const storage=new URL('/storage/v1/object/institution-sap',env.SUPABASE_URL).href;
-  let deleted=0;
-  for(let i=0;i<obsolete.length;i+=100){
-   const response=await fetch(storage,{method:'DELETE',headers:{apikey:env.SUPABASE_STORAGE_SECRET!,
-    'Content-Type':'application/json'},body:JSON.stringify({prefixes:obsolete.slice(i,i+100).map(file=>file.key)})});
-   if(!response.ok)return reply({committed:true,deleted,error:'تم الاستبدال؛ تعذّر تنظيف بعض الأصول القديمة. أعد استكمال النسخة لتنظيف الباقي.'},502);
-   const removed=await response.json() as unknown[];deleted+=removed.length;
-  }
-  // Completed processing histories are no longer needed once the new snapshot
-  // is active. Keep any genuinely newer uploads available for their own resume.
-  const obsoleteKeys=JSON.stringify([...new Set([...obsolete.map(file=>file.key),
-   ...historical.results.filter(job=>job.key!==root.key&&!files.some(file=>file.key===job.key)).map(job=>job.key)])]);
-  await env.DB.batch([
-   env.DB.prepare('DELETE FROM sap_file_batches WHERE file_key IN (SELECT value FROM json_each(?))').bind(obsoleteKeys),
-   env.DB.prepare('DELETE FROM sap_batch_history WHERE file_key IN (SELECT value FROM json_each(?))').bind(obsoleteKeys),
-   env.DB.prepare('DELETE FROM sap_job_history WHERE key IN (SELECT value FROM json_each(?))').bind(obsoleteKeys),
-   env.DB.prepare('DELETE FROM sap_file_jobs WHERE key IN (SELECT value FROM json_each(?))').bind(obsoleteKeys),
-   env.DB.prepare('DELETE FROM sap_snapshot_rows WHERE root_key=? OR root_key IN (SELECT value FROM json_each(?))').bind(body.key,obsoleteKeys),
-  ]);
-  return reply({committed:true,documents:body.documents,deleted,key:body.key});
+  // Originals, completed batches and staging rows remain available for audit,
+  // resume and rollback. Activation must never perform storage cleanup.
+  return reply({committed:true,documents:body.documents,deleted:0,key:body.key,backupId});
  }catch(error){
   console.error('SAP snapshot replacement failed',error);
   return reply({error:error instanceof Error?error.message:'تعذّر استبدال نسخة SAP.'},500);

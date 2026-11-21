@@ -4,6 +4,7 @@ import {useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDownToLine,CheckCircle2,HeartPulse,Printer,RefreshCw,RotateCcw,Search,ShieldCheck} from 'lucide-react';
 import {mapBounded,readAllRecords,readJson} from '../lib/bounded-read';
 import {collectInvoicesByDate} from '../lib/invoice-collector';
+import {readActiveSap} from '../lib/active-sap';
 import {readSapArchive} from '../lib/sap-files-client';
 import type {LieutenantTransfer} from '../lib/lieutenant';
 import {restoreLieutenantSource,restoreLieutenantStock,restoreUnifiedStockSnapshots,type LieutenantSourceFile} from '../lib/lieutenant-source';
@@ -31,7 +32,7 @@ async function readAuditRecords(signal:AbortSignal,progress:(page:number)=>void)
 }
 async function readColonelControls(from:string,to:string,signal:AbortSignal):Promise<ReassuranceCouncilControl[]>{
   const periods:string[]=[];
-  let month=from.slice(0,7),end=to.slice(0,7);
+  let month=from.slice(0,7);const end=to.slice(0,7);
   for(let i=0;month<=end&&i<14;i++){
     periods.push(month);
     const next=new Date(month+'-01T00:00:00Z');
@@ -115,9 +116,10 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
         }
         return files;
       };
-      const [metaResult,filesResult,recordsResult,controlsResult]=await Promise.allSettled([
+      const [metaResult,filesResult,recordsResult,controlsResult,activeResult]=await Promise.allSettled([
         readJson<Pick<ReassuranceData,'reference'|'openingStock'>>('/api/reconcile?reassuranceMeta=1&from='+encodeURIComponent(from),signal),
         archive(),readAuditRecords(signal,page=>progress('قراءة الفواتير — الصفحة '+page)),readColonelControls(from,to,signal),
+        readActiveSap(signal,page=>progress('قراءة SAP المعتمد في D1 — الصفحة '+page)),
       ]);
       signal.throwIfAborted();
       if(metaResult.status==='rejected')throw metaResult.reason;
@@ -129,6 +131,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
       let sharedRead:ReturnType<typeof readSavedSapImport>|undefined;
       const readShared=()=>sharedRead??=(readSavedSapImport({signal}).then(value=>{shared=value;return value}));
       const sourceErrors:string[]=[];
+      if(activeResult.status==='rejected')sourceErrors.push('تعذّر التحقق من مصدر SAP المعتمد في D1: '+(activeResult.reason instanceof Error?activeResult.reason.message:'خطأ قراءة'));
       const councilWarnings:string[]=[];
       if(controlsResult.status==='rejected')councilWarnings.push('تعذّر قراءة قرارات العقيد والملازم: '+
         (controlsResult.reason instanceof Error?controlsResult.reason.message:'خطأ غير معروف'));
@@ -148,7 +151,8 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
         return cache.get(file.key)!;
       };
       const [sourceResult,closingResult,openingResult]=await Promise.allSettled([
-        restoreLieutenantSource(files,branches,readArchive,readShared),
+        activeResult.status==='fulfilled'?Promise.resolve({key:activeResult.value.snapshot.key,name:'SAP المعتمد فعليًا في D1 — '+activeResult.value.snapshot.documents+' ترحيل',
+          scan:{transfers:activeResult.value.transfers,issues:activeResult.value.transfers.flatMap(row=>row.issues)}}):restoreLieutenantSource(files,branches,readArchive,readShared),
         restoreLieutenantStock(files,'balance',to,readArchive),
         restoreLieutenantStock(files,'opening',from,readArchive),
       ]);
@@ -185,7 +189,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
     }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر إجراء الفحص.');}
     finally{clearTimeout(deadline);if(id===request.current){setBusy(false);active.current=null;}}
   }
-  reloadRef.current=reload;
+  useEffect(()=>{reloadRef.current=reload;});
   useEffect(()=>{
     if(lastSync.current===syncVersion)return;
     lastSync.current=syncVersion;
@@ -196,8 +200,8 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
     const syncOnReturn=()=>{
       // Another tab or the lieutenant may have uploaded a newer immutable SAP
       // source while this tab was inactive. Recheck when the user returns.
-      if(document.visibilityState==='visible'&&Date.now()-lastArchiveCheck.current>30_000)
-        !active.current&&void reloadRef.current();
+      if(document.visibilityState==='visible'&&Date.now()-lastArchiveCheck.current>30_000&&!active.current)
+        void reloadRef.current();
     };
     window.addEventListener('focus',syncOnReturn);
     document.addEventListener('visibilitychange',syncOnReturn);
