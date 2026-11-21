@@ -1,0 +1,25 @@
+name: D1 migration backup checks
+on:
+  pull_request:
+    paths:
+      - "scripts/prepare-d1-backup.py"
+      - "scripts/test-prepare-d1-backup.py"
+      - "docs/d1-to-supabase.md"
+      - ".github/workflows/d1-backup-checks.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/prepare-d1-backup.py"
+      - "scripts/test-prepare-d1-backup.py"
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/test-prepare-d1-backup.py
