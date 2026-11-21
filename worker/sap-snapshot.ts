@@ -19,8 +19,8 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
     .first<{value:string}>();
    if(!row)return reply({snapshot:null});
    const source=JSON.parse(row.value) as {key?:unknown;created?:unknown;committed?:unknown;documents?:unknown};
-   if(typeof source.key!=='string'||!Number.isSafeInteger(source.documents)||
-      (source.documents as number)<1)
+   if(typeof source.key!=='string'||typeof source.documents!=='number'||
+      !Number.isSafeInteger(source.documents)||source.documents<1)
     return reply({error:'سجل النسخة المعتمدة غير صالح؛ لا يمكن تأكيد الاعتماد.'},500);
    const count=await env.DB.prepare(
     'SELECT COUNT(*) AS count FROM lieutenant_queue WHERE source_file=?'
