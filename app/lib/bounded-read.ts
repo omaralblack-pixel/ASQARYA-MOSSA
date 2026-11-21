@@ -41,10 +41,14 @@ export function readJson<T>(url:string,signal?:AbortSignal):Promise<T>{
 /** Preserve input order and every failure; never drop failed tasks. */
 export async function mapBounded<T,R>(items:T[],limit:number,read:(item:T,index:number)=>Promise<R>):Promise<R[]>{
   if(!Number.isSafeInteger(limit)||limit<1)throw Error('Invalid concurrency');
-  const result:R[]=new Array(items.length);let next=0;
+  const result:R[]=new Array(items.length);let next=0,failed=false;let failure:unknown;
   await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{
-    while(next<items.length){const index=next++;result[index]=await read(items[index],index)}
+    while(next<items.length&&!failed){
+      const index=next++;
+      try{result[index]=await read(items[index],index)}catch(error){failed=true;failure=error}
+    }
   }));
+  if(failed)throw failure;
   return result;
 }
 

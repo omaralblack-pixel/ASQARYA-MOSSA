@@ -132,7 +132,8 @@ if(u.searchParams.has('lieutenantMeta')){
   const from=u.searchParams.get('from')||'';
   if(dateValue(from)!==from)return json({error:'اختر تاريخ بداية صحيحًا.'},400);
   const openingStock=await db().prepare('SELECT snapshot_date,warehouse,sap_code,item_name,unit,quantity FROM lieutenant_opening_stock WHERE snapshot_date=? AND warehouse=? ORDER BY sap_code,unit').bind(from,'011').all();
-  return json({reference:await refs(),openingStock:openingStock.results});
+  const total=await db().prepare('SELECT COUNT(*) AS count FROM reconciliations').first<{count:number}>();
+  return json({reference:await refs(),openingStock:openingStock.results,recordCount:Number(total?.count)});
 }if(u.searchParams.has('stockInvoiceFrom')||u.searchParams.has('stockInvoiceTo')){
   // Read-only comparison mode in "Net transfers to 011". Invoice dates
   // deliberately remain independent of SAP posting dates.

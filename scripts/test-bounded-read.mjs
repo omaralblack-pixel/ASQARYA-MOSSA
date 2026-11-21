@@ -59,7 +59,7 @@ try{
   });
   assert.equal(records.length,37);assert.equal(new Set(records.map(r=>r.id)).size,37);
   for(const record of records)assert.deepEqual(JSON.parse(record.payload),frozen);
-  const meta=await (await route.GET(new Request('https://example.test/api/reconcile?reassuranceMeta=1&from=2026-11-01'))).json();assert.ok(Array.isArray(meta.reference));assert.ok(Array.isArray(meta.openingStock));
+  const meta=await (await route.GET(new Request('https://example.test/api/reconcile?reassuranceMeta=1&from=2026-11-01'))).json();assert.equal(meta.recordCount,37);assert.ok(Array.isArray(meta.reference));assert.ok(Array.isArray(meta.openingStock));
  });
  await test('SAP archive listing rejects repeated pages, duplicated keys and missing pagination metadata',async()=>{
   const {listSapFiles}=load('app/lib/sap-files-client.ts');

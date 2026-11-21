@@ -117,13 +117,15 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
         return files;
       };
       const [metaResult,filesResult,recordsResult,controlsResult,activeResult]=await Promise.allSettled([
-        readJson<Pick<ReassuranceData,'reference'|'openingStock'>>('/api/reconcile?reassuranceMeta=1&from='+encodeURIComponent(from),signal),
+        readJson<Pick<ReassuranceData,'reference'|'openingStock'>&{recordCount:number}>('/api/reconcile?reassuranceMeta=1&from='+encodeURIComponent(from),signal),
         archive(),readAuditRecords(signal,page=>progress('قراءة الفواتير — الصفحة '+page)),readColonelControls(from,to,signal),
         readActiveSap(signal,page=>progress('قراءة SAP المعتمد في D1 — الصفحة '+page)),
       ]);
       signal.throwIfAborted();
       if(metaResult.status==='rejected')throw metaResult.reason;
       if(recordsResult.status==='rejected')throw recordsResult.reason;
+      if(!Number.isSafeInteger(metaResult.value.recordCount)||recordsResult.value.length!==metaResult.value.recordCount)
+        throw Error('عدد صفحات الفواتير المقروءة لا يطابق سجل D1؛ الفحص غير مكتمل. أعد المحاولة.');
       const data:ReassuranceData={...collectInvoicesByDate(recordsResult.value,from,to),
         ...metaResult.value,records:recordsResult.value};
       const files=filesResult.status==='fulfilled'?filesResult.value:[];
@@ -187,7 +189,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
         councilWarnings});
       setCheckedAt(new Date().toLocaleTimeString('ar-JO',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit'}));
     }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر إجراء الفحص.');}
-    finally{clearTimeout(deadline);if(id===request.current){setBusy(false);active.current=null;}}
+    finally{clearTimeout(deadline);controller.abort(new Error('انتهى الفحص.'));if(id===request.current){setBusy(false);active.current=null;}}
   }
   useEffect(()=>{reloadRef.current=reload;});
   useEffect(()=>{
