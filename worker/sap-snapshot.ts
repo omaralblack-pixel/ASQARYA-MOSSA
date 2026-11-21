@@ -10,6 +10,33 @@ type ArchiveFile={key:string;name:string;kind:string;created:string};
  */
 export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Promise<Response>{
  const reply=(value:unknown,status=200)=>Response.json(value,{status,headers:{'Cache-Control':'no-store'}});
+ // The archive job's 0/0 batch counter is not evidence that its SAP
+ // transfers were committed. Read the authoritative D1 snapshot pointer.
+ if(request.method==='GET'){
+  if(!env.DB)return reply({error:'قاعدة بيانات SAP غير متاحة.'},503);
+  try{
+   const row=await env.DB.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'")
+    .first<{value:string}>();
+   if(!row)return reply({snapshot:null});
+   const source=JSON.parse(row.value) as {key?:unknown;created?:unknown;committed?:unknown;documents?:unknown};
+   if(typeof source.key!=='string'||!Number.isSafeInteger(source.documents)||
+      (source.documents as number)<1)
+    return reply({error:'سجل النسخة المعتمدة غير صالح؛ لا يمكن تأكيد الاعتماد.'},500);
+   const count=await env.DB.prepare(
+    'SELECT COUNT(*) AS count FROM lieutenant_queue WHERE source_file=?'
+   ).bind(source.key).first<{count:number}>();
+   return reply({snapshot:{
+    key:source.key,
+    created:typeof source.created==='string'?source.created:'',
+    committed:typeof source.committed==='string'?source.committed:'',
+    documents:source.documents,
+    activeCount:Number(count?.count||0),
+   }});
+  }catch(error){
+   console.error('Could not verify active SAP snapshot',error);
+   return reply({error:'تعذّر التحقق من نسخة SAP المعتمدة في D1.'},503);
+  }
+ }
  if(request.method!=='POST'||request.headers.get('origin')!==new URL(request.url).origin)
   return reply({error:'طلب غير مسموح.'},403);
  try{
