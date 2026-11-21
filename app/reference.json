@@ -571,7 +571,15 @@
     "warehouseUnit": "Piece",
     "warehouseName": "010-GENUINELقشقوان هنغاري 350 غم  بالحبة شد 32 حبة",
     "kgPerPiece": null,
-    "active": true
+    "active": true,
+    "sapAliases": [
+      {
+        "sapCode": "CHS00071",
+        "sapUnit": "Piece",
+        "cartonPieces": 45,
+        "kgPerPiece": null
+      }
+    ]
   },
   {
     "code": "11062674",
@@ -585,7 +593,15 @@
     "warehouseUnit": "Piece",
     "warehouseName": "020-GENUINELقشقوان هنغاري 700 غم  بالحبة شد 20 حبة",
     "kgPerPiece": null,
-    "active": true
+    "active": true,
+    "sapAliases": [
+      {
+        "sapCode": "CHS00072",
+        "sapUnit": "Piece",
+        "cartonPieces": 20,
+        "kgPerPiece": null
+      }
+    ]
   },
   {
     "code": "11377177",

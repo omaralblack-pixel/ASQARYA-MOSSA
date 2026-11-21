@@ -4,6 +4,7 @@ import {collectInvoicesByDate} from '../../lib/invoice-collector';
 import {env} from 'cloudflare:workers';
 import {lieutenantFiles} from '../../../worker/institution';
 import defaults from '../../reference.json';
+import {withIncomingGenuinelAliases} from '../../lib/incoming-genuinel-aliases';
 import {isAqabaBranch,aqabaMatchReference} from '../../lib/aqaba-instant-reference';
 import type {BlueLine} from '../../lib/aqaba';
 import schemaStatements from '../../lib/reconciliation-schema.json';
@@ -14,7 +15,7 @@ export const dynamic='force-dynamic';
 declare const __ASQARYA_COMMIT__:string;
 const json=(v:any,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
 const db=()=>{if(!env.DB)throw Error('قاعدة البيانات غير متاحة');return env.DB};
-async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();return r?JSON.parse(String(r.value)):defaults as Item[]}
+async function refs():Promise<Item[]>{const r=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();return withIncomingGenuinelAliases(r?JSON.parse(String(r.value)) as Item[]:defaults as Item[])}
 async function aqabaRefs(base:Item[]):Promise<Item[]>{
  // The reconciliation API reads the very same persisted blue-price table as
  // the Aqaba workspace. Baseline 03-Nov prices are bundled in the shared helper.
@@ -530,7 +531,7 @@ if(b.action==='lieutenantCancellationDecision'){
 }
 if(b.action==='reference'||b.action==='linkReference'||b.action==='saveReferenceItem'){
 const before=await db().prepare('SELECT value FROM settings WHERE key=?').bind('reconciliationReference').first();
-const current=before?JSON.parse(String(before.value)) as Item[]:defaults as Item[];
+const current=withIncomingGenuinelAliases(before?JSON.parse(String(before.value)) as Item[]:defaults as Item[]);
 let items=b.items;
 if(b.action==='linkReference'){
  const item=b.item as Item;

@@ -1,5 +1,5 @@
 import fs from 'node:fs';import ts from 'typescript';import assert from 'node:assert/strict';
-const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,pageNumber,monthly,monthlyColumns,parseTransfer,convert,dateValue,markSearchedPaperInvoice,approvedBranchException,unmatchedBranchSources}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const source=fs.readFileSync('app/lib/reconcile.ts','utf8');const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;const {reconcile,prepareReconciliation,checkSignature,withInvoiceDates,editInvoiceDate,editGroupInvoiceDate,fils,groupReference,moveLinkedPage,sapReferences,pageNumber,monthly,monthlyColumns,parseTransfer,convert,dateValue,markSearchedPaperInvoice,approvedBranchException,unmatchedBranchSources}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const ref=JSON.parse(fs.readFileSync('app/reference.json'));assert.ok(ref.length>=65);assert.equal(ref.find(i=>i.sapCode==='FVL00311').cartonPieces,8);
 const paste=(rows)=>'Item No.\tItem Description\tIn Stock\tQuantity\tFrom Warehouse\tTo Warehouse\tCommitted\tUoM Name\n'+rows.map(r=>[r[0],'test','99,999',r[1],'1','11','8,888',r[2]].join('\t')).join('\n');
 const d={branch:'branch',driver:'',date:'2026-11-03',transfers:[{id:'t1',number:'100',date:'2026-11-01',paste:paste([['FVL00302',1,'Carton']])},{id:'t2',number:'101',date:'2026-11-02',paste:paste([['FVL00302',0.5,'Carton']])}],invoices:[{id:'i1',number:'A',date:'2026-11-01',amount:'7.000',complete:true,quantities:{'11366443':'20'}},{id:'i2',number:'B',date:'2026-11-02',amount:'3.500',complete:true,quantities:{'11366443':'10'}}],notes:''};
@@ -8,7 +8,8 @@ let changed=structuredClone(d);changed.invoices[1].quantities['11366443']='9';r=
 changed=structuredClone(d);changed.invoices[1].amount='3.501';assert.equal(reconcile(changed,ref).priceDifference,1);assert.equal(reconcile(changed,ref).status,'difference');
 changed=structuredClone(d);changed.invoices[0].complete=false;assert.equal(reconcile(changed,ref).status,'review');
 changed=structuredClone(d);changed.invoices[1].number='A';assert.equal(reconcile(changed,ref).status,'review');changed=structuredClone(d);changed.transfers[1].number='100';assert.equal(reconcile(changed,ref).status,'review');
-changed=structuredClone(d);changed.transfers[0].paste=changed.transfers[0].paste.replace('FVL00302','CHS00071');assert.equal(reconcile(changed,ref).review,1);
+// Keep the unknown-SKU regression separate from CHS00071, now an approved GENUINEL alias.
+changed=structuredClone(d);changed.transfers[0].paste=changed.transfers[0].paste.replace('FVL00302','CHS99999');assert.equal(reconcile(changed,ref).review,1);
 changed=structuredClone(d);changed.transfers[0].paste=paste([['PFS00003',10,'KG']]);assert.equal(reconcile(changed,ref).rows.find(i=>i.sapCode==='PFS00003').transfer,null);
 const piece={...ref.find(i=>i.sapCode==='PFS00003'),kgPerPiece:1};assert.equal(convert({unit:'KG',quantity:10},piece),10);assert.equal(convert({unit:'Piece',quantity:5},ref.find(i=>i.sapCode==='CHS00033')),5);assert.equal(convert({unit:'Carton',quantity:2},ref.find(i=>i.sapCode==='FVL00311')),16);
 assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']])).lines[0].quantity,1);assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']]).replace('\t11\t','\t12\t')).excluded.length,1);assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']])+'\n\t\t\t\t1\t11').issues.length,1);
@@ -266,6 +267,43 @@ console.log('PASS: mixed 001 and 009 lines into 011 are both included.');
  const conflict=prepareReconciliation({...saved,referenceSnapshot:[...ref,differentOwner]},current);
  assert.equal(conflict.result.rows.find(row=>row.sapCode==='FOD00064').code,differentOwner.code);
 }
+// New GENUINEL container: two Piece SKUs reuse existing institution items.
+{
+ const aliasSource=fs.readFileSync('app/lib/incoming-genuinel-aliases.ts','utf8');
+ const aliasJs=ts.transpileModule(aliasSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+ const {withIncomingGenuinelAliases}=await import('data:text/javascript;base64,'+Buffer.from(aliasJs).toString('base64'));
+ const stripped=ref.map(i=>['11062673','11062674'].includes(i.code)?{...i,sapAliases:[]}:i);
+ const normalized=withIncomingGenuinelAliases(stripped);
+ for(const [owner,alias,pack,previous] of [
+  ['11062673','CHS00071',45,32],
+  ['11062674','CHS00072',20,20],
+ ]){
+  const entry=normalized.find(i=>i.code===owner),known=ref.find(i=>i.code===owner);
+  const current=entry.sapAliases.find(a=>a.sapCode===alias);
+  assert.ok(current,'New SAP code must resolve to its existing official institution item');
+  assert.equal(current.sapUnit,'Piece');
+  assert.equal(current.cartonPieces,pack,'Use confirmed pieces per carton for this SAP code');
+  assert.equal(entry.cartonPieces,previous,'Preserve historical primary SKU carton size');
+  assert.equal(entry.sapCode,known.sapCode,'Keep previous SAP primary code');
+  assert.equal(entry.price,known.price,'No price changes');
+  assert.equal(sapReferences(normalized).find(i=>i.sapCode===alias).code,owner);
+ }
+ assert.deepEqual(withIncomingGenuinelAliases(normalized),normalized,'No duplicate SAP aliases');
+ const conflict=withIncomingGenuinelAliases([...stripped,{...stripped[0],code:'99999999',sapCode:'CHS00071'}]);
+ assert.equal(conflict.find(i=>i.code==='11062673').sapAliases.length,0,'Do not hijack occupied SKU');
+ const previouslyUnknown=withIncomingGenuinelAliases(stripped.map(i=>i.code==='11062673'?{
+  ...i,sapAliases:[{sapCode:'CHS00071',sapUnit:'Piece',cartonPieces:null,kgPerPiece:null}],
+ }:i));
+ assert.equal(previouslyUnknown.find(i=>i.code==='11062673').sapAliases[0].cartonPieces,45,
+  'Upgrade previously unknown carton pack from confirmed user information');
+ const previousMismatch=withIncomingGenuinelAliases(stripped.map(i=>i.code==='11062674'?{
+  ...i,sapAliases:[{sapCode:'CHS00072',sapUnit:'Piece',cartonPieces:30,kgPerPiece:null}],
+ }:i));
+ assert.equal(previousMismatch.find(i=>i.code==='11062674').sapAliases[0].cartonPieces,20,
+  'Confirmed operator correction supersedes obsolete alias factor without modifying old SKU');
+}
+console.log('PASS: CHS00071=45, CHS00620=32, CHS00072=20, CHS00621=20 pieces/carton; old prices kept.');
+
 console.log('PASS: approved links, aliases and missing definitions apply to saved transfers, preserving recorded amounts, pages, and manual exclusions.');
 
 // Exclusion affects only the current group and never deletes its SAP lines.
