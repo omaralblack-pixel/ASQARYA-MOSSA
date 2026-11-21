@@ -282,6 +282,12 @@ test('Reassurance and lieutenant respect the colonel exact branch exception with
  assert.deepEqual(applyColonelBranchExceptions(unsafe,[exception])[0].issues,['كمية غير صالحة للصنف']);
  assert.deepEqual(applyColonelBranchExceptions(original,[{...exception,issue_text:issue+' changed'}])[0].issues,[issue]);
 });
+test('Saved administrative closures remain visible without proving missing SAP coverage',()=>{
+ const council=buildReassuranceCouncil({from:date,to:date,records:[record()],transfers:[live()],
+  controls:[{...control,signoffs:[{day:date,fingerprint:'saved',source_key:'old',signed_at:date}]}],sourceReady:false});
+ assert.equal(council.colonel.savedClosures,1);assert.equal(council.colonel.readyDays,0);
+ assert.ok(council.findings.some(f=>f.details.includes('يوجد إغلاق إداري محفوظ')));
+});
 console.log(`${passed} reassurance business-rule tests passed.`);
 
 const {restoreUnifiedStockSnapshots}=loadTs('app/lib/lieutenant-source.ts');

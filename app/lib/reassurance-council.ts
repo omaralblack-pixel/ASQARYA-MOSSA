@@ -19,7 +19,7 @@ export type ReassuranceCouncilReport={
     /** Saja workbook is uploaded in the soldier's browser; no persistent source can prove receipt here. */
     sajaAvailable:false};
   lieutenant:{transfers:number;reversed:number;canceled:number;cashVanPending:number;review:number;savedDecisions:number};
-  colonel:{invoiceDays:number;readyDays:number;openTransfers:number;unassigned:number;warnings:number};
+  colonel:{invoiceDays:number;readyDays:number;savedClosures:number;openTransfers:number;unassigned:number;warnings:number};
   findings:ReassuranceCouncilFinding[];
 };
 
@@ -150,8 +150,9 @@ export function buildReassuranceCouncil(input:{
   let readyDays=0;
   for(const day of activeDays){
     if(day.ready){readyDays++;continue;}
-    push({source:'colonel',title:'يوم فواتير غير مغلق بالفحص',
-      details:day.day+' — '+day.reason,day:day.day});
+    const hasSavedClosure=controls.some(control=>control.signoffs?.some(signoff=>signoff.day===day.day));
+    push({source:'colonel',title:'يوم فواتير يحتاج تحقق من التغطية',
+      details:day.day+' — '+(hasSavedClosure?'يوجد إغلاق إداري محفوظ؛ وهو مستقل عن اكتمال تغطية SAP. ':'')+day.reason,day:day.day});
   }
   const byTransfer=new Map<string,ReturnType<typeof buildColonelReport>['unassigned'][number]>();
   for(const report of allColonel)
@@ -170,7 +171,8 @@ export function buildReassuranceCouncil(input:{
   const warnings=distinct(allColonel.flatMap(report=>report.warnings));
   if(warnings.length)push({source:'colonel',title:'تحذيرات رقابة شهرية',
     details:warnings.length+' تنبيه، منها: '+warnings.slice(0,3).join('؛ ')});
-  const colonel={invoiceDays:activeDays.length,readyDays,openTransfers:byTransfer.size,
+  const savedClosures=new Set(controls.flatMap(control=>control.signoffs||[]).filter(signoff=>activeDays.some(day=>day.day===signoff.day)).map(signoff=>signoff.day)).size;
+  const colonel={invoiceDays:activeDays.length,readyDays,savedClosures,openTransfers:byTransfer.size,
     unassigned,warnings:warnings.length};
   return {soldier,lieutenant,colonel,findings};
 }

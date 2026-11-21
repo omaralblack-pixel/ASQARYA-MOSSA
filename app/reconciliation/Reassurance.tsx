@@ -21,7 +21,7 @@ const labels:Record<ReassuranceState,string>={match:'مطابق',transfer:'نق�
 const badge=(state:ReassuranceState)=>state==='match'?'match':state==='review'?'review':'difference';
 type Loaded={data:ReassuranceData;transfers:LieutenantTransfer[];sourceIssues:string[];sourceName:string;
   closing:ReassuranceStock|null;opening:ReassuranceStock|null;
-  councilRecords:ColonelRecord[]|null;councilControls:ReassuranceCouncilControl[]|null;councilWarnings:string[]};
+  councilSourceReady:boolean;councilRecords:ColonelRecord[]|null;councilControls:ReassuranceCouncilControl[]|null;councilWarnings:string[]};
 
 async function readAuditRecords(signal:AbortSignal,progress:(page:number)=>void):Promise<ReassuranceRecord[]>{
   return readAllRecords<ReassuranceRecord>(cursor=>{
@@ -75,7 +75,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
     if(!loaded?.councilRecords||!loaded.councilControls||!valid)return null;
     return buildReassuranceCouncil({from,to,records:loaded.councilRecords,
       transfers:loaded.transfers,controls:loaded.councilControls,
-      sourceReady:loaded.transfers.length>0&&!loaded.sourceIssues.length});
+      sourceReady:loaded.councilSourceReady});
   },[loaded,from,to,valid]);
   const query=digits(search).trim().toLowerCase();
   const visible=report?.rows.filter(row=>
@@ -191,6 +191,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
       ],sourceName,
         closing:actualClosing?{date:actualClosing.file.snapshotDate!,...actualClosing.stock}:null,
         opening:actualOpening?{date:actualOpening.file.snapshotDate!,...actualOpening.stock}:null,
+        councilSourceReady:activeResult.status==='fulfilled'&&controlsResult.status==='fulfilled',
         councilRecords:recordsResult.status==='fulfilled'?recordsResult.value:null,
         councilControls:controlsResult.status==='fulfilled'?controlsResult.value:null,
         councilWarnings});
@@ -233,7 +234,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
         ' · كاش فان مفتوح '+council.lieutenant.cashVanPending:'حالة رقابة SAP غير متاحة'},
     {id:'colonel',name:'العقيد',view:'colonel' as const,
       detail:council?'أيام جاهزة '+council.colonel.readyDays+'/'+council.colonel.invoiceDays+
-        ' · ترحيلات مفتوحة '+council.colonel.openTransfers:'رقابة أيام العقيد غير متاحة'},
+        ' · إغلاق إداري محفوظ '+council.colonel.savedClosures+' · ترحيلات مفتوحة '+council.colonel.openTransfers:'رقابة أيام العقيد غير متاحة'},
   ];
   const openCouncilFinding=(finding:ReassuranceCouncilFinding)=>{
     if(finding.recordId){onOpenRecord(finding.recordId);return}
