@@ -576,7 +576,7 @@
       {
         "sapCode": "CHS00071",
         "sapUnit": "Piece",
-        "cartonPieces": null,
+        "cartonPieces": 45,
         "kgPerPiece": null
       }
     ]
@@ -598,7 +598,7 @@
       {
         "sapCode": "CHS00072",
         "sapUnit": "Piece",
-        "cartonPieces": null,
+        "cartonPieces": 20,
         "kgPerPiece": null
       }
     ]
