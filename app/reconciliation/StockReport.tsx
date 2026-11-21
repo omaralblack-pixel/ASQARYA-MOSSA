@@ -9,6 +9,7 @@ import type {Item} from '../lib/reconcile';
 import {digits} from '../lib/reconcile';
 import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
 import {stockHeaders,stockReport} from '../lib/stock-report';
+import {readInvoiceLedger} from '../lib/invoice-ledger-client';
 import {tableWorkbook} from '../lib/invoice-workbook';
 
 const formatQuantity=new Intl.NumberFormat('en-US',{minimumFractionDigits:3,maximumFractionDigits:6});
@@ -171,6 +172,9 @@ function InvoiceComparison({file,selectedFrom,selectedTo,invalidRange}:{
   const [data,setData]=useState<InvoiceComparisonData|null>(null);
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState('');
+  const [stage,setStage]=useState('');
+  const active=useRef<AbortController|null>(null);
+  const request=useRef(0);
   const from=invoiceFrom||selectedFrom.slice(0,8)+'01';
   const to=invoiceTo||selectedTo;
   const invalidInvoiceRange=!from||!to||from>to;
@@ -189,22 +193,26 @@ function InvoiceComparison({file,selectedFrom,selectedTo,invalidRange}:{
   const counts:Record<DayInvoiceState,number>={match:0,late:0,pending:0,short:0,extra:0,review:0,
     'cashvan-settled':0,'cashvan-pending':0};
   for(const row of report?.rows||[])counts[row.state]++;
-  useEffect(()=>{setData(null);setError('');},[file,selectedFrom,selectedTo,from,to]);
+  useEffect(()=>{
+    request.current++;active.current?.abort();active.current=null;setData(null);setError('');setLoading(false);
+    return ()=>{request.current++;active.current?.abort();};
+  },[file,selectedFrom,selectedTo,from,to]);
 
   async function compare(){
     if(invalidRange||invalidInvoiceRange)return;
-    setLoading(true);setError('');setData(null);
+    active.current?.abort();
+    const controller=new AbortController();active.current=controller;
+    const id=++request.current;
+    const deadline=setTimeout(()=>controller.abort(Error('انتهت مهلة الفحص الإجمالية؛ أعد المحاولة.')),180_000);
+    setLoading(true);setError('');setData(null);setStage('قراءة سجل الفواتير…');
     try{
-      const url='/api/reconcile?stockInvoiceFrom='+encodeURIComponent(from)+
-        '&stockInvoiceTo='+encodeURIComponent(to);
-      const response=await fetch(url,{cache:'no-store'});
-      const result=await response.json() as InvoiceComparisonData&{error?:string};
-      if(!response.ok||!Array.isArray(result.rows)||!Array.isArray(result.records)||
-        !Array.isArray(result.reference))throw Error(result.error||
-        'استجابة قاعدة الفواتير غير مكتملة؛ تحقق من نشر تحديث السيرفر.');
-      setData(result);
-    }catch(cause){setError(cause instanceof Error?cause.message:'تعذّر تحميل الفواتير الزرقاء.');}
-    finally{setLoading(false)}
+      const result=await readInvoiceLedger(from,to,controller.signal,page=>{
+        if(id===request.current)setStage('قراءة الفواتير — الصفحة '+page);
+      });
+      if(id===request.current)setData(result);
+    }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر تحميل الفواتير الزرقاء.');}
+    finally{clearTimeout(deadline);controller.abort();if(id===request.current){setLoading(false);active.current=null;}}
+
   }
   return <section aria-label="مقارنة الترحيلات بالفواتير الزرقاء">
     <h2>مقارنة الترحيلات بالفواتير الزرقاء</h2>
@@ -224,7 +232,8 @@ function InvoiceComparison({file,selectedFrom,selectedTo,invalidRange}:{
       </div>
     </div>
     {invalidInvoiceRange&&<p className="banner error" role="alert">فترة الفواتير غير صالحة. اختر تاريخ بداية لا يتجاوز النهاية.</p>}
-    {error&&<p className="banner error" role="alert">{error}</p>}
+    {loading&&<p role="status">{stage}</p>}
+    {error&&<p className="banner error" role="alert">{error} الفحص غير مكتمل؛ أعد المحاولة بزر الفحص.</p>}
     {!!scan.issues.length&&<p className="banner warn">ملف SAP فيه {scan.issues.length} ملاحظة قراءة؛ نتائج المقارنة قد تكون غير مكتملة.</p>}
     {!data&&!loading&&!error&&<p className="hint">اختر فترة الفواتير واضغط فحص. لا تُعدّل هذه العملية الفواتير أو اعتمادها.</p>}
     {data&&report&&<>

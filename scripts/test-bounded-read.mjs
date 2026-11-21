@@ -61,6 +61,15 @@ try{
   for(const record of records)assert.deepEqual(JSON.parse(record.payload),frozen);
   const meta=await (await route.GET(new Request('https://example.test/api/reconcile?reassuranceMeta=1&from=2026-11-01'))).json();assert.equal(meta.recordCount,37);assert.ok(Array.isArray(meta.reference));assert.ok(Array.isArray(meta.openingStock));
  });
+ await test('Net-stock invoice comparison reads every page and rejects a changed revision',async()=>{
+  const route=load('app/api/reconcile/route.ts');const {readInvoiceLedger}=load('app/lib/invoice-ledger-client.ts');
+  let revision=0;
+  globalThis.fetch=async url=>String(url).includes('project-sync')?Response.json({revision:7}):route.GET(new Request('https://example.test'+url));
+  const ledger=await readInvoiceLedger('2026-11-01','2026-11-19',new AbortController().signal);
+  assert.equal(ledger.records.length,37);assert.ok(ledger.records.every(r=>JSON.parse(r.payload).referenceSnapshot.length));
+  globalThis.fetch=async url=>String(url).includes('project-sync')?Response.json({revision:++revision}):route.GET(new Request('https://example.test'+url));
+  await assert.rejects(readInvoiceLedger('2026-11-01','2026-11-19',new AbortController().signal),/تغيّرت البيانات/);
+ });
  await test('SAP archive listing rejects repeated pages, duplicated keys and missing pagination metadata',async()=>{
   const {listSapFiles}=load('app/lib/sap-files-client.ts');
   for(const data of [{files:[{key:'a'}],nextPage:0},{files:[{key:'a'},{key:'a'}],nextPage:null},{files:[]}]){
