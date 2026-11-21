@@ -68,4 +68,19 @@ assert.ok(csp.includes("form-action 'self'")&&csp.includes("frame-ancestors 'non
 assert.ok(html.includes(themeRuntimeScript)&&html.includes('data-theme-toggle'));
 const next=await handleInstitution(new Request('https://example.test/login'),env);
 assert.notEqual((await next.text()).match(/<script nonce="([^"]+)"/)[1],nonce);
+// Auth fallback must reuse one DB lookup across repeated sync polls in an isolate.
+let sessionReads=0,sessionSchemas=0;
+const durableSecret='a'.repeat(64);
+const db={prepare(sql){
+ if(sql.startsWith('CREATE TABLE'))return {run:async()=>{sessionSchemas++;}};
+ if(sql.startsWith('SELECT value'))return {first:async()=>{sessionReads++;return {value:durableSecret}}};
+ throw Error('Unexpected auth write: '+sql);
+}};
+const firstFallback=await handleInstitution(new Request('https://example.test/login'),{DB:db});
+const secondFallback=await handleInstitution(new Request('https://example.test/login'),{DB:db});
+assert.equal(firstFallback.status,200);
+assert.equal(secondFallback.status,200);
+assert.equal(sessionSchemas,1,'Auth schema should only initialize once');
+assert.equal(sessionReads,1,'Repeated session checks must reuse the same durable secret');
+console.log('PASS: D1 auth fallback caches the durable secret across requests without changing sessions.');
 console.log('PASS: pre-paint theme, persistence, system preference, cross-tab changes, blocked storage, WCAG AA dark palette, light printing and nonce-protected login.');
