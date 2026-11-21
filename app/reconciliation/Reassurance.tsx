@@ -12,7 +12,7 @@ import {readSavedSapImport} from '../lib/saved-sap-import';
 import {reassure,reassuranceSource,type ReassuranceData,type ReassuranceRecord,type ReassuranceReport,type ReassuranceStock,type ReassuranceState} from '../lib/reassurance';
 import {digits,type Transfer} from '../lib/reconcile';
 import {buildReassuranceCouncil,type ReassuranceCouncilControl,type ReassuranceCouncilFinding} from '../lib/reassurance-council';
-import type {ColonelRecord} from '../lib/colonel-core';
+import {applyColonelBranchExceptions,type ColonelRecord} from '../lib/colonel-core';
 
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Amman'});
 const format=new Intl.NumberFormat('en-US',{maximumFractionDigits:6});
@@ -43,7 +43,8 @@ async function readColonelControls(from:string,to:string,signal:AbortSignal):Pro
   return mapBounded(periods,2,async month=>{
     const control=await readJson<ReassuranceCouncilControl>('/api/colonel?month='+encodeURIComponent(month),signal);
     if(!Array.isArray(control.days)||!Array.isArray(control.assignments)||!Array.isArray(control.decisions)||
-      control.signoffs!==undefined&&!Array.isArray(control.signoffs))throw Error('قرارات العقيد والملازم غير مكتملة؛ أعد المحاولة.');
+      control.signoffs!==undefined&&!Array.isArray(control.signoffs)||
+      control.branchExceptions!==undefined&&!Array.isArray(control.branchExceptions))throw Error('قرارات العقيد والملازم غير مكتملة؛ أعد المحاولة.');
     return control;
   });
 }
@@ -156,9 +157,11 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
         })());
         return cache.get(file.key)!;
       };
+      const branchExceptions=controlsResult.status==='fulfilled'?controlsResult.value.flatMap(control=>control.branchExceptions||[]):[];
+      const activeTransfers=activeResult.status==='fulfilled'?applyColonelBranchExceptions(activeResult.value.transfers,branchExceptions):[];
       const [sourceResult,closingResult,openingResult]=await Promise.allSettled([
         activeResult.status==='fulfilled'?Promise.resolve({key:activeResult.value.snapshot.key,name:'SAP المعتمد فعليًا في D1 — '+activeResult.value.snapshot.documents+' ترحيل',
-          scan:{transfers:activeResult.value.transfers,issues:activeResult.value.transfers.flatMap(row=>row.issues)}}):restoreLieutenantSource(files,branches,readArchive,readShared),
+          scan:{transfers:activeTransfers,issues:activeTransfers.flatMap(row=>row.issues)}}):restoreLieutenantSource(files,branches,readArchive,readShared),
         restoreLieutenantStock(files,'balance',to,readArchive),
         restoreLieutenantStock(files,'opening',from,readArchive),
       ]);
@@ -300,7 +303,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
         </>}
       </section>
       <section className="panel">
-        <p className="hint">مصدر الترحيلات من أرشيف الملازم أول في Supabase: {loaded?.sourceName||'غير متاح'} · آخر حركة ظاهرة: <b dir="ltr">{report.sourceLastDate||'—'}</b> · رصيد 011 بتاريخ <b dir="ltr">{loaded?.closing?.date||'غير متاح'}</b>. يتم تحديث المصدر عند فتح الشاشة، وعند الرجوع إليها بعد تحديث الملفات، وبزر «طمني الآن».</p>
+        <p className="hint">مصدر الترحيلات المتحقق منه: {loaded?.sourceName||'غير متاح'} · آخر حركة ظاهرة: <b dir="ltr">{report.sourceLastDate||'—'}</b> · رصيد 011 بتاريخ <b dir="ltr">{loaded?.closing?.date||'غير متاح'}</b>. يتم تحديث المصدر عند فتح الشاشة، وعند الرجوع إليها بعد تحديث الملفات، وبزر «طمني الآن».</p>
         <p className="hint"><b>{report.settlements.length}</b> ترحيل أصلي مسوّى بعكسي كامل أو تصحيح سالب مطابق حسب فحص الملازم أول؛ لا يظهر ضمن اقتراحات الإلغاء. هذا لا يُلغي الحاجة إلى مطابقة الرصيد الفعلي للصنف.</p>
         {loaded?.closing&&loaded.closing.date!==to&&<button type="button" className="button secondary no-print" onClick={()=>{setFrom(loaded.closing!.date.slice(0,8)+'01');setTo(loaded.closing!.date)}}>افحص بتاريخ آخر رصيد محفوظ ({loaded.closing.date})</button>}
         {!!report.issues.length&&<div className="banner error" role="alert"><b>الفحص غير مكتمل</b><ul>{report.issues.map((issue,i)=><li key={i}>{issue}</li>)}</ul><p>المصدر المعتمد للرصيد هو كشف SAP الفعلي بتاريخ الفحص. يُقرأ من الملف الشامل عندما تتوفر أقسام الأرصدة وتواريخها الصحيحة، وإلا يلزم رفع كشف رصيد مؤرّخ. الترحيلات وحدها لا تثبت رصيد 011.</p><a href="/reconciliation?view=sap-files">فتح ملفات SAP للتحقق من كشف الرصيد</a></div>}

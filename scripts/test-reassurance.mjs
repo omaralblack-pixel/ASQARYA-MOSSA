@@ -267,6 +267,21 @@ test('Tammeni does not label a settled transfer-only SAP card as missing blue pa
     'no invented cancellation or unresolved settlement for the fully reversed original');
 });
 
+test('Reassurance and lieutenant respect the colonel exact branch exception without changing source data',()=>{
+ const {applyColonelBranchExceptions}=loadTs('app/lib/colonel-core.ts');
+ const issue='تعارض فرع SAP: حقل اسم الفرع 45 — الطيبة الشمالية يخالف الملاحظات 86 — الطيبة';
+ const original=[live(100,'2617001','Piece','001','011',{issues:[issue]})];
+ const before=JSON.stringify(original);
+ const exception={transfer_no:'2617001',issue_text:issue,reason:'verified branch label',confirmed_at:date};
+ const reviewed=applyColonelBranchExceptions(original,[exception]);
+ const input=fixture({transfers:reviewed});input.sourceIssues=reviewed.flatMap(row=>row.issues);
+ assert.equal(reassure(input).state,'match');assert.equal(JSON.stringify(original),before);
+ const council=buildReassuranceCouncil({from:date,to:date,records:[record()],transfers:original,controls:[{...control,branchExceptions:[exception]}],sourceReady:true});
+ assert.equal(council.lieutenant.review,0);assert.equal(council.colonel.openTransfers,0);
+ const unsafe=[{...original[0],issues:[issue,'كمية غير صالحة للصنف']}];
+ assert.deepEqual(applyColonelBranchExceptions(unsafe,[exception])[0].issues,['كمية غير صالحة للصنف']);
+ assert.deepEqual(applyColonelBranchExceptions(original,[{...exception,issue_text:issue+' changed'}])[0].issues,[issue]);
+});
 console.log(`${passed} reassurance business-rule tests passed.`);
 
 const {restoreUnifiedStockSnapshots}=loadTs('app/lib/lieutenant-source.ts');

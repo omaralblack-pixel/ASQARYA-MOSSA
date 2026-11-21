@@ -1,5 +1,5 @@
 import {collectInvoicesByDate} from './invoice-collector';
-import {buildColonelReport,type ColonelRecord,type ColonelAssignment,type ColonelDayState} from './colonel-core';
+import {applyColonelBranchExceptions,buildColonelReport,type ColonelBranchException,type ColonelRecord,type ColonelAssignment,type ColonelDayState} from './colonel-core';
 import {analyzeLieutenantMovements,isCashVanTransfer} from './lieutenant-counterparts';
 import type {CancellationDecision} from './lieutenant-cancellation-decisions';
 import type {LieutenantTransfer} from './lieutenant';
@@ -7,6 +7,7 @@ import {invoiceDocumentNo,readReconciliationRecord,transferNumbers} from './reco
 
 export type ReassuranceCouncilControl={
   days:ColonelDayState[];assignments:ColonelAssignment[];decisions:CancellationDecision[];
+  branchExceptions?:ColonelBranchException[];
   signoffs?:{day:string;fingerprint:string;source_key:string;signed_at:string}[];
 };
 export type ReassuranceCouncilFinding={
@@ -55,8 +56,10 @@ export function buildReassuranceCouncil(input:{
     .map(number=>controls.flatMap(item=>item.assignments).find(row=>row.transfer_no===number)!);
   const decisions=distinct(controls.flatMap(item=>item.decisions).map(item=>item.transfer_no))
     .map(number=>controls.flatMap(item=>item.decisions).find(row=>row.transfer_no===number)!);
+  const branchExceptions=controls.flatMap(item=>item.branchExceptions||[]);
+  const reviewedTransfers=applyColonelBranchExceptions(transfers,branchExceptions);
   const allColonel=monthsBetween(from,to).map(month=>buildColonelReport(
-    month,records,transfers,decisions,assignments,combinedDays,sourceReady,to));
+    month,records,transfers,decisions,assignments,combinedDays,sourceReady,to,branchExceptions));
   const nonPaperKeys=new Set(allColonel.flatMap(report=>report.days.flatMap(day=>
     day.nonInvoices.map(row=>row.recordId+'|'+row.invoiceId))));
   const collected=collectInvoicesByDate(records,from,to);
@@ -115,8 +118,8 @@ export function buildReassuranceCouncil(input:{
     push({source:'soldier',title:'فواتير بلا تاريخ مثبت',
       details:collected.undatedInvoices+' فاتورة غير مؤرخة لا يمكن نسبتها تلقائيًا إلى الفترة.'});
 
-  const movements=analyzeLieutenantMovements(transfers,to);
-  const within=transfers.filter(row=>row.transfer.date>=from&&row.transfer.date<=to);
+  const movements=analyzeLieutenantMovements(reviewedTransfers,to);
+  const within=reviewedTransfers.filter(row=>row.transfer.date>=from&&row.transfer.date<=to);
   let reversed=0,canceled=0,cashVanPending=0,review=0;
   for(const source of within){
     const status=movements.get(source.transfer.number);

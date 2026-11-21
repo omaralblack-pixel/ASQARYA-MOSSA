@@ -6,7 +6,7 @@ import CashVanAudit from './CashVanAudit';
 import CancelledTransferReview from './CancelledTransferReview';
 import {AlertTriangle,CheckCircle2,Copy,RefreshCw,Search,ShieldCheck} from 'lucide-react';
 import {type LieutenantTransfer} from '../lib/lieutenant';
-import {isColonelBranchConflict,type ColonelBranchException} from '../lib/colonel-core';
+import {applyColonelBranchExceptions,isColonelBranchConflict,type ColonelBranchException} from '../lib/colonel-core';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -365,12 +365,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const closingSelectedRef=useRef(false);
   const openingSelectedRef=useRef(false);
   const periodEditedRef=useRef(false);
-  const reviewedTransfers=useMemo(()=>transfers.map(source=>{
-   const exception=branchExceptions.find(item=>item.transfer_no===source.transfer.number);
-   if(!exception||!source.issues.includes(exception.issue_text)||!isColonelBranchConflict(exception.issue_text))
-    return source;
-   return {...source,issues:source.issues.filter(issue=>issue!==exception.issue_text)};
-  }),[transfers,branchExceptions]);
+  const reviewedTransfers=useMemo(()=>applyColonelBranchExceptions(transfers,branchExceptions),[transfers,branchExceptions]);
   // Only label discrepancies are excluded from stock-movement validity.
   // The source data, actual warehouse direction, sign and quantity never change.
   const movementTransfers=useMemo(()=>transfers.map(source=>
