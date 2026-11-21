@@ -1,3 +1,4 @@
+import {boundedRead} from './bounded-read';
 import {decodeLieutenantFile} from './lieutenant-file';
 import type {SapJob} from './sap-processing';
 export type SapArchiveFile={key:string;name:string;kind:string;created:string;snapshotDate?:string;size?:number};
@@ -39,11 +40,11 @@ async function sapRequestOnce<T>(url:string,body?:unknown):Promise<T>{
   (body&&typeof body==='object'&&'action' in body?
     (String((body as {action:unknown}).action)==='batch'?'استكمال دفعة SAP رقم '+(Number((body as {index?:number}).index)+1):'بدء أو إعادة فحص معالجة SAP'):'قراءة حالة معالجة SAP') :
   'قراءة أرشيف SAP';
- let res:Response;
- try{res=await fetch(url,{cache:'no-store',...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});}
- catch{throw new SapRequestFailure('تعذّر الاتصال أثناء '+task+'؛ الدفعات المكتملة محفوظة.',null,true);}
- try{return await readSapJson<T>(res,task);}
- catch(error){throw new SapRequestFailure(error instanceof Error?error.message:'تعذّر '+task,res.status,temporaryStatuses.has(res.status));}
+ try{return await boundedRead(url,async response=>{
+  try{return await readSapJson<T>(response,task)}
+  catch(error){throw new SapRequestFailure(error instanceof Error?error.message:'تعذّر '+task,response.status,temporaryStatuses.has(response.status))}
+ },{timeoutMs:60_000,init:body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{}})}
+ catch(error){if(error instanceof SapRequestFailure)throw error;throw new SapRequestFailure('انتهت مهلة الاتصال أو تعذّر الاتصال أثناء '+task+'؛ الدفعات المكتملة محفوظة.',null,true)}
 }
 export async function sapRequest<T>(url:string,body?:unknown):Promise<T>{
  const batch=body&&typeof body==='object'?body as {action?:unknown;key?:unknown;index?:unknown}:null;
@@ -81,12 +82,20 @@ export async function listSapFiles():Promise<SapArchiveFile[]>{
 }
 // Immutable keys make this cache safe across screen navigation. Errors are
 // evicted; mutable archive lists and job states are always read from the server.
-const texts=new Map<string,Promise<string>>();
-export function readSapArchive(file:{key:string;name:string}):Promise<string>{
- const cached=texts.get(file.key);if(cached)return cached;
- const result=fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key),{cache:'no-store'}).then(async res=>{
+const texts=new Map<string,string>();
+const reads=new Map<string,Promise<string>>();
+export function readSapArchive(file:{key:string;name:string},options:{signal?:AbortSignal;timeoutMs?:number}={}):Promise<string>{
+ options.signal?.throwIfAborted();
+ const cached=texts.get(file.key);if(cached!==undefined)return Promise.resolve(cached);
+ // A caller's cancellation must not cancel another screen's read or poison its cache.
+ if(!options.signal&&reads.has(file.key))return reads.get(file.key)!;
+ const result=boundedRead('/api/lieutenant-files?key='+encodeURIComponent(file.key),async res=>{
   if(!res.ok)throw Error('تعذّر قراءة الملف المحفوظ: HTTP '+res.status);
-  return decodeLieutenantFile(await res.arrayBuffer(),file.name);
- }).catch(e=>{texts.delete(file.key);throw e;});
- texts.set(file.key,result);if(texts.size>8)texts.delete(texts.keys().next().value!);return result;
+  const text=decodeLieutenantFile(await res.arrayBuffer(),file.name);
+  options.signal?.throwIfAborted();
+  texts.set(file.key,text);if(texts.size>8)texts.delete(texts.keys().next().value!);
+  return text;
+ },{signal:options.signal,timeoutMs:options.timeoutMs??45_000});
+ if(!options.signal){reads.set(file.key,result);void result.finally(()=>{if(reads.get(file.key)===result)reads.delete(file.key)}).catch(()=>{})}
+ return result;
 }

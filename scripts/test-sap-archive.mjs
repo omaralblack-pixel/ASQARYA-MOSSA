@@ -138,7 +138,8 @@ const batchJob=state=>({key:batchKey,total:1,done:state==='complete'?1:0,
  batches:[{idx:0,state,error:'',duration:0}]});
 const batchUrl='/api/sap-processing';
 const previousTimer=globalThis.setTimeout;
-globalThis.setTimeout=(fn)=>{queueMicrotask(fn);return 0;};
+// Advance backoff only; request deadlines must remain real timers.
+globalThis.setTimeout=(fn,ms,...args)=>ms>=10_000?previousTimer(fn,ms,...args):(queueMicrotask(fn),0);
 try{
  for(const state of ['complete','running','failed','pending']){
   const calls=[];let posts=0;

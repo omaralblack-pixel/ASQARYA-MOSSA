@@ -2,11 +2,13 @@
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDownToLine,CheckCircle2,HeartPulse,Printer,RefreshCw,RotateCcw,Search,ShieldCheck} from 'lucide-react';
+import {mapBounded,readAllRecords,readJson} from '../lib/bounded-read';
+import {collectInvoicesByDate} from '../lib/invoice-collector';
 import {readSapArchive} from '../lib/sap-files-client';
 import type {LieutenantTransfer} from '../lib/lieutenant';
 import {restoreLieutenantSource,restoreLieutenantStock,restoreUnifiedStockSnapshots,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {readSavedSapImport} from '../lib/saved-sap-import';
-import {reassure,reassuranceSource,type ReassuranceData,type ReassuranceReport,type ReassuranceStock,type ReassuranceState} from '../lib/reassurance';
+import {reassure,reassuranceSource,type ReassuranceData,type ReassuranceRecord,type ReassuranceReport,type ReassuranceStock,type ReassuranceState} from '../lib/reassurance';
 import {digits,type Transfer} from '../lib/reconcile';
 import {buildReassuranceCouncil,type ReassuranceCouncilControl,type ReassuranceCouncilFinding} from '../lib/reassurance-council';
 import type {ColonelRecord} from '../lib/colonel-core';
@@ -20,41 +22,14 @@ type Loaded={data:ReassuranceData;transfers:LieutenantTransfer[];sourceIssues:st
   closing:ReassuranceStock|null;opening:ReassuranceStock|null;
   councilRecords:ColonelRecord[]|null;councilControls:ReassuranceCouncilControl[]|null;councilWarnings:string[]};
 
-async function checkedJson<T>(url:string):Promise<T>{
-  const response=await fetch(url,{cache:'no-store',redirect:'manual'});
-  if(response.status===401||response.type==='opaqueredirect')throw Error('انتهت جلسة الدخول. سجّل دخولك وأعد الفحص.');
-  if(!(response.headers.get('content-type')||'').includes('json'))throw Error('تعذّر قراءة بيانات الفحص (HTTP '+response.status+'). أعد المحاولة.');
-  const data=await response.json() as T&{error?:string};
-  if(!response.ok)throw Error(data.error||'تعذّر تحميل بيانات «طمني».');
-  return data;
+async function readAuditRecords(signal:AbortSignal,progress:(page:number)=>void):Promise<ReassuranceRecord[]>{
+  return readAllRecords<ReassuranceRecord>(cursor=>{
+    const params=new URLSearchParams({reassuranceRecords:'1'});
+    if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id)}
+    return readJson('/api/reconcile?'+params,signal);
+  },progress);
 }
-
-/** The serial soldier and colonel use the same paged project projection.
- * Read all records before judging a cross-system audit; never use the first
- * page as if it were the complete invoice registry. */
-async function readAuditRecords():Promise<ColonelRecord[]>{
-  const records:ColonelRecord[]=[];
-  const seen=new Set<string>();
-  let cursor:{updated:string;id:string}|null=null;
-  for(let page=0;page<250;page++){
-    const params=new URLSearchParams({serialExport:'1'});
-    if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id);}
-    const result=await checkedJson<{records:ColonelRecord[];hasMore:boolean;
-      nextCursor:{updated:string;id:string}|null}>('/api/reconcile?'+params.toString());
-    if(!Array.isArray(result.records))throw Error('سجل الجندي غير مكتمل.');
-    for(const record of result.records){
-      if(!record||typeof record.id!=='string'||typeof record.payload!=='string'||seen.has(record.id))
-        throw Error('سجل الجندي يحتوي تكرارًا أو ملفًا غير مقروء؛ أُلغي الفحص الشامل.');
-      seen.add(record.id);records.push(record);
-    }
-    if(result.hasMore===false)return records;
-    if(result.hasMore!==true||!result.nextCursor||!result.records.length)
-      throw Error('تسلسل صفحات الجندي انقطع؛ لا يمكن تأكيد اكتمال السجل.');
-    cursor=result.nextCursor;
-  }
-  throw Error('سجل الجندي تجاوز عدد صفحات القراءة المسموح.');
-}
-async function readColonelControls(from:string,to:string):Promise<ReassuranceCouncilControl[]>{
+async function readColonelControls(from:string,to:string,signal:AbortSignal):Promise<ReassuranceCouncilControl[]>{
   const periods:string[]=[];
   let month=from.slice(0,7),end=to.slice(0,7);
   for(let i=0;month<=end&&i<14;i++){
@@ -64,8 +39,8 @@ async function readColonelControls(from:string,to:string):Promise<ReassuranceCou
     month=next.toISOString().slice(0,7);
   }
   if(month<=end)throw Error('الفترة أطول من سنة؛ لا يمكن قراءة قرارات العقيد كاملة.');
-  return Promise.all(periods.map(month=>checkedJson<ReassuranceCouncilControl>(
-    '/api/colonel?month='+encodeURIComponent(month))));
+  return mapBounded(periods,2,month=>readJson<ReassuranceCouncilControl>(
+    '/api/colonel?month='+encodeURIComponent(month),signal));
 }
 
 export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavigate,syncVersion=0,syncScope='all'}:{branches:string[];
@@ -77,6 +52,10 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
   const [loaded,setLoaded]=useState<Loaded|null>(null);
   const [busy,setBusy]=useState(true);
   const [error,setError]=useState('');
+  const [stage,setStage]=useState('');
+  const active=useRef<AbortController|null>(null);
+  // Parent renders may recreate the array; scope depends on its values.
+  const branchKey=JSON.stringify(branches);
   const [search,setSearch]=useState('');
   const [filter,setFilter]=useState('candidate');
   const [checkedAt,setCheckedAt]=useState('');
@@ -110,49 +89,66 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
 
   async function reload(){
     lastArchiveCheck.current=Date.now();
+    active.current?.abort(new Error('أُلغي الفحص السابق لبدء فحص أحدث.'));
+    const controller=new AbortController();active.current=controller;
+    const signal=controller.signal;
     const id=++request.current;
+    const progress=(value:string)=>{if(id===request.current)setStage(value)};
+    const deadline=setTimeout(()=>controller.abort(new Error('انتهت مهلة الفحص الإجمالية (3 دقائق). الفحص غير مكتمل؛ أعد المحاولة.')),180_000);
     setLoaded(null);setError('');setBusy(true);
-    if(!valid){setBusy(false);return;}
+    if(!valid){clearTimeout(deadline);active.current=null;setBusy(false);return;}
     try{
+      progress('التحقق من نسخة البيانات المشتركة…');
+      const revision=await readJson<{revision:number}>('/api/project-sync?limit=1',signal);
+      if(!Number.isSafeInteger(revision.revision))throw Error('تعذّر التحقق من نسخة البيانات.');
+      progress('قراءة الفواتير والأرشيف وقرارات العقيد…');
       const archive=async()=>{
         const files:LieutenantSourceFile[]=[];
         let page:number|null=0;
         const seen=new Set<number>();
         while(page!==null){
-          if(seen.has(page))throw Error('تعذّر استكمال قائمة ملفات SAP. أعد الفحص.');
+          if(!Number.isSafeInteger(page)||page<0||seen.size>=1000||seen.has(page))throw Error('تعذّر استكمال قائمة ملفات SAP. أعد الفحص.');
           seen.add(page);
-          const next:{files:LieutenantSourceFile[];nextPage:number|null}=await checkedJson('/api/lieutenant-files?page='+page);
+          const next:{files:LieutenantSourceFile[];nextPage:number|null}=await readJson('/api/lieutenant-files?page='+page,signal);
+          if(!Array.isArray(next.files)||!(next.nextPage===null||Number.isSafeInteger(next.nextPage)))throw Error('قائمة أرشيف SAP غير مكتملة.');
           files.push(...next.files);page=next.nextPage;
         }
         return files;
       };
-      const [dataResult,filesResult,sharedResult,recordsResult,controlsResult]=await Promise.allSettled([
-        checkedJson<ReassuranceData>('/api/reconcile?stockInvoiceFrom='+encodeURIComponent(from)+'&stockInvoiceTo='+encodeURIComponent(to)+'&reassurance=1'),
-        archive(),readSavedSapImport(),readAuditRecords(),readColonelControls(from,to),
+      const [metaResult,filesResult,recordsResult,controlsResult]=await Promise.allSettled([
+        readJson<Pick<ReassuranceData,'reference'|'openingStock'>>('/api/reconcile?reassuranceMeta=1&from='+encodeURIComponent(from),signal),
+        archive(),readAuditRecords(signal,page=>progress('قراءة الفواتير — الصفحة '+page)),readColonelControls(from,to,signal),
       ]);
-      if(dataResult.status==='rejected')throw dataResult.reason;
-      const data=dataResult.value;
+      signal.throwIfAborted();
+      if(metaResult.status==='rejected')throw metaResult.reason;
+      if(recordsResult.status==='rejected')throw recordsResult.reason;
+      const data:ReassuranceData={...collectInvoicesByDate(recordsResult.value,from,to),
+        ...metaResult.value,records:recordsResult.value};
       const files=filesResult.status==='fulfilled'?filesResult.value:[];
-      const shared=sharedResult.status==='fulfilled'?sharedResult.value:undefined;
+      let shared:Awaited<ReturnType<typeof readSavedSapImport>>;
+      let sharedRead:ReturnType<typeof readSavedSapImport>|undefined;
+      const readShared=()=>sharedRead??=(readSavedSapImport({signal}).then(value=>{shared=value;return value}));
       const sourceErrors:string[]=[];
       const councilWarnings:string[]=[];
-      if(recordsResult.status==='rejected')councilWarnings.push('تعذّر قراءة سجل الجندي كاملًا: '+
-        (recordsResult.reason instanceof Error?recordsResult.reason.message:'خطأ غير معروف'));
       if(controlsResult.status==='rejected')councilWarnings.push('تعذّر قراءة قرارات العقيد والملازم: '+
         (controlsResult.reason instanceof Error?controlsResult.reason.message:'خطأ غير معروف'));
       if(filesResult.status==='rejected')sourceErrors.push('تعذّر تحميل أرشيف كشوف 011. أعد المحاولة أو حدّث الكشوف من الملازم أول.');
-      if(sharedResult.status==='rejected'&&!files.some(file=>file.kind==='transfers'))sourceErrors.push('تعذّر قراءة كشف SAP المشترك الاحتياطي. لا يوجد مصدر محفوظ مؤكد في الملازم أول.');
       if(!Array.isArray(data.records)||!Array.isArray(data.reference)||!Array.isArray(data.openingStock))
         throw Error('خادم الفحص يحتاج آخر تحديث. أعد تحميل الصفحة بعد اكتمال النشر.');
+      // Missing controls invalidate a confirmed match as well as the council.
+      sourceErrors.push(...councilWarnings);
+      progress('قراءة ملفات SAP والأرصدة المؤرخة 011…');
       const cache=new Map<string,Promise<string>>();
       const readArchive=(file:LieutenantSourceFile)=>{
         if(!cache.has(file.key))cache.set(file.key,(async()=>{
-          return readSapArchive(file);
+          signal.throwIfAborted();
+          progress('قراءة مصدر SAP: '+file.name);
+          return readSapArchive(file,{signal});
         })());
         return cache.get(file.key)!;
       };
       const [sourceResult,closingResult,openingResult]=await Promise.allSettled([
-        restoreLieutenantSource(files,branches,readArchive,async()=>shared),
+        restoreLieutenantSource(files,branches,readArchive,readShared),
         restoreLieutenantStock(files,'balance',to,readArchive),
         restoreLieutenantStock(files,'opening',from,readArchive),
       ]);
@@ -171,6 +167,9 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
       if(sourceResult.status==='rejected')sourceErrors.push('تعذّر فتح كشف الترحيلات من الأرشيف.');
       if(closingResult.status==='rejected'&&!actualClosing)sourceErrors.push('تعذّر فتح كشف رصيد 011 الفعلي.');
       if(openingResult.status==='rejected'&&!actualOpening)sourceErrors.push('تعذّر فتح كشف الرصيد الافتتاحي.');
+      signal.throwIfAborted();
+      const latest=await readJson<{revision:number}>('/api/project-sync?limit=1',signal);
+      if(latest.revision!==revision.revision)throw Error('تغيّرت البيانات أثناء الفحص. أعد المحاولة لقراءة نسخة متزامنة كاملة.');
       const {scan,name:sourceName}=reassuranceSource(source,shared,branches);
       if(id!==request.current)return;
       setLoaded({data,transfers:scan?.transfers||[],sourceIssues:[
@@ -184,7 +183,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
         councilWarnings});
       setCheckedAt(new Date().toLocaleTimeString('ar-JO',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit'}));
     }catch(cause){if(id===request.current)setError(cause instanceof Error?cause.message:'تعذّر إجراء الفحص.');}
-    finally{if(id===request.current)setBusy(false);}
+    finally{clearTimeout(deadline);if(id===request.current){setBusy(false);active.current=null;}}
   }
   reloadRef.current=reload;
   useEffect(()=>{
@@ -192,13 +191,13 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
     lastSync.current=syncVersion;
     if(['reconcile','colonel','sap','all'].includes(syncScope))void reloadRef.current();
   },[syncVersion,syncScope]);
-  useEffect(()=>{void reload();return()=>{request.current++};},[from,to,branches]); // Read-only; refreshes on screen opening and date changes.
+  useEffect(()=>{void reloadRef.current();return()=>{request.current++;active.current?.abort(new Error('أُلغي الفحص السابق.'));active.current=null;};},[from,to,branchKey]); // Read-only; refreshes on screen opening and date changes.
   useEffect(()=>{
     const syncOnReturn=()=>{
       // Another tab or the lieutenant may have uploaded a newer immutable SAP
       // source while this tab was inactive. Recheck when the user returns.
       if(document.visibilityState==='visible'&&Date.now()-lastArchiveCheck.current>30_000)
-        void reloadRef.current();
+        !active.current&&void reloadRef.current();
     };
     window.addEventListener('focus',syncOnReturn);
     document.addEventListener('visibilitychange',syncOnReturn);
@@ -241,7 +240,7 @@ export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavi
       <label>الفحص ورصيد 011 حتى نهاية<input type="date" value={to} min={from} max={today()} onChange={event=>setTo(event.target.value)}/></label>
     </div><p className="hint">المتوقع في 011 = الافتتاحي + كميات الفواتير في الفترة. الفرق = رصيد SAP الفعلي − المتوقع. كل الكميات بالحبة، بعد تحويل الوحدات المعتمدة.</p>
     {!valid&&<p role="alert" className="banner error">اختر فترة صحيحة تنتهي اليوم أو قبله.</p>}</section>
-    {busy&&<section className="panel reassurance-loading" role="status"><RefreshCw size={28} className="reassurance-spin"/><b>بفحص الفواتير ورصيد 011…</b><p>قراءة أحدث البيانات المحفوظة والتحقق من العكسي والإلغاء.</p></section>}
+    {busy&&<section className="panel reassurance-loading" role="status"><RefreshCw size={28} className="reassurance-spin"/><b>بفحص الفواتير ورصيد 011…</b><p>{stage}</p></section>}
     {error&&<div className="banner error" role="alert">{error}<p>تعذّر إكمال الفحص؛ لا توجد نتيجة مطابقة مؤكدة.</p><button type="button" className="button secondary" disabled={busy||!valid} onClick={()=>void reload()}>إعادة المحاولة</button></div>}
     {!busy&&report&&<>
       <section className={'reassurance-summary '+(settled?'is-matched':'needs-action')} role="status">

@@ -32,6 +32,7 @@ jobs:
       - name: System audit regression checks
         run: |
           node scripts/test-system-audit.mjs
+          node scripts/test-bounded-read.mjs
           node scripts/test-json-request.mjs
           node scripts/test-project-sync.mjs
       - name: Core reconciliation and transfer regression tests

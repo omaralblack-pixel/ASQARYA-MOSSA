@@ -121,6 +121,9 @@ export async function restoreLieutenantSource(
     }catch(cause){failures.push(cause instanceof Error?cause.message:'تعذّر فتح ملف ترحيلات من الأرشيف.');}
   }
   if(restored){
+    // A readable newer file cannot prove historical completeness when another
+    // required archive failed. Preserve the evidence and block confirmation.
+    restored.scan.issues.push(...failures);
     if(supplements)restored.name+=' + '+supplements+' ملف SAP أقدم (لاستكمال السجلات التاريخية المفقودة)';
     // The shared legacy export is a supplemental evidence source even when a
     // newer immutable archive exists. Copy only specifically referenced missing
@@ -152,7 +155,7 @@ export async function restoreLieutenantSource(
     const shared=await readShared();
     if(shared){
       const scan=parse(shared.text);
-      if(scan)return {key:sharedLieutenantKey,name:shared.name,scan,shared};
+      if(scan){scan.issues.push(...failures);return {key:sharedLieutenantKey,name:shared.name,scan,shared};}
       failures.push('كشف SAP المشترك لا يحتوي ترحيلات 011 قابلة للقراءة.');
     }
   }catch(cause){failures.push(cause instanceof Error?cause.message:'تعذّر تحميل كشف SAP المشترك.');}
