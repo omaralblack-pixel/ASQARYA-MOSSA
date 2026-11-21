@@ -1,4 +1,5 @@
 'use client';
+import {boundedFetch} from '../lib/bounded-read';
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {cancellationReviewRows,validateCancellationDecision,
@@ -18,7 +19,7 @@ const relatedLabels:Record<Exclude<CancellationRelatedType,''>,string>={
 type ChangeHandler=(decision:CancellationDecisionInput,expectedRevision:number)=>Promise<void>;
 async function requestJson<T>(url:string,init?:RequestInit):Promise<T>{
   let response:Response;
-  try{response=await fetch(url,{cache:'no-store',redirect:'manual',...init})}
+  try{response=await boundedFetch(url,{cache:'no-store',redirect:'manual',...init})}
   catch{throw Error('انقطع الاتصال بالخادم؛ لم يتم تأكيد حفظ القرار.')}
   if(response.status===401||[301,302,303,307,308].includes(response.status)||
     response.type==='opaqueredirect')

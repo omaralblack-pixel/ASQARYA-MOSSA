@@ -1,4 +1,5 @@
 'use client';
+import {boundedFetch} from '../lib/bounded-read';
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {Search} from 'lucide-react';
@@ -177,7 +178,7 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
       }
       let member=groups.flatMap(group=>group.members).find(item=>item.transfer.number===transferNo);
       if(!member){
-        const response=await fetch('/api/reconcile?sapLookup='+encodeURIComponent(transferNo),{cache:'no-store'});
+        const response=await boundedFetch('/api/reconcile?sapLookup='+encodeURIComponent(transferNo),{cache:'no-store'});
         const result=await response.json() as {hits?:SapEvidence[];partial?:boolean;error?:string};
         if(!response.ok)throw Error(result.error||'تعذّر فحص ترحيلات SAP المستوردة.');
         if(result.partial)throw Error('فحص ترحيلات SAP غير مكتمل؛ استخدم رقم الترحيل الكامل.');
