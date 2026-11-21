@@ -91,6 +91,14 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   try{await action();}catch(e){if(mounted.current)E(e instanceof Error?e.message:'تعذّر إتمام الطلب.');}
   finally{lock.current=false;if(mounted.current)B(false);}
  }
+ async function verifyActiveSnapshot(key:string,expected:number){
+  const result=await sapRequest<{snapshot:ActiveSapSnapshot|null}>('/api/sap-snapshot');
+  const snapshot=result.snapshot;
+  if(!snapshot||snapshot.key!==key||snapshot.documents!==expected||
+     snapshot.activeCount!==expected)
+   throw Error('تم طلب اعتماد SAP، لكن سجل D1 لم يؤكد عدد الترحيلات. لا تعِد رفع الأصل؛ راجع النسخة المعتمدة.');
+  AS(snapshot);SE('');
+ }
  async function publishShared(file:SapArchiveFile,text:string){
   const sourceKind=classifySapFile(text);
   if(sourceKind!=='transfers'&&sourceKind!=='unified')return;
@@ -147,6 +155,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   const replacement=await sapRequest<{deleted:number}>('/api/sap-snapshot',{
    key:file.key,children:transferKeys,documents:parseLieutenantTransfers(sections.transfers,[]).transfers.length,
   });
+  await verifyActiveSnapshot(file.key,parseLieutenantTransfers(sections.transfers,[]).transfers.length);
   await publishShared(file,text);
   M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة.'+
    (review?' توجد ملاحظات قراءة في '+review+' أجزاء.':' جميع الدفعات ناجحة.')+
@@ -202,6 +211,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   if(state.kind==='transfers'&&!fromUnified&&state.status==='complete'){
    await sapRequest('/api/sap-snapshot',{action:'stage',key:file.key,child:file.key});
    await sapRequest('/api/sap-snapshot',{key:file.key,children:[file.key],documents:state.documents.length});
+   await verifyActiveSnapshot(file.key,state.documents.length);
    await publishShared(file,text??await readSapArchive(file));
   }
   M((state.total===state.done?'انتهت جميع الدفعات المطلوبة. '+(state.issues.length?'توجد ملاحظات قراءة تحتاج مراجعة.':'البيانات متاحة للشاشات المرتبطة.'):'المعالجة غير مكتملة.')+archiveWarning);
