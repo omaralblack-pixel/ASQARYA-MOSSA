@@ -12,6 +12,7 @@ import {splitSapSectionIntoChunks,type UnifiedChunkKind} from '../lib/sap-unifie
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const uploadDay=(date:string)=>date&&Number.isFinite(Date.parse(date))?new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)):'';
 const uploadTime=(date:string)=>date&&Number.isFinite(Date.parse(date))?uploadDay(date)+' '+new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(date)):'';
+type ActiveSapSnapshot={key:string;created:string;committed:string;documents:number;activeCount:number};
 const statusNames={complete:'مكتمل',review:'اكتملت الدفعات — بحاجة مراجعة',archived:'محفوظ — نوع غير معروف',pending:'بانتظار الاستكمال',running:'قيد المعالجة',failed:'دفعات فاشلة — يمكن استكمالها'};
 /** Prove uploaded immutable bytes are retrievable before starting any D1 job.
  * Exact comparison runs in the browser, outside the CPU-limited Worker. */
@@ -30,6 +31,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
  const [query,Q]=useState(''),[filter,FL]=useState('all'),[balanceFrom,BF]=useState(''),[balanceTo,BT]=useState(''),[uploadFrom,UF]=useState(''),[uploadTo,UT]=useState('');
  const [opened,OPEN]=useState<{file:SapArchiveFile;text:string}|null>(null);
  const [olderSnapshotNotice,OSN]=useState('');
+  const [activeSnapshot,AS]=useState<ActiveSapSnapshot|null>(null),[snapshotError,SE]=useState('');
  const [fromDate,FROM]=useState(()=>today().slice(0,8)+'01'),[toDate,TO]=useState(today());
  const queryRef=useRef<HTMLTextAreaElement>(null);
  const lock=useRef(false),mounted=useRef(true);
@@ -61,9 +63,14 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
 
  const remember=(value:SapJob)=>{if(!mounted.current)return;SJ(value);J(old=>({...old,[value.key]:value}));};
  async function refresh(preferredKey?:string){
-  const [archive,processing]=await Promise.allSettled([listSapFiles(),sapRequest<{jobs:SapJob[]}>('/api/sap-processing')]);
+  const [archive,processing,snapshot]=await Promise.allSettled([
+    listSapFiles(),sapRequest<{jobs:SapJob[]}>('/api/sap-processing'),
+    sapRequest<{snapshot:ActiveSapSnapshot|null}>('/api/sap-snapshot'),
+   ]);
   if(!mounted.current)return;
   if(archive.status==='fulfilled')F(archive.value);
+   if(snapshot.status==='fulfilled'){AS(snapshot.value.snapshot);SE('');}
+   else{AS(null);SE(snapshot.reason instanceof Error?snapshot.reason.message:'تعذّر قراءة النسخة الفعّالة من D1.');}
   if(processing.status==='fulfilled'){
    J(Object.fromEntries(processing.value.jobs.map(x=>[x.key,x])));
    const selected=preferredKey||job?.key||processing.value.jobs[0]?.key;
@@ -303,7 +310,19 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    {loading&&<p role="status">جارٍ قراءة الأرشيف والحالات المحفوظة…</p>}
    {busy&&<p role="status">جارٍ حفظ الملف أو معالجة الدفعات. يمكن استكمال الدفعات المحفوظة بعد تحديث الصفحة.</p>}
    {error&&<p className="banner error" role="alert"><AlertTriangle size={16}/>{error}</p>}{message&&<p className="banner info" role="status">{message}</p>}{olderSnapshotNotice&&<p className="hint" role="status">{olderSnapshotNotice}</p>}
-   {job?<><p role="status"><b>{statusNames[job.status]}</b> · {job.done} من {job.total} دفعة · {job.count} مستند/بند · وقت الدفعات: {(job.duration/1000).toFixed(2)} ثانية</p>
+    {snapshotError?<p className="banner warn" role="alert"><AlertTriangle size={16}/>تعذّر التحقق من الاعتماد الفعلي: {snapshotError}</p>:
+     activeSnapshot?<div className={activeSnapshot.activeCount===activeSnapshot.documents?'banner info':'banner warn'} role="status">
+       <strong>آخر نسخة SAP معتمدة فعليًا في D1</strong>
+       <p>الأصل: <b dir="auto">{fromSapStorageFilename(activeSnapshot.key.split('__').at(-1)||'')}</b>
+       {' '}· الرفع: {uploadTime(activeSnapshot.created)}
+       {' '}· الاعتماد: {uploadTime(activeSnapshot.committed)}
+       {' '}· الترحيلات المعتمدة: {activeSnapshot.activeCount} من {activeSnapshot.documents}</p>
+       {activeSnapshot.activeCount!==activeSnapshot.documents&&<p>تنبيه: عدد سجلات الترحيلات الفعّالة لا يطابق إيصال الاعتماد؛ يلزم التدقيق قبل اعتبار البيانات مكتملة.</p>}
+      </div>:
+      !loading&&<p className="banner warn" role="status">لا يوجد إيصال اعتماد لنسخة SAP في D1. ظهور «مكتمل» في الأرشيف وحده لا يعني أن الترحيلات مفعّلة.</p>}
+    {activeSnapshot&&files.some(file=>file.kind==='unified'&&file.key!==activeSnapshot.key&&file.created>activeSnapshot.created)&&
+     <p className="banner warn" role="status">توجد نسخة SAP موحّدة أحدث في الأرشيف لم تُثبت كنسخة معتمدة. افحصها من القائمة أدناه.</p>}
+   {job?<><p role="status"><b>{activeSnapshot?.key===job.key&&activeSnapshot.activeCount===activeSnapshot.documents?'معتمد فعليًا في D1':statusNames[job.status]}</b> · {job.total?job.done+' من '+job.total+' دفعة':'لا دفعات معالجة معلقة'} · {job.count} مستند/بند · وقت الدفعات: {(job.duration/1000).toFixed(2)} ثانية</p>
     {job.done<job.total&&<div className="banner info">
      <div>
       <strong dir="auto">{selectedJobFile?.name||fromSapStorageFilename(job.key.split('__').at(-1)||'')}</strong>
@@ -329,7 +348,10 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   </div><p className="hint">{visible.length} من {files.length} ملفًا ظاهرًا في فهرس Supabase. سجلات معالجة D1 مستقلة عن الملفات الأصلية.</p>
   <div className="table-scroll"><table><thead><tr><th>الملف</th><th>النوع</th><th>تاريخ الرصيد</th><th>تاريخ الرفع</th><th>حالة المعالجة</th><th>الإجراءات</th></tr></thead><tbody>{visible.map(file=>{
    const state=jobs[file.key];return <tr key={file.key}><td dir="auto">{file.name}</td><td>{file.kind==='other'&&opened?.file.key===file.key&&isUnifiedSapSource(opened.text)?
-     'الكويري الشامل — نسخة مؤرشفة قديمة':sapKinds[(state?.kind||file.kind) as SapKind]||file.kind}</td><td dir="ltr">{file.snapshotDate||'—'}</td><td dir="ltr">{uploadTime(file.created)}</td><td>{state?statusNames[state.status]+' ('+state.done+'/'+state.total+')':'لم تُسجّل معالجة'}{state?.failed?` · ${state.failed} فاشلة`:''}</td><td><div className="row-actions">
+     'الكويري الشامل — نسخة مؤرشفة قديمة':sapKinds[(state?.kind||file.kind) as SapKind]||file.kind}</td><td dir="ltr">{file.snapshotDate||'—'}</td><td dir="ltr">{uploadTime(file.created)}</td><td>{activeSnapshot?.key===file.key?
+      (activeSnapshot.activeCount===activeSnapshot.documents?'معتمد فعليًا في D1 — '+activeSnapshot.documents+' ترحيل':'اعتماد مسجل — اختلاف في عدد الترحيلات'):
+       state?(state.total===0?statusNames[state.status]+' — بلا دفعات معلقة':statusNames[state.status]+' ('+state.done+'/'+state.total+')'):
+        ['balance','opening'].includes(file.kind)?'محفوظ كمرجع رصيد — دون دفعات':'لم تُسجّل معالجة'}{state?.failed?` · ${state.failed} فاشلة`:''}</td><td><div className="row-actions">
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(async()=>{OPEN({file,text:await readSapArchive(file)});const result=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));SJ(result.job);})}>فتح</button>
     <a className="button secondary small" href={'/api/lieutenant-files?key='+encodeURIComponent(file.key)} download={file.name}><Download size={14}/>تنزيل</a>
     <button className="button secondary small" disabled={busy} onClick={()=>void exclusive(()=>processFile(file))}>{state?.status==='complete'?'تحقق من المعالجة':'حالة / استكمال'}</button>
