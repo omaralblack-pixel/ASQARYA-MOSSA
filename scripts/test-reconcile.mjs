@@ -8,7 +8,8 @@ let changed=structuredClone(d);changed.invoices[1].quantities['11366443']='9';r=
 changed=structuredClone(d);changed.invoices[1].amount='3.501';assert.equal(reconcile(changed,ref).priceDifference,1);assert.equal(reconcile(changed,ref).status,'difference');
 changed=structuredClone(d);changed.invoices[0].complete=false;assert.equal(reconcile(changed,ref).status,'review');
 changed=structuredClone(d);changed.invoices[1].number='A';assert.equal(reconcile(changed,ref).status,'review');changed=structuredClone(d);changed.transfers[1].number='100';assert.equal(reconcile(changed,ref).status,'review');
-changed=structuredClone(d);changed.transfers[0].paste=changed.transfers[0].paste.replace('FVL00302','CHS00071');assert.equal(reconcile(changed,ref).review,1);
+// Keep the unknown-SKU regression separate from CHS00071, now an approved GENUINEL alias.
+changed=structuredClone(d);changed.transfers[0].paste=changed.transfers[0].paste.replace('FVL00302','CHS99999');assert.equal(reconcile(changed,ref).review,1);
 changed=structuredClone(d);changed.transfers[0].paste=paste([['PFS00003',10,'KG']]);assert.equal(reconcile(changed,ref).rows.find(i=>i.sapCode==='PFS00003').transfer,null);
 const piece={...ref.find(i=>i.sapCode==='PFS00003'),kgPerPiece:1};assert.equal(convert({unit:'KG',quantity:10},piece),10);assert.equal(convert({unit:'Piece',quantity:5},ref.find(i=>i.sapCode==='CHS00033')),5);assert.equal(convert({unit:'Carton',quantity:2},ref.find(i=>i.sapCode==='FVL00311')),16);
 assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']])).lines[0].quantity,1);assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']]).replace('\t11\t','\t12\t')).excluded.length,1);assert.equal(parseTransfer(paste([['FVL00302',1,'Carton']])+'\n\t\t\t\t1\t11').issues.length,1);
