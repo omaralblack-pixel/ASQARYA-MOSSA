@@ -4,7 +4,7 @@ import {FileUp,RefreshCw,FileArchive,Download,Trash2,AlertTriangle,Copy} from 'l
 import {decodeLieutenantFile} from '../lib/lieutenant-file';
 import {classifySapFile,sapKinds,type SapKind,type SapJob} from '../lib/sap-processing';
 import {maxSapFileBytes,readSavedSapImport,saveSapImport} from '../lib/saved-sap-import';
-import {listSapFiles,readSapArchive,readSapJson,sapRequest,type SapArchiveFile} from '../lib/sap-files-client';
+import {listSapFiles,readSapArchive,readSapJson,sapRequest,sapFetch,type SapArchiveFile} from '../lib/sap-files-client';
 import {fromSapStorageFilename} from '../lib/sap-archive-filename';
 import {parseLieutenantTransfers} from '../lib/lieutenant';
 import {isUnifiedSapSource,splitUnifiedSapSource,unifiedSapQuery} from '../lib/unified-sap-query';
@@ -17,7 +17,7 @@ const statusNames={complete:'مكتمل',review:'اكتملت الدفعات —
 /** Prove uploaded immutable bytes are retrievable before starting any D1 job.
  * Exact comparison runs in the browser, outside the CPU-limited Worker. */
 async function verifyArchivedSource(key:string,original:ArrayBuffer){
- const res=await fetch('/api/lieutenant-files?key='+encodeURIComponent(key),{cache:'no-store'});
+ const res=await sapFetch('/api/lieutenant-files?key='+encodeURIComponent(key),{cache:'no-store'});
  if(!res.ok)throw Error('الخادم أعاد مفتاح ملف، لكن تعذّر استرجاع الأصل من Supabase (HTTP '+res.status+'). لا يمكن تأكيد حفظ الملف.');
  const returned=await res.arrayBuffer();
  const a=new Uint8Array(original),b=new Uint8Array(returned);
@@ -53,7 +53,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   for(const part of parts){
    if(!part.count)continue;
    const name=file.name.replace(/\.[^.]+$/,'')+'-'+part.kind+'-'+(part.date||sections.from+'-'+sections.to)+'.txt';
-   const res=await fetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':'text/plain',
+   const res=await sapFetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':'text/plain',
     'X-File-Name':encodeURIComponent(name),'X-File-Kind':part.kind,'X-Snapshot-Date':part.date},
     body:new TextEncoder().encode(part.body)});
    const stored=await readSapJson<{key:string}>(res,'أرشفة جزء '+part.kind+' من ملف SAP الموحد');
@@ -129,7 +129,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    const bytes=new TextEncoder().encode(part.chunks[i]);
    M('معالجة SAP المجزأة: '+(finished+1)+' من '+total+' — '+part.label+
     '. النسخ والدفعات السابقة محفوظة.');
-   const response=await fetch('/api/lieutenant-files',{method:'POST',headers:{
+   const response=await sapFetch('/api/lieutenant-files',{method:'POST',headers:{
     'Content-Type':'text/plain','X-File-Name':encodeURIComponent(name),
     'X-File-Kind':part.kind==='transfers'?'transfers':'other'
    },body:bytes});
@@ -152,14 +152,14 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   // Never publish an individual chunk to the shared SAP full-export view.
   if(review)throw Error('اكتملت الدفعات مع أخطاء قراءة؛ راجعها قبل استبدال النسخة السابقة.');
   await archiveUnifiedParts(file,text);
-  const replacement=await sapRequest<{deleted:number}>('/api/sap-snapshot',{
+  await sapRequest<{deleted:number}>('/api/sap-snapshot',{
    key:file.key,children:transferKeys,documents:parseLieutenantTransfers(sections.transfers,[]).transfers.length,
   });
   await verifyActiveSnapshot(file.key,parseLieutenantTransfers(sections.transfers,[]).transfers.length);
   await publishShared(file,text);
   M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة.'+
    (review?' توجد ملاحظات قراءة في '+review+' أجزاء.':' جميع الدفعات ناجحة.')+
-   ' تم تفعيل النسخة الجديدة وحذف '+replacement.deleted+' ملفات سابقة.');
+   ' تم تفعيل النسخة الجديدة مع الاحتفاظ بالأصول والنسخة السابقة للرجوع.');
  }
  async function processFile(file:SapArchiveFile,text?:string,recheck=false,fromUnified=false):Promise<void>{
   const current=await sapRequest<{job:SapJob|null}>('/api/sap-processing?key='+encodeURIComponent(file.key));
@@ -180,9 +180,9 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   }
   const archiveKind=['transfers','balance','opening','unified'].includes(state.kind)?state.kind:'other';
   if(file.kind!==archiveKind&&!(file.kind==='other'&&state.kind==='unified')){
-   const raw=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key));
+   const raw=await sapFetch('/api/lieutenant-files?key='+encodeURIComponent(file.key));
    if(!raw.ok)throw Error('تعذّر فتح الأصل لتصحيح تصنيفه.');
-   const copied=await fetch('/api/lieutenant-files',{method:'POST',headers:{'X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind},body:await raw.arrayBuffer()});
+   const copied=await sapFetch('/api/lieutenant-files',{method:'POST',headers:{'X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind},body:await raw.arrayBuffer()});
    const result=await readSapJson<{key:string}>(copied,'تصنيف ملف SAP المحفوظ');
    if(!result.key)throw Error('لم يؤكد الخادم حفظ النسخة المصنفة.');
    await refresh();
@@ -214,7 +214,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    await verifyActiveSnapshot(file.key,state.documents.length);
    await publishShared(file,text??await readSapArchive(file));
   }
-  M((state.total===state.done?'انتهت جميع الدفعات المطلوبة. '+(state.issues.length?'توجد ملاحظات قراءة تحتاج مراجعة.':'البيانات متاحة للشاشات المرتبطة.'):'المعالجة غير مكتملة.')+archiveWarning);
+  M((state.status==='complete'&&state.count>0?'اكتملت معالجة السجلات المثبتة.':state.status==='archived'?'الأصل مؤرشف فقط؛ لم يُثبت اعتماد بياناته.':state.status==='review'?'تحتاج البيانات مراجعة؛ لا يؤكد عدّاد الدفعات اعتمادها.':'المعالجة غير مكتملة.')+archiveWarning);
  }
  async function upload(event:ChangeEvent<HTMLInputElement>){
   const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(!file)return;
@@ -226,7 +226,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    const needsDate=detected==='balance'||detected==='opening';
    if(needsDate&&(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>today()||new Date(date+'T00:00:00Z').toISOString().slice(0,10)!==date))throw Error('اختر تاريخ الرصيد الفعلي الصحيح قبل الرفع.');
    const archiveKind=['transfers','balance','opening','unified'].includes(detected)?detected:'other';
-   const res=await fetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream','X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind,'X-Snapshot-Date':needsDate?date:''},body:bytes});
+   const res=await sapFetch('/api/lieutenant-files',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream','X-File-Name':encodeURIComponent(file.name),'X-File-Kind':archiveKind,'X-Snapshot-Date':needsDate?date:''},body:bytes});
    const saved=await readSapJson<{key:string}>(res,'حفظ الملف الأصلي في أرشيف SAP');
    if(!saved.key)throw Error('لم يؤكد الخادم حفظ الملف الأصلي.');
    // Save, verify and display the archive before any CPU-heavy processing.
@@ -257,8 +257,8 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    if(actual!=='balance'&&actual!=='opening')throw Error('هذا الملف ليس كشف رصيد معروفًا.');
    if(!date||date>today()||new Date(date+'T00:00:00Z').toISOString().slice(0,10)!==date)throw Error('اختر تاريخ الرصيد الصحيح أعلى الصفحة.');
    if(!confirm('هل هذا الكشف يمثل '+(actual==='opening'?'الرصيد قبل أول حركة بتاريخ ':'الرصيد بنهاية يوم ')+date+'؟ ستُحفظ نسخة مؤرخة ويبقى الأصل.'))return;
-   const raw=await fetch('/api/lieutenant-files?key='+encodeURIComponent(file.key));if(!raw.ok)throw Error('تعذّر قراءة الأصل.');
-   const saved=await fetch('/api/lieutenant-files',{method:'POST',headers:{'X-File-Name':encodeURIComponent(file.name),'X-File-Kind':actual,'X-Snapshot-Date':date},body:await raw.arrayBuffer()});
+   const raw=await sapFetch('/api/lieutenant-files?key='+encodeURIComponent(file.key));if(!raw.ok)throw Error('تعذّر قراءة الأصل.');
+   const saved=await sapFetch('/api/lieutenant-files',{method:'POST',headers:{'X-File-Name':encodeURIComponent(file.name),'X-File-Kind':actual,'X-Snapshot-Date':date},body:await raw.arrayBuffer()});
    const out=await readSapJson<{key:string}>(saved,'تثبيت تاريخ رصيد 011');
    if(!out.key)throw Error('لم يؤكد الخادم تاريخ الرصيد.');
    await processFile({...file,key:out.key,snapshotDate:date},text);await refresh();
@@ -267,7 +267,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
  async function remove(file:SapArchiveFile){
   if(!confirm('حذف الملف الأصلي «'+file.name+'» من الأرشيف نهائيًا؟ لن تُحذف المطابقات أو قرارات الإلغاء أو المستندات المعالجة.'))return;
   await exclusive(async()=>{
-   const res=await fetch('/api/lieutenant-files',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:file.key})});
+   const res=await sapFetch('/api/lieutenant-files',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:file.key})});
    const out=await readSapJson<{deleted?:boolean}>(res,'حذف الملف المحدد من أرشيف SAP');
    if(!out.deleted)throw Error('لم يؤكد الخادم الحذف.');
    if(opened?.file.key===file.key)OPEN(null);await refresh();M('حُذف الملف المحدد من الأرشيف.');
@@ -276,7 +276,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
  async function verifyUnlistedOriginal(source:SapJob){
   const match=source.key.match(/^lieutenant\/(transfers|opening|balance|unified|other)__([a-f0-9]{32})__(?:(\d{4}-\d{2}-\d{2})__)?(.+)$/);
   if(!match)throw Error('مفتاح سجل المعالجة غير صالح.');
-  const response=await fetch('/api/lieutenant-files?key='+encodeURIComponent(source.key),{cache:'no-store'});
+  const response=await sapFetch('/api/lieutenant-files?key='+encodeURIComponent(source.key),{cache:'no-store'});
   if(response.status===404)throw Error('يوجد سجل معالجة في D1 ('+source.done+'/'+source.total+
    ') لكن أصل الملف غير موجود في Supabase. أعد رفع نفس الأصل بالاسم نفسه لاستعادة الأرشيف، بدون حذف سجل المعالجة.');
   if(!response.ok)throw Error('تعذّر التأكد من أصل SAP في Supabase: HTTP '+response.status+'. لم أعتبر الملف مفقودًا.');

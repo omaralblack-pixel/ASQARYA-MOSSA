@@ -75,9 +75,29 @@ export async function sapRequest<T>(url:string,body?:unknown):Promise<T>{
   }
  }
 }
+/** Bound upload/download response bodies too, before handing them to parsers. */
+export function sapFetch(url:string,init:RequestInit={}):Promise<Response>{
+ return boundedRead(url,async response=>{
+  if(response.type==='opaqueredirect')throw Error('انتهت جلسة الدخول. سجّل الدخول وأعد المحاولة.');
+  const body=await response.arrayBuffer();
+  return new Response(response.status===204||response.status===205||response.status===304?null:body,
+   {status:response.status,statusText:response.statusText,headers:response.headers});
+ },{init,signal:init.signal??undefined,timeoutMs:60_000});
+}
 export async function listSapFiles():Promise<SapArchiveFile[]>{
  const files:SapArchiveFile[]=[];let page:number|null=0;
- do{const next:{files:SapArchiveFile[];nextPage:number|null}=await sapRequest('/api/lieutenant-files?page='+page);files.push(...next.files);page=next.nextPage;}while(page!==null);
+ const pages=new Set<number>(),keys=new Set<string>();
+ do{
+  if(!Number.isSafeInteger(page)||page<0||pages.has(page)||pages.size>=1000)throw Error('تسلسل صفحات أرشيف SAP غير مكتمل. أعد المحاولة.');
+  pages.add(page);
+  const next:{files:SapArchiveFile[];nextPage:number|null}=await sapRequest('/api/lieutenant-files?page='+page);
+  if(!Array.isArray(next.files)||!(next.nextPage===null||Number.isSafeInteger(next.nextPage)))throw Error('استجابة أرشيف SAP غير مكتملة.');
+  for(const file of next.files){
+   if(!file||typeof file.key!=='string'||keys.has(file.key))throw Error('تغيّرت قائمة أرشيف SAP أثناء القراءة. أعد المحاولة.');
+   keys.add(file.key);files.push(file);
+  }
+  page=next.nextPage;
+ }while(page!==null);
  return files;
 }
 // Immutable keys make this cache safe across screen navigation. Errors are

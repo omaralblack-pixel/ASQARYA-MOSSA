@@ -83,6 +83,11 @@ const downloadedArabic=await handleInstitution(request('/api/lieutenant-files?ke
 assert.equal(downloadedArabic.status,200);
 assert.deepEqual(new Uint8Array(await downloadedArabic.arrayBuffer()),bytes);
 assert.ok(downloadedArabic.headers.get('Content-Disposition').includes(encodeURIComponent('كويري 18.txt')));
+// Same filename on a later day must accept different SHA-256 content, retaining both.
+const changed=await handleInstitution(request('/api/lieutenant-files','POST',new Uint8Array([65,66,67]),{'X-File-Name':encodeURIComponent('كويري 18.txt'),'X-File-Kind':'unified'}),env);
+assert.equal(changed.status,200);
+const changedFile=await changed.json();assert.notEqual(changedFile.key,arabic.key);
+assert.ok(originals.has(arabic.key)&&originals.has(changedFile.key));
 globalThis.fetch=previousFetch;
 // Cloudflare edge/gateway sometimes responds with HTML or bad JSON for HTTP 503.
 const sapScreen=fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8');

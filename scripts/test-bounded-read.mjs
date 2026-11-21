@@ -61,6 +61,12 @@ try{
   for(const record of records)assert.deepEqual(JSON.parse(record.payload),frozen);
   const meta=await (await route.GET(new Request('https://example.test/api/reconcile?reassuranceMeta=1&from=2026-11-01'))).json();assert.ok(Array.isArray(meta.reference));assert.ok(Array.isArray(meta.openingStock));
  });
+ await test('SAP archive listing rejects repeated pages, duplicated keys and missing pagination metadata',async()=>{
+  const {listSapFiles}=load('app/lib/sap-files-client.ts');
+  for(const data of [{files:[{key:'a'}],nextPage:0},{files:[{key:'a'},{key:'a'}],nextPage:null},{files:[]}]){
+   globalThis.fetch=async()=>Response.json(data);await assert.rejects(listSapFiles(),/أرشيف/);
+  }
+ });
  await test('Failure of an older SAP source remains a visible completeness issue',async()=>{
   const {restoreLieutenantSource}=load('app/lib/lieutenant-source.ts');
   const text='Document Number\tDocument Date\tBranch Code\tBranch Name\tRemarks\tItem No.\tItem Description\tQuantity\tUoM Code\tFrom Warehouse\tTo Warehouse\n2616675\t2026-11-01\t23\tbranch\t\tDAR00005\titem\t1\tPiece\t001\t011';
