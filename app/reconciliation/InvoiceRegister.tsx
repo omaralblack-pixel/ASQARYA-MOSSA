@@ -3,7 +3,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import {Download, RefreshCw, Search} from 'lucide-react';
 import {dateValue, digits, fils, invoiceDocumentNo, money, readReconciliationRecord, transferNumbers, type Draft} from '../lib/reconcile';
-import {readSavedSapImport} from '../lib/saved-sap-import';
+import {readCurrentSapImport} from '../lib/approved-sap-client';
 import {sapInvoicesFromSavedFile,compareSapWithSavedInvoices,type SapRegisterSource} from '../lib/sap-invoice-register';
 
 type RecordSummary = {id: string; branch: string; doc_date: string; payload: string};
@@ -86,9 +86,10 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
   // Nothing is posted back to either SAP storage or the reconciliation database.
   useEffect(() => {
     let active = true;
+    const controller=new AbortController();
     setSapBusy(true);
     setSapError('');
-    readSavedSapImport().then(file => {
+    readCurrentSapImport({signal:controller.signal}).then(file => {
       if (!active) return;
       if (!file?.text?.trim()) {
         setSapSource(null);
@@ -106,7 +107,7 @@ export default function InvoiceRegister({records, busy, refresh, open}: {
         setSapError(error instanceof Error ? error.message : 'تعذّر قراءة كشف SAP المحفوظ.');
       }
     }).finally(() => {if (active) setSapBusy(false);});
-    return () => {active = false;};
+    return () => {active = false;controller.abort();};
   }, [sapReload]);
 
   const comparison = useMemo(() => sapSource ? compareSapWithSavedInvoices(sapSource, records) : [], [sapSource,records]);

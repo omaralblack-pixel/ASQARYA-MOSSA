@@ -5,7 +5,8 @@ import {useEffect,useMemo,useRef,useState} from 'react';
 import {Search} from 'lucide-react';
 import {digits,invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft} from '../lib/reconcile';
 import {parseSapImport,type SapImportGroup} from '../lib/sap-import';
-import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
+import {readCurrentSapImport} from '../lib/approved-sap-client';
+import type {SavedSapImport} from '../lib/saved-sap-import';
 import {groupSapEvidence,searchArchivedSapEvidence,type SapEvidence} from '../lib/sap-document-lookup';
 import {draftFromPaperInvoice} from '../lib/sap-import-paper-invoice';
 
@@ -98,13 +99,13 @@ export default function SapImport({branches,records,readRecords,saveDraft,openDr
     let active=true;
     async function restore(){
       try{
-        const saved=await readSavedSapImport();
+        const saved=await readCurrentSapImport();
         if(!active||!saved)return;
         setSavedFile(saved);
         setPaste(saved.text);
         await preview(saved.text,()=>active);
-      }catch{
-        if(active)setFileError('تعذّر قراءة ملف SAP المحفوظ على Supabase.');
+      }catch(cause){
+        if(active)setFileError(cause instanceof Error?cause.message:'تعذّر قراءة أصل SAP المعتمد.');
       }finally{
         if(active)setLoadingFile(false);
       }
