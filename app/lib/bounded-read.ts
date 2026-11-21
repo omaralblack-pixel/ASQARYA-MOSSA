@@ -33,6 +33,7 @@ export function readJson<T>(url:string,signal?:AbortSignal):Promise<T>{
     let data:T&{error?:string};
     try{data=await response.json()}
     catch{throw Error('استجابة البيانات غير مكتملة أو ليست JSON صالحًا (HTTP '+response.status+'). أعد المحاولة.')}
+    if(!data||typeof data!=='object')throw Error('بنية استجابة البيانات غير صالحة؛ الفحص غير مكتمل.');
     if(!response.ok)throw Error(data?.error||'تعذّر تحميل البيانات (HTTP '+response.status+').');
     return data;
   },{signal});

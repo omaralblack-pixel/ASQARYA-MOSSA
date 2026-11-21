@@ -21,7 +21,8 @@ export async function readActiveSap(signal:AbortSignal,progress:(page:number)=>v
    if(typeof row.transfer_no!=='string'||row.transfer_no<=after||seen.has(row.transfer_no))throw Error('تسلسل ترحيلات D1 غير مكتمل.');
    let item:LieutenantTransfer;
    try{item=JSON.parse(row.payload)}catch{throw Error('بيانات ترحيل D1 غير مقروءة؛ الفحص غير مكتمل.')}
-   if(item?.transfer?.number!==row.transfer_no||typeof item.transfer.paste!=='string'||!Array.isArray(item.issues))throw Error('بيانات ترحيل D1 غير مكتملة.');
+   if(item?.transfer?.number!==row.transfer_no||typeof item.transfer.paste!=='string'||typeof item.transfer.date!=='string'||
+     typeof item.remarks!=='string'||typeof item.branch!=='string'||!Array.isArray(item.invoiceNumbers)||!Array.isArray(item.issues))throw Error('بيانات ترحيل D1 غير مكتملة.');
    seen.add(row.transfer_no);transfers.push(item);
   }
   if(data.hasMore===false){

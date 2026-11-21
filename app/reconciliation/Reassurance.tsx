@@ -40,8 +40,12 @@ async function readColonelControls(from:string,to:string,signal:AbortSignal):Pro
     month=next.toISOString().slice(0,7);
   }
   if(month<=end)throw Error('الفترة أطول من سنة؛ لا يمكن قراءة قرارات العقيد كاملة.');
-  return mapBounded(periods,2,month=>readJson<ReassuranceCouncilControl>(
-    '/api/colonel?month='+encodeURIComponent(month),signal));
+  return mapBounded(periods,2,async month=>{
+    const control=await readJson<ReassuranceCouncilControl>('/api/colonel?month='+encodeURIComponent(month),signal);
+    if(!Array.isArray(control.days)||!Array.isArray(control.assignments)||!Array.isArray(control.decisions)||
+      control.signoffs!==undefined&&!Array.isArray(control.signoffs))throw Error('قرارات العقيد والملازم غير مكتملة؛ أعد المحاولة.');
+    return control;
+  });
 }
 
 export default function Reassurance({branches,onOpenRecord,onOpenTransfer,onNavigate,syncVersion=0,syncScope='all'}:{branches:string[];
