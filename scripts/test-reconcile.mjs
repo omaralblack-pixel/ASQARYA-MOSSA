@@ -273,12 +273,16 @@ console.log('PASS: mixed 001 and 009 lines into 011 are both included.');
  const {withIncomingGenuinelAliases}=await import('data:text/javascript;base64,'+Buffer.from(aliasJs).toString('base64'));
  const stripped=ref.map(i=>['11062673','11062674'].includes(i.code)?{...i,sapAliases:[]}:i);
  const normalized=withIncomingGenuinelAliases(stripped);
- for(const [owner,alias] of [['11062673','CHS00071'],['11062674','CHS00072']]){
+ for(const [owner,alias,pack,previous] of [
+  ['11062673','CHS00071',45,32],
+  ['11062674','CHS00072',20,20],
+ ]){
   const entry=normalized.find(i=>i.code===owner),known=ref.find(i=>i.code===owner);
   const current=entry.sapAliases.find(a=>a.sapCode===alias);
   assert.ok(current,'New SAP code must resolve to its existing official institution item');
   assert.equal(current.sapUnit,'Piece');
-  assert.equal(current.cartonPieces,null,'Do not assume new carton pack from historical product');
+  assert.equal(current.cartonPieces,pack,'Use confirmed pieces per carton for this SAP code');
+  assert.equal(entry.cartonPieces,previous,'Preserve historical primary SKU carton size');
   assert.equal(entry.sapCode,known.sapCode,'Keep previous SAP primary code');
   assert.equal(entry.price,known.price,'No price changes');
   assert.equal(sapReferences(normalized).find(i=>i.sapCode===alias).code,owner);
@@ -286,12 +290,18 @@ console.log('PASS: mixed 001 and 009 lines into 011 are both included.');
  assert.deepEqual(withIncomingGenuinelAliases(normalized),normalized,'No duplicate SAP aliases');
  const conflict=withIncomingGenuinelAliases([...stripped,{...stripped[0],code:'99999999',sapCode:'CHS00071'}]);
  assert.equal(conflict.find(i=>i.code==='11062673').sapAliases.length,0,'Do not hijack occupied SKU');
- const explicit=withIncomingGenuinelAliases(stripped.map(i=>i.code==='11062674'?{
+ const previouslyUnknown=withIncomingGenuinelAliases(stripped.map(i=>i.code==='11062673'?{
+  ...i,sapAliases:[{sapCode:'CHS00071',sapUnit:'Piece',cartonPieces:null,kgPerPiece:null}],
+ }:i));
+ assert.equal(previouslyUnknown.find(i=>i.code==='11062673').sapAliases[0].cartonPieces,45,
+  'Upgrade previously unknown carton pack from confirmed user information');
+ const previousMismatch=withIncomingGenuinelAliases(stripped.map(i=>i.code==='11062674'?{
   ...i,sapAliases:[{sapCode:'CHS00072',sapUnit:'Piece',cartonPieces:30,kgPerPiece:null}],
  }:i));
- assert.equal(explicit.find(i=>i.code==='11062674').sapAliases[0].cartonPieces,30,'Keep manually verified pack');
+ assert.equal(previousMismatch.find(i=>i.code==='11062674').sapAliases[0].cartonPieces,20,
+  'Confirmed operator correction supersedes obsolete alias factor without modifying old SKU');
 }
-console.log('PASS: incoming CHS00071/72 recognized as Piece aliases; old codes, prices and manual pack decisions retained.');
+console.log('PASS: CHS00071=45, CHS00620=32, CHS00072=20, CHS00621=20 pieces/carton; old prices kept.');
 
 console.log('PASS: approved links, aliases and missing definitions apply to saved transfers, preserving recorded amounts, pages, and manual exclusions.');
 
