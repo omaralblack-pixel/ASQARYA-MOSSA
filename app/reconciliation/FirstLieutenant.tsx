@@ -1,4 +1,5 @@
 'use client';
+import {readJson} from '../lib/bounded-read';
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {readSapArchive,listSapFiles} from '../lib/sap-files-client';
@@ -6,7 +7,7 @@ import CashVanAudit from './CashVanAudit';
 import CancelledTransferReview from './CancelledTransferReview';
 import {AlertTriangle,CheckCircle2,Copy,RefreshCw,Search,ShieldCheck} from 'lucide-react';
 import {type LieutenantTransfer} from '../lib/lieutenant';
-import {isColonelBranchConflict,type ColonelBranchException} from '../lib/colonel-core';
+import {applyColonelBranchExceptions,isColonelBranchConflict,type ColonelBranchException} from '../lib/colonel-core';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
 import {readSavedSapImport} from '../lib/saved-sap-import';
@@ -323,15 +324,15 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const [issues,setIssues]=useState<string[]>([]);
   const [snapshot,setSnapshot]=useState<RecordSnapshot>(empty);
   const [snapshotLoaded,setSnapshotLoaded]=useState(false);
-  const [aqabaSummary,setAqabaSummary]=useState<{officialInvoices:number;blueInvoices:number;unlinkedOfficial:number;unlinkedBlue:number;cancellationRows:number;transferDocuments:number;journalMovements:number}|null>(null);
+  type AqabaSummary={officialInvoices:number;blueInvoices:number;unlinkedOfficial:number;unlinkedBlue:number;cancellationRows:number;transferDocuments:number;journalMovements:number;partial:boolean};
+  const [aqabaSummary,setAqabaSummary]=useState<AqabaSummary|null>(null);
   useEffect(()=>{
-    fetch('/api/aqaba?summary=1',{cache:'no-store'}).then(async response=>{
-      if(!response.ok)throw Error('لم يفتح سجل العقبة');
-      return response.json() as Promise<{
-        officialInvoices:number;blueInvoices:number;unlinkedOfficial:number;unlinkedBlue:number;
-        cancellationRows:number;transferDocuments:number;journalMovements:number}>;
-    }).then(data=>setAqabaSummary(data)).catch(()=>setAqabaSummary(null));
-  },[]);
+    const controller=new AbortController();
+    void readJson<AqabaSummary>('/api/aqaba?summary=1',controller.signal)
+      .then(data=>{if(!controller.signal.aborted)setAqabaSummary(data)})
+      .catch(()=>{if(!controller.signal.aborted)setAqabaSummary(null)});
+    return ()=>controller.abort();
+  },[syncVersion]);
   const [from,setFrom]=useState(()=>todayLocal().slice(0,8)+'01');
   const [to,setTo]=useState(todayLocal);
   const [stockDate,setStockDate]=useState<string|null>(null);
@@ -365,12 +366,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   const closingSelectedRef=useRef(false);
   const openingSelectedRef=useRef(false);
   const periodEditedRef=useRef(false);
-  const reviewedTransfers=useMemo(()=>transfers.map(source=>{
-   const exception=branchExceptions.find(item=>item.transfer_no===source.transfer.number);
-   if(!exception||!source.issues.includes(exception.issue_text)||!isColonelBranchConflict(exception.issue_text))
-    return source;
-   return {...source,issues:source.issues.filter(issue=>issue!==exception.issue_text)};
-  }),[transfers,branchExceptions]);
+  const reviewedTransfers=useMemo(()=>applyColonelBranchExceptions(transfers,branchExceptions),[transfers,branchExceptions]);
   // Only label discrepancies are excluded from stock-movement validity.
   // The source data, actual warehouse direction, sign and quantity never change.
   const movementTransfers=useMemo(()=>transfers.map(source=>
@@ -609,6 +605,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     <section className="panel" aria-label="مراقبة مؤسسة العقبة في المستودع المشترك">
       <div className="section-title"><div><h2>مؤسسة العقبة — المستودع 011 المشترك</h2>
         <p>فواتير العقبة الرسمية وترحيلاتها منفصلة عن عمّان. الفاتورة أو التسليم قد يكون سبب خروج البضاعة، لكن لا يجوز خصم أيهما مرة أخرى فوق حركة OINM الفعلية.</p></div></div>
+      {aqabaSummary?.partial&&<p className="banner warn" role="alert">ملخص العقبة جزئي: تُعرض أول 3000 حركة من كل مصدر فقط. الأعداد ليست إجمالي البيانات المحفوظة ولا تثبت اكتمالها؛ افتح صفحات العقبة لقراءة جميع الصفحات.</p>}
       <p className="hint">{aqabaSummary?'فواتير رسمية: '+aqabaSummary.officialInvoices+' · زرقاء: '+aqabaSummary.blueInvoices+' · ترحيلات العقبة: '+aqabaSummary.transferDocuments+' · حركات OINM محفوظة: '+aqabaSummary.journalMovements+' · سطور إلغاء/إلغاء مقابل: '+aqabaSummary.cancellationRows:'لم يُحمّل ملخص العقبة؛ لا تُعتبر الحركات غير الموجودة صفرًا.'}</p>
       <p className="hint">الربط هنا للمراجعة فقط، ولا يغير معادلة رصيد 011 ولا المطابقات السابقة. يجب توثيق خروج العقبة من OINM وتحديد المستند المقابل قبل إغلاق الفرق.</p>
       <a className="button secondary" href="/reconciliation?view=aqaba">فتح مطابقة مؤسسة العقبة</a>

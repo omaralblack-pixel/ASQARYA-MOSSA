@@ -13,6 +13,15 @@ export type ColonelBranchException={transfer_no:string;issue_text:string;reason:
 export function isColonelBranchConflict(issue:string):boolean{
  return /^تعارض فرع SAP: حقل اسم الفرع .+ يخالف الملاحظات .+$/.test(issue);
 }
+/** Reuse only an exact saved branch-label exception; never suppress quantity,
+ * cancellation or changed-source defects, and never mutate the SAP source. */
+export function applyColonelBranchExceptions(transfers:LieutenantTransfer[],exceptions:ColonelBranchException[]){
+ return transfers.map(source=>{
+  const exception=exceptions.find(item=>item.transfer_no===source.transfer.number);
+  if(!exception||!source.issues.includes(exception.issue_text)||!isColonelBranchConflict(exception.issue_text))return source;
+  return {...source,issues:source.issues.filter(issue=>issue!==exception.issue_text)};
+ });
+}
 export type ColonelDayState={day:string;invoices_complete:number;confirmed_at:string;confirmed_by:string};
 export type ColonelInvoice={number:string;date:string;branch:string;amount:string;recordId:string;
   complete:boolean;dateSource:string;transfers:string[];status:string};

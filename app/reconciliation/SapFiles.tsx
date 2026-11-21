@@ -298,7 +298,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    (filter==='all'||actual===filter)&&(!balanceFrom||!!snapshot&&snapshot>=balanceFrom)&&(!balanceTo||!!snapshot&&snapshot<=balanceTo)&&(!uploadFrom||uploaded>=uploadFrom)&&(!uploadTo||uploaded<=uploadTo);
  });
  return <div className="sap-files">
-  <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع ملف SAP الكامل كل يوم. بعد اكتمال المعالجة تُستبدل بيانات SAP السابقة وتُحذف الأصول القديمة، وتبقى المطابقات والتصحيحات اليدوية محفوظة.</p></div><FileArchive size={32}/></div>
+  <div className="page-title"><div><p className="eyebrow">إدارة المؤسسة · المصدر المشترك</p><h1>ملفات SAP</h1><p>ارفع ملف SAP الكامل كل يوم. بعد اكتمال المعالجة والتحقق من D1 تُفعّل النسخة الجديدة، مع الاحتفاظ بالأصول والنسخة السابقة والمطابقات والتصحيحات اليدوية.</p></div><FileArchive size={32}/></div>
   <section className="panel"><h2>رفع ملف SAP جديد</h2><div className="table-controls">
    <label>نوع الملف المتوقع (يُصحّح تلقائيًا)<select value={kind} disabled={busy} onChange={e=>K(e.target.value as SapKind)}>{Object.entries(sapKinds).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></label>
    {kind!=='unified'&&<><label>تاريخ الرصيد الفعلي<input type="date" max={today()} value={date} disabled={busy} onChange={e=>D(e.target.value)}/></label>
