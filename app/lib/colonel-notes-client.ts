@@ -1,6 +1,6 @@
-import {listSapFiles,readSapArchive,sapRequest} from './sap-files-client';
-import {readSavedSapImport} from './saved-sap-import';
-import {restoreLieutenantSource} from './lieutenant-source';
+import {sapRequest} from './sap-files-client';
+import {readCurrentSapImport} from './approved-sap-client';
+import {parseLieutenantTransfers,type LieutenantScan} from './lieutenant';
 import {colonelSerialNotes} from './colonel-serial-notes';
 import {readReconciliationRecord,transferNumbers} from './reconcile';
 import type {CancellationDecision} from './lieutenant-cancellation-decisions';
@@ -22,11 +22,11 @@ export async function readColonelNotesForExport(
  }catch(cause){
   decisionWarning='تعذّرت قراءة قرارات الملازم: '+(cause instanceof Error?cause.message:'خطأ غير معروف');
  }
- let transfers:Awaited<ReturnType<typeof restoreLieutenantSource>>=null;
+ let transfers:{scan:LieutenantScan}|null=null;
  let archiveWarning='';
  try{
-  const files=await listSapFiles();
-  transfers=await restoreLieutenantSource(files,branches,readSapArchive,readSavedSapImport);
+  const source=await readCurrentSapImport();
+  transfers={scan:parseLieutenantTransfers(source.text,branches)};
   if(!transfers)archiveWarning='لم يوجد كشف SAP محفوظ وقابل للقراءة.';
   else if(transfers.scan.issues.length)
    archiveWarning='كشف SAP يحتوي ملاحظات أو أصول إلغاء ناقصة: '+transfers.scan.issues.slice(0,4).join('؛ ');

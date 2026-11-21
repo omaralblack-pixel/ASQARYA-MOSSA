@@ -7,7 +7,8 @@ import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState} from '../lib/lieutenant-invoice-day';
 import type {Item} from '../lib/reconcile';
 import {digits} from '../lib/reconcile';
-import {readSavedSapImport,type SavedSapImport} from '../lib/saved-sap-import';
+import {readCurrentSapImport} from '../lib/approved-sap-client';
+import type {SavedSapImport} from '../lib/saved-sap-import';
 import {stockHeaders,stockReport} from '../lib/stock-report';
 import {readInvoiceLedger} from '../lib/invoice-ledger-client';
 import {tableWorkbook} from '../lib/invoice-workbook';
@@ -41,7 +42,7 @@ export default function StockReport({syncVersion=0,syncScope='all'}:{syncVersion
     setLoading(true);
     setError('');
     try{
-      setFile(await readSavedSapImport());
+      setFile(await readCurrentSapImport());
       if(!preservePeriod){setFrom('');setTo('');}
     }catch(err){
       setFile(undefined);

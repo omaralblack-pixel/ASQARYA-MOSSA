@@ -1,4 +1,5 @@
 'use client';
+import {boundedFetch} from '../lib/bounded-read';
 
 import {useMemo, useState} from 'react';
 import {AlertTriangle, CheckCircle2, Save, Search, ClipboardPaste} from 'lucide-react';
@@ -47,7 +48,7 @@ export default function CatalogReplacement({reference,onSaved}:{reference:Item[]
     if(!accepted.length){setError('حدد التعديلات الجاهزة قبل الحفظ.');return}
     setBusy(true);setError('');setNotice('');
     try {
-      const freshResponse=await fetch('/api/reconcile',{cache:'no-store'});
+      const freshResponse=await boundedFetch('/api/reconcile',{cache:'no-store'});
       const freshData=await freshResponse.json() as {error?:string;reference?:Item[]};
       if(!freshResponse.ok)throw Error(freshData.error||'تعذر تحديث المرجع');
       if(!Array.isArray(freshData.reference))throw Error('استجابة مرجع الأصناف غير صالحة. أعد تحميل الصفحة.');
@@ -57,7 +58,7 @@ export default function CatalogReplacement({reference,onSaved}:{reference:Item[]
         throw Error('تغيّر مرجع الأصناف في جلسة أخرى. تم تحميل المرجع الجديد؛ راجع التعديلات مرة ثانية.');
       }
       const items=applyReplacements(reference,rows,selected);
-      const response=await fetch('/api/reconcile',{method:'POST',
+      const response=await boundedFetch('/api/reconcile',{method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'reference',items,previous:reference})});
       const data=await response.json() as {error?:string;reference?:Item[]};

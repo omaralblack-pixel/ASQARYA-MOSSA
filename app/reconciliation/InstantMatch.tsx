@@ -1,10 +1,11 @@
 'use client';
+import {boundedFetch,readJson as getJson} from '../lib/bounded-read';
 
 import {useEffect, useMemo, useRef, useState} from 'react';
 import {CheckCircle2, AlertTriangle, Plus, Search, Save, ArrowLeft, RefreshCw, Trash2} from 'lucide-react';
 import GroupLookup from './GroupLookup';
 import {isAqabaBranch} from '../lib/aqaba-instant-reference';
-import {readSavedSapImport} from '../lib/saved-sap-import';
+import {readCurrentSapImport} from '../lib/approved-sap-client';
 import {parseSapImport,sapBranchFromRemarks,type SapImportGroup} from '../lib/sap-import';
 import {groupSapEvidence,searchArchivedSapEvidence,type SapEvidence} from '../lib/sap-document-lookup';
 import {prepareReconciliation, readReconciliationRecord, parseTransfer, withInvoiceDates, editGroupInvoiceDate, addTransferToDraft, withSapInvoiceNumbers, transferNumbers, invoiceDocumentNo, matchesInvoiceNumbers, digits, fils, money, dateValue, type Draft, type Invoice, type Item, type Transfer, type TransferSource} from '../lib/reconcile';
@@ -27,14 +28,8 @@ const fresh = (number = ''):Draft => ({
   transfers:[], invoices:[invoice(number)], checks:{}
 });
 
-async function getJson<T extends object>(url:string):Promise<T> {
-  const response = await fetch(url, {cache:'no-store'});
-  const data = await response.json() as T & {error?:string};
-  if (!response.ok) throw Error(data.error || 'تعذّر استرجاع البيانات');
-  return data;
-}
 async function saveJson(draft:Draft, sources:TransferSource[]) {
-  const response = await fetch('/api/reconcile', {
+  const response = await boundedFetch('/api/reconcile', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'save', draft, transferSources:sources})
   });
@@ -192,7 +187,7 @@ export default function InstantMatch({
     async function initialize() {
       const results = await Promise.allSettled([
         getJson<{records:Summary[]}>('/api/reconcile?records=1'),
-        readSavedSapImport()
+        readCurrentSapImport()
       ]);
       if (!active) return;
       if (results[0].status === 'fulfilled') setRecords(results[0].value.records || []);
@@ -434,7 +429,7 @@ export default function InstantMatch({
           setNotice(prepared.message);
         }
       } else if (searchKind==='transfer') {
-        const savedResponse = await fetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
+        const savedResponse = await boundedFetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
         if (savedResponse.ok) {
           const saved = await savedResponse.json() as SavedTransfer;
           const row = rows.find(item=>item.id===saved.recordId);
@@ -465,7 +460,7 @@ export default function InstantMatch({
     setBusy(true);setError('');setNotice('');
     try {
       let stored:SavedTransfer|null = null;
-      const response=await fetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
+      const response=await boundedFetch('/api/reconcile?transfer='+encodeURIComponent(searched),{cache:'no-store'});
       if (response.ok) stored=await response.json() as SavedTransfer;
       else if (response.status!==404) throw Error(((await response.json()) as {error?:string}).error||'تعذّر فحص الترحيل.');
       if (stored && stored.recordId!==draft.id && stored.invoiceNumbers.length) {

@@ -1,4 +1,5 @@
 'use client';
+import {readJson} from '../lib/bounded-read';
 
 import {useState} from 'react';
 import {AlertTriangle, Search} from 'lucide-react';
@@ -16,15 +17,6 @@ type Props = {
   onOpenSaved:(id:string,invoiceNumber?:string)=>void;
   onOpenDraft:(draft:Draft,group:SapImportGroup,reviewNotes:string[])=>void;
 };
-
-async function readJson<T>(url:string):Promise<T> {
-  const response=await fetch(url,{cache:'no-store'});
-  const type=response.headers.get('content-type')||'';
-  if(!type.includes('application/json'))throw Error('تعذّر قراءة استجابة الخادم. لم تتغيّر بيانات المطابقة.');
-  const data=await response.json() as T & {error?:string};
-  if(!response.ok)throw Error(data.error||'تعذّر البحث في السجلات.');
-  return data;
-}
 
 function documentHits(records:RecordRow[],sap:SapEvidence[],query:string,filter:Filter):SearchHit[] {
   const matches=new Map<string,SearchHit>();
