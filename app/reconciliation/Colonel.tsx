@@ -71,6 +71,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
  const [loaded,setLoaded]=useState(false);
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState('');
+ const [archiveWarning,setArchiveWarning]=useState('');
  const [notice,setNotice]=useState('');
  const [search,setSearch]=useState('');
  const [manualNo,setManualNo]=useState('');
@@ -82,18 +83,40 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
   const controller=new AbortController();activeRead.current=controller;
   const id=++readRequest.current;
   const deadline=setTimeout(()=>controller.abort(Error('انتهت مهلة قراءة بيانات العقيد؛ أعد المحاولة.')),120_000);
-  setBusy(true);setError('');setNotice('');setLoaded(false);
+  setBusy(true);setError('');setNotice('');setLoaded(false);setArchiveWarning('');
   try{
-   const [project,admin,files]=await Promise.all([
-    getRecords(controller.signal),readApi<Control>('/api/colonel?month='+month,undefined,controller.signal),listSapFiles({signal:controller.signal}),
+   // Blue invoices and saved decisions are essential. Failed SAP reads may
+   // lower verification status, but must not suppress readable project records.
+   const [project,admin]=await Promise.all([
+    getRecords(controller.signal),readApi<Control>('/api/colonel?month='+month,undefined,controller.signal),
    ]);
    if(![admin.days,admin.assignments,admin.decisions,admin.events,admin.recentProjectEdits,admin.signoffs,admin.branchExceptions,admin.priorPeriodLinks].every(Array.isArray))throw Error('قرارات العقيد المحفوظة غير مكتملة؛ أعد المحاولة.');
-   const approved=await readCurrentSapImport({signal:controller.signal});
-   const source={key:approved.key,name:approved.name,scan:parseLieutenantTransfers(approved.text,stableBranches)};
+   const [archiveResult,sapResult]=await Promise.allSettled([
+    listSapFiles({signal:controller.signal}),readCurrentSapImport({signal:controller.signal}),
+   ]);
    if(id!==readRequest.current||controller.signal.aborted)return;
-   setRecords(project);setControl(admin);setSap(source?.scan.transfers||[]);setArchiveFiles(files);
-   setSourceIssues(source?.scan.issues||[]);setLastQueued([]);
-   setSourceName(source?.name||'');setSourceKey(source?.key||'');
+   let nextSap:LieutenantTransfer[]=[];
+   let nextSourceName='',nextSourceKey='';
+   let nextIssues:string[]=[];
+   if(sapResult.status==='fulfilled'){
+    try{
+     const approved=sapResult.value;
+     const scan=parseLieutenantTransfers(approved.text,stableBranches);
+     nextSap=scan.transfers;nextIssues=scan.issues;
+     nextSourceName=approved.name;nextSourceKey=approved.key;
+    }catch(cause){
+     nextIssues=['تعذّر تحليل أصل SAP المعتمد: '+(cause instanceof Error?cause.message:'خطأ غير معروف')];
+    }
+   }else{
+    nextIssues=['تعذّر قراءة أصل SAP المعتمد: '+(sapResult.reason instanceof Error?sapResult.reason.message:'خطأ غير معروف')];
+   }
+   setRecords(project);setControl(admin);setSap(nextSap);
+   setArchiveFiles(archiveResult.status==='fulfilled'?archiveResult.value:[]);
+   setArchiveWarning(archiveResult.status==='rejected'?
+    'تعذّر قراءة قائمة أرشيف SAP. الفواتير المعروضة من المشروع؛ راجع صفحة ملفات SAP عند عودة الخدمة.':'');
+   setSourceIssues(nextIssues);setLastQueued([]);
+   setSourceName(nextSourceName);setSourceKey(nextSourceKey);
+   // buildColonelReport blocks ready/signoff when SAP is not verified.
    setLoaded(true);
   }catch(cause){
    if(id===readRequest.current)setError(cause instanceof Error?cause.message:'تعذّر تحميل بيانات العقيد.');
@@ -245,6 +268,7 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
    </div>
    {busy&&<p className="hint">جاري فحص البيانات المحفوظة…</p>}
    {error&&<div role="alert" className="banner error">{error}</div>}
+   {archiveWarning&&<div role="status" className="banner">{archiveWarning}</div>}
    {notice&&<div role="status" className="banner success">{notice}</div>}
    <p className="hint">مصدر SAP المقروء: {sourceName||'لا يوجد كشف قابل للقراءة'}.
     لا يُعدّ غياب مستند عن ملف ناقص إثباتًا أنه غير مرحّل. ويعتمد فحص الإلغاءات على نفس محرك الملازم أول.</p>
