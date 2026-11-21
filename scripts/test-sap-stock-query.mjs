@@ -46,7 +46,7 @@ for query in queries:
     cursor=db.execute(query)
     results.append({'headers':[col[0] for col in cursor.description], 'rows':cursor.fetchall()})
 print(json.dumps(results))
-`],{input:JSON.stringify(['2026-10-31','2026-11-01','2026-11-03','2026-11-04'].map(sapStockBalanceQuery)),encoding:'utf8'});
+`],{input:JSON.stringify(['2026-10-31','2026-11-01','2026-11-03','2026-11-04'].map(sapStockBalanceQuery)),encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'}});
 assert.equal(result.status,0,result.stderr);
 const [opening,firstDay,closing,nextDay]=JSON.parse(result.stdout);
 assert.deepEqual(closing.headers,['رقم الصنف','اسم الصنف','المستودع','وحدة المخزون','الرصيد الفعلي بنهاية التاريخ']);

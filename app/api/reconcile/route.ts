@@ -128,6 +128,12 @@ if(u.searchParams.has('lieutenantMeta')){
   return json({...collected,records:records.results
     .filter(record=>wanted.has(record.id))
     .map(record=>({id:record.id,branch:record.branch,status:record.status,payload:record.payload}))});
+}if(u.searchParams.has('reassuranceMeta')){
+  const from=u.searchParams.get('from')||'';
+  if(dateValue(from)!==from)return json({error:'اختر تاريخ بداية صحيحًا.'},400);
+  const openingStock=await db().prepare('SELECT snapshot_date,warehouse,sap_code,item_name,unit,quantity FROM lieutenant_opening_stock WHERE snapshot_date=? AND warehouse=? ORDER BY sap_code,unit').bind(from,'011').all();
+  const total=await db().prepare('SELECT COUNT(*) AS count FROM reconciliations').first<{count:number}>();
+  return json({reference:await refs(),openingStock:openingStock.results,recordCount:Number(total?.count)});
 }if(u.searchParams.has('stockInvoiceFrom')||u.searchParams.has('stockInvoiceTo')){
   // Read-only comparison mode in "Net transfers to 011". Invoice dates
   // deliberately remain independent of SAP posting dates.
@@ -149,7 +155,7 @@ if(u.searchParams.has('lieutenantMeta')){
     }
     return json({...collected,records:selected,reference:await refs()});
   }catch(cause){return json({error:cause instanceof Error?cause.message:'تعذّر تجميع الفواتير.'},400)}
-}if(u.searchParams.has('serialExport')){
+}if(u.searchParams.has('serialExport')||u.searchParams.has('reassuranceRecords')){
  // Small, cursor-paginated, read-only projection. Avoid fetching full
  // reconciliation snapshots/attachments in a single huge JSON response.
  const afterUpdated=u.searchParams.get('afterUpdated');
@@ -158,9 +164,12 @@ if(u.searchParams.has('lieutenantMeta')){
   return json({error:'مؤشر تصدير غير مكتمل.'},400);
  if(afterUpdated!==null&&(!afterUpdated||!afterId))
   return json({error:'مؤشر تصدير غير صالح.'},400);
- const batchSize=25;
+ const reassurance=u.searchParams.has('reassuranceRecords');
+ const batchSize=reassurance?10:25;
  const cursorClause=afterUpdated!==null?'WHERE (updated < ? OR (updated = ? AND id < ?))':'';
- const query=`SELECT id,branch,status,updated, CASE WHEN json_valid(payload)
+ // Quantity checks require frozen references and paper quantities. Read full
+ // records in small pages; never reuse the reduced serial export for stock.
+ const projection=reassurance?'payload':`CASE WHEN json_valid(payload)
   AND json_type(payload,'$.invoices')='array' AND json_type(payload,'$.transfers')='array'
   AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.invoices') WHERE type<>'object')
   AND NOT EXISTS(SELECT 1 FROM json_each(payload,'$.transfers') WHERE type<>'object')
@@ -177,7 +186,8 @@ if(u.searchParams.has('lieutenantMeta')){
     'number',json_extract(value,'$.number'),'date',json_extract(value,'$.date'),
     'paste',json_extract(value,'$.paste')
   )) FROM json_each(reconciliations.payload,'$.transfers')))
- ) ELSE payload END AS payload
+ ) ELSE payload END`;
+ const query=`SELECT id,branch,status,updated,${projection} AS payload
  FROM reconciliations ${cursorClause}
  ORDER BY updated DESC,id DESC LIMIT ?`;
  const statement=db().prepare(query);
