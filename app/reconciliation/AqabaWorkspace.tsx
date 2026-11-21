@@ -1,4 +1,5 @@
 'use client';
+import {boundedFetch} from '../lib/bounded-read';
 import {Fragment,useEffect,useMemo,useRef,useState} from 'react';
 import {readAqabaOfficial,readAqabaBlue,readAqabaTransfers,readAqabaJournal,auditAqabaJournal,compareAqaba,reviewAqabaTransfers,AQABA_CUSTOMER,
  type AqabaLine,type BlueLine,type AqabaTransfer,type AqabaMovement} from '../lib/aqaba';
@@ -13,12 +14,14 @@ const template=[
  '2650710369\t2026-11-03\tCHS00561\tجبنة فيتا جولد\t600\tPiece\t0.350\t\t2615754',
 ].join('\n');
 async function request(body?:unknown,query=''):Promise<any>{
- const res=await fetch('/api/aqaba'+query,body?{
+ const res=await boundedFetch('/api/aqaba'+query,body?{
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),
  }:{cache:'no-store'});
  if(!(res.headers.get('content-type')||'').includes('application/json'))
    throw Error('خادم العقبة لم يُرجع JSON؛ تحقق من الاتصال أو جلسة الدخول.');
- const data:any=await res.json();
+ let data:any;
+ try{data=await res.json()}catch{throw Error('استجابة العقبة غير مكتملة أو ليست JSON صالحًا؛ أعد المحاولة.')}
+ if(!data||typeof data!=='object')throw Error('بيانات العقبة غير صالحة.');
  if(!res.ok)throw Error(data.error||'تعذّر الاتصال بشاشة العقبة.');
  return data;
 }
@@ -37,7 +40,7 @@ export default function AqabaWorkspace({catalog,onEditPrice,section='invoices',s
  const [priceBook,setPriceBook]=useState<Item[]>([]),[priceLoading,setPriceLoading]=useState(true),[priceError,setPriceError]=useState('');
  useEffect(()=>{
   let active=true;setPriceLoading(true);setPriceError('');
-  fetch('/api/reconcile?aqabaPricing=1',{cache:'no-store'}).then(async response=>{
+  boundedFetch('/api/reconcile?aqabaPricing=1',{cache:'no-store'}).then(async response=>{
    const data=await response.json() as {reference?:Item[];error?:string};if(!response.ok||!Array.isArray(data.reference))throw Error(data.error||'تعذّر تحميل أسعار العقبة.');
    return data.reference as Item[];
   }).then(items=>{if(active)setPriceBook(items)}).catch(error=>{if(active)setPriceError(error.message)})
@@ -136,7 +139,7 @@ export default function AqabaWorkspace({catalog,onEditPrice,section='invoices',s
      void load().catch(cause=>E(cause instanceof Error?cause.message:'تعذّر تحديث مستندات العقبة.'));
  },[syncVersion,syncScope]);
  useEffect(()=>{
-  fetch('/api/reconcile',{cache:'no-store'}).then(async res=>{
+  boundedFetch('/api/reconcile',{cache:'no-store'}).then(async res=>{
    if(!res.ok)throw Error('المرجع غير متاح');
    return res.json();
   }).then((data:any)=>{

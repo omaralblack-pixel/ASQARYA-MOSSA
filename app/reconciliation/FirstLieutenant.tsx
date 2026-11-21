@@ -1,17 +1,17 @@
 'use client';
-import {readJson} from '../lib/bounded-read';
+import {boundedRead,readJson} from '../lib/bounded-read';
 
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {readSapArchive,listSapFiles} from '../lib/sap-files-client';
 import CashVanAudit from './CashVanAudit';
 import CancelledTransferReview from './CancelledTransferReview';
 import {AlertTriangle,CheckCircle2,Copy,RefreshCw,Search,ShieldCheck} from 'lucide-react';
-import {type LieutenantTransfer} from '../lib/lieutenant';
+import {parseLieutenantTransfers,type LieutenantTransfer} from '../lib/lieutenant';
 import {applyColonelBranchExceptions,isColonelBranchConflict,type ColonelBranchException} from '../lib/colonel-core';
 import {analyzeLieutenantMovements} from '../lib/lieutenant-counterparts';
 import {invoiceDocumentNo,readReconciliationRecord,transferNumbers,type Draft,type Transfer,type Item} from '../lib/reconcile';
-import {readSavedSapImport} from '../lib/saved-sap-import';
-import {restoreLieutenantSource,restoreLieutenantStock,sharedLieutenantKey,type LieutenantSourceFile} from '../lib/lieutenant-source';
+import {readCurrentSapImport} from '../lib/approved-sap-client';
+import {restoreLieutenantStock,type LieutenantSourceFile} from '../lib/lieutenant-source';
 import {lieutenantApprovals} from '../lib/lieutenant-coverage';
 import {auditInvoicesForDay,type DayInvoiceData,type DayInvoiceState,type DaySapStatus} from '../lib/lieutenant-invoice-day';
 import {sapStockBalanceQuery} from '../lib/sap-stock-query';
@@ -181,9 +181,7 @@ function todayLocal():string{
 }
 const fetchArchivedSource=readSapArchive;
 async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
-  let response:Response;
-  try{response=await fetch(url,{cache:'no-store',redirect:'manual',...init})}
-  catch{throw Error('انقطع الاتصال بالسيرفر أثناء طلب '+url.split('?')[0]+'. البيانات المرفوعة سابقًا لا تحتاج إعادة رفع.')}
+ return boundedRead(url,async response=>{
   if(response.status===401||response.status===403&&response.headers.get('location')?.includes('/login')||
     response.type==='opaqueredirect'||[301,302,303,307,308].includes(response.status)){
     window.location.assign('/login');
@@ -201,6 +199,7 @@ async function checkedJson<T>(url:string,init?:RequestInit):Promise<T>{
   catch{throw Error('السيرفر أعاد بيانات غير صالحة عند '+url.split('?')[0]+' (HTTP '+response.status+').')}
   if(!response.ok)throw Error(data?.error||'تعذّر إتمام الطلب '+url.split('?')[0]+' (HTTP '+response.status+').');
   return data;
+ },{init,signal:init?.signal??undefined,timeoutMs:init?.method&&init.method!=='GET'?60_000:30_000});
 }
 
 /** Shared read path with Colonel: use cursor-paginated invoice records when
@@ -363,6 +362,8 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   useEffect(()=>{void loadPriorLinks().catch(error=>setPriorLoadingError(
    error instanceof Error?error.message:'تعذّر قراءة مراجع الفترات السابقة.'))},[from.slice(0,7)]);
   const transferSelectedRef=useRef(false);
+  const transferRequest=useRef(0),transferRead=useRef<AbortController|null>(null),reloadRequest=useRef(0);
+  useEffect(()=>()=>{transferRequest.current++;reloadRequest.current++;transferRead.current?.abort();},[]);
   const closingSelectedRef=useRef(false);
   const openingSelectedRef=useRef(false);
   const periodEditedRef=useRef(false);
@@ -422,29 +423,33 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
   async function refreshFiles(){
     const next=await listSapFiles() as StoredFile[];setFiles(next);return next;
   }
-  async function restoreTransfers(candidates:StoredFile[],isActive=()=>true,force=false){
+  async function restoreTransfers(isActive=()=>true,force=false){
+    transferRead.current?.abort();
+    const controller=new AbortController();transferRead.current=controller;
+    const id=++transferRequest.current;
     setAutoLoading(true);
     try{
-      const source=await restoreLieutenantSource(candidates,branches,fetchArchivedSource,readSavedSapImport);
-      if(!isActive()||(transferSelectedRef.current&&!force))return;
-      if(!source)return;
+      const approved=await readCurrentSapImport({signal:controller.signal});
+      const source={key:approved.key,name:approved.name,scan:parseLieutenantTransfers(approved.text,branches)};
+      if(id!==transferRequest.current||!isActive()||(transferSelectedRef.current&&!force))return;
       transferSelectedRef.current=true;
       setSelectedTransfer(source.key);setTransferSourceName(source.name);
       setTransfers(source.scan.transfers);setIssues(source.scan.issues);
-      if(source.shared||force)setMessage((force?'تم تحديث الرقابة من أحدث أرشيف SAP: ':'تمت استعادة كشف SAP المحفوظ: ')+
+      if(force)setMessage('تم تحديث الرقابة من نسخة SAP المعتمدة في D1: '+
         source.scan.transfers.length+' مستندًا، المصدر: '+source.name+'. لم تُنشأ فاتورة أو تُعتمد بيانات.');
-    }finally{if(isActive())setAutoLoading(false);}
+    }catch(cause){if(id===transferRequest.current&&isActive())throw cause;}
+    finally{controller.abort();if(id===transferRequest.current&&isActive()){setAutoLoading(false);transferRead.current=null;}}
   }
   async function reloadAuditFromArchive(){
+    const id=++reloadRequest.current;
     setBusy(true);setError('');setMessage('');
     try{
-      const latest=await refreshFiles();
-      if(!latest.some(file=>file.kind==='transfers'))
-        throw Error('لا يوجد كشف ترحيلات SAP محفوظ في الأرشيف. ارفع الملف الجديد في شاشة «ملفات SAP».');
-      await restoreTransfers(latest,()=>true,true);
+      const [archive,source]=await Promise.allSettled([refreshFiles(),restoreTransfers(()=>id===reloadRequest.current,true)]);
+      if(source.status==='rejected')throw source.reason;
+      if(id===reloadRequest.current&&archive.status==='rejected')setError('تمت قراءة نسخة SAP المعتمدة، لكن تعذّر تحديث فهرس الأرشيف. أعد المحاولة لتحديث قائمة الملفات.');
     }catch(cause){
-      setError(cause instanceof Error?cause.message:'تعذّر إعادة تحميل كشف SAP من الأرشيف.');
-    }finally{setBusy(false);}
+      if(id===reloadRequest.current)setError(cause instanceof Error?cause.message:'تعذّر إعادة تحميل كشف SAP من الأرشيف.');
+    }finally{if(id===reloadRequest.current)setBusy(false);}
   }
   useEffect(()=>{
     let active=true;
@@ -467,7 +472,7 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
       }
       const archivedFiles=archive.status==='fulfilled'?archive.value.files:[];
       const sources=await Promise.allSettled([
-        restoreTransfers(archivedFiles,()=>active),
+        restoreTransfers(()=>active),
         restoreLieutenantStock(archivedFiles,'balance',todayLocal(),fetchArchivedSource).then(result=>{
           if(!active||!result||closingSelectedRef.current)return;
           closingSelectedRef.current=true;
@@ -625,9 +630,10 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     <div className="table-controls no-print">
       <button type="button" className="button secondary" onClick={()=>void reloadAuditFromArchive()}
         disabled={busy||autoLoading}>
-        {busy||autoLoading?'جارٍ قراءة أرشيف SAP...':'تحديث كشف SAP المستخدم في الرقابة من أحدث الأرشيف'}
+        {busy||autoLoading?'جارٍ قراءة أرشيف SAP...':'تحديث كشف SAP المستخدم في الرقابة من النسخة المعتمدة'}
       </button>
     </div>
+      {error&&<p role="alert" className="banner error">{error}</p>}{message&&<p role="status" className="banner info">{message}</p>}
     {(section==='cashvan')&&<>
     <CashVanAudit transfers={transfers} sourceName={transferSourceName||files.find(file=>file.key===selectedTransfer)?.name||''}/>
     </>}
@@ -792,7 +798,6 @@ export default function FirstLieutenant({branches,reference,onOpenTransfer,onOpe
     </>}
     {(section==='query')&&<>
     <section className="panel no-print"><a className="button secondary" href="/reconciliation?view=sap-files">فتح ملفات SAP — الرفع والأرشيف والمعالجة</a>
-      {error&&<p role="alert" className="banner error">{error}</p>}{message&&<p role="status" className="banner info">{message}</p>}
       {opening&&<p className="hint">كشف افتتاحي محفوظ: {opening.items.length} صنفًا · تاريخ الرصيد: {opening.date||'غير محدد'}</p>}
     </section>
     </>}

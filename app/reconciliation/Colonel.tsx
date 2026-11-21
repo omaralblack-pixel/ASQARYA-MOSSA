@@ -1,9 +1,10 @@
 'use client';
 import {Fragment,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,CalendarCheck,CheckCircle2,ClipboardCheck,FileSpreadsheet,RefreshCw,ShieldCheck,ArrowLeftRight} from 'lucide-react';
-import {listSapFiles,readSapArchive} from '../lib/sap-files-client';
-import {readSavedSapImport} from '../lib/saved-sap-import';
-import {restoreLieutenantSource} from '../lib/lieutenant-source';
+import {boundedRead,readAllRecords} from '../lib/bounded-read';
+import {listSapFiles} from '../lib/sap-files-client';
+import {readCurrentSapImport} from '../lib/approved-sap-client';
+import {parseLieutenantTransfers} from '../lib/lieutenant';
 import {buildColonelReport,colonelPaperIssues,type ColonelRecord,type ColonelAssignment,type ColonelDayState,type ColonelBranchException} from '../lib/colonel-core';
 import type {LieutenantTransfer} from '../lib/lieutenant';
 import type {CancellationDecision} from '../lib/lieutenant-cancellation-decisions';
@@ -28,38 +29,24 @@ const stateLabels:Record<string,string>={
  'cancellation-review':'تصحيح / إلغاء يحتاج إثبات',
  'not-in-current-sap-source':'غير موجود في كشف SAP المقروء',
 };
-async function readApi<T>(path:string,body?:unknown):Promise<T>{
- const response=await fetch(path,body?{
-  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
- }:{cache:'no-store'});
+async function readApi<T>(path:string,body?:unknown,signal?:AbortSignal):Promise<T>{
+ return boundedRead(path,async response=>{
  if(!response.headers.get('content-type')?.toLowerCase().includes('application/json'))
   throw Error(response.redirected||[401,403].includes(response.status)?
    'جلسة الدخول غير متاحة؛ سجّل الدخول مجددًا.':'الخادم أعاد HTML بدل JSON (HTTP '+response.status+').');
- const result=await response.json() as T&{error?:string};
+ let result:T&{error?:string};
+ try{result=await response.json()}catch{throw Error('استجابة العقيد غير مكتملة أو ليست JSON صالحًا (HTTP '+response.status+'). أعد المحاولة.')}
+ if(!result||typeof result!=='object')throw Error('بيانات العقيد غير مكتملة.');
  if(!response.ok)throw Error(result.error||'تعذّر طلب العقيد (HTTP '+response.status+').');
  return result;
+ },{signal,timeoutMs:body?60_000:30_000,init:body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{}});
 }
-async function getRecords():Promise<ColonelRecord[]>{
- const result:ColonelRecord[]=[];
- let cursor:{updated:string;id:string}|null=null;
- const seen=new Set<string>();
- for(let i=0;i<250;i++){
+async function getRecords(signal:AbortSignal):Promise<ColonelRecord[]>{
+ return readAllRecords<ColonelRecord>(cursor=>{
   const params=new URLSearchParams({serialExport:'1'});
-  if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id);}
-  const response=await readApi<{records:ColonelRecord[];hasMore:boolean;
-   nextCursor:{updated:string;id:string}|null}>('/api/reconcile?'+params.toString());
-  if(!Array.isArray(response.records))throw Error('استجابة الفواتير ناقصة.');
-  for(const record of response.records){
-   if(typeof record.id!=='string'||typeof record.payload!=='string'||seen.has(record.id))
-    throw Error('تكرار أو تلف سجل أثناء القراءة؛ أُلغي الفحص.');
-   seen.add(record.id);result.push(record);
-  }
-  if(response.hasMore===false)return result;
-  if(!response.hasMore||!response.nextCursor||!response.records.length)
-   throw Error('قراءة المشروع غير مكتملة؛ لا يجوز إصدار حكم على اليوم.');
-  cursor=response.nextCursor;
- }
- throw Error('تجاوز حجم السجلات حد القراءة؛ يلزم ترقيم إضافي.');
+  if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id)}
+  return readApi('/api/reconcile?'+params,undefined,signal);
+ });
 }
 const displayDate=(value:string)=>value?new Date(value).toLocaleString('ar-JO',{timeZone:'Asia/Amman'}):'—';
 
@@ -69,6 +56,9 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
 }){
  const [month,setMonth]=useState(currentMonth);
  const lastSync=useRef(syncVersion);
+ const branchKey=JSON.stringify(branches);
+ const stableBranches=useMemo<string[]>(()=>JSON.parse(branchKey),[branchKey]);
+ const readRequest=useRef(0),activeRead=useRef<AbortController|null>(null);
  const [selectedDay,setSelectedDay]=useState('');
  const [records,setRecords]=useState<ColonelRecord[]>([]);
  const [sap,setSap]=useState<LieutenantTransfer[]>([]);
@@ -88,21 +78,28 @@ export default function Colonel({branches,onOpenRecord,onNavigate,syncVersion=0,
  const [manualReason,setManualReason]=useState('');
  const [lastQueued,setLastQueued]=useState<string[]>([]);
  const reload=useCallback(async()=>{
+  activeRead.current?.abort();
+  const controller=new AbortController();activeRead.current=controller;
+  const id=++readRequest.current;
+  const deadline=setTimeout(()=>controller.abort(Error('انتهت مهلة قراءة بيانات العقيد؛ أعد المحاولة.')),120_000);
   setBusy(true);setError('');setNotice('');setLoaded(false);
   try{
    const [project,admin,files]=await Promise.all([
-    getRecords(),readApi<Control>('/api/colonel?month='+month),listSapFiles(),
+    getRecords(controller.signal),readApi<Control>('/api/colonel?month='+month,undefined,controller.signal),listSapFiles({signal:controller.signal}),
    ]);
-   const source=await restoreLieutenantSource(files,branches,readSapArchive,readSavedSapImport);
+   if(![admin.days,admin.assignments,admin.decisions,admin.events,admin.recentProjectEdits,admin.signoffs,admin.branchExceptions,admin.priorPeriodLinks].every(Array.isArray))throw Error('قرارات العقيد المحفوظة غير مكتملة؛ أعد المحاولة.');
+   const approved=await readCurrentSapImport({signal:controller.signal});
+   const source={key:approved.key,name:approved.name,scan:parseLieutenantTransfers(approved.text,stableBranches)};
+   if(id!==readRequest.current||controller.signal.aborted)return;
    setRecords(project);setControl(admin);setSap(source?.scan.transfers||[]);setArchiveFiles(files);
    setSourceIssues(source?.scan.issues||[]);setLastQueued([]);
    setSourceName(source?.name||'');setSourceKey(source?.key||'');
    setLoaded(true);
   }catch(cause){
-   setError(cause instanceof Error?cause.message:'تعذّر تحميل بيانات العقيد.');
-  }finally{setBusy(false)}
- },[month,branches]);
- useEffect(()=>{void reload()},[reload]);
+   if(id===readRequest.current)setError(cause instanceof Error?cause.message:'تعذّر تحميل بيانات العقيد.');
+  }finally{clearTimeout(deadline);controller.abort();if(id===readRequest.current){setBusy(false);activeRead.current=null}}
+ },[month,stableBranches]);
+ useEffect(()=>{void reload();return()=>{readRequest.current++;activeRead.current?.abort();};},[reload]);
  useEffect(()=>{
    if(lastSync.current===syncVersion)return;
    lastSync.current=syncVersion;

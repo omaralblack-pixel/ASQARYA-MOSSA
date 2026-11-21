@@ -19,10 +19,23 @@ export async function boundedRead<T>(url:string,read:(response:Response)=>Promis
   try{
     if(controller.signal.aborted)throw controller.signal.reason;
     return await Promise.race([stopped,(async()=>{
-      const response=await fetch(url,{cache:'no-store',redirect:'manual',...options.init,signal:controller.signal});
+      let response:Response;
+      try{response=await fetch(url,{cache:'no-store',redirect:'manual',...options.init,signal:controller.signal})}
+      catch{if(controller.signal.aborted)throw controller.signal.reason;throw Error('تعذّر الاتصال بالخادم. أعد المحاولة؛ لم يكتمل الطلب.')}
       return read(response);
     })()]);
   }finally{clearTimeout(timer);parent?.removeEventListener('abort',onAbort)}
+}
+
+/** Fetch-compatible transport that bounds the response body as well as headers.
+ * It performs one request only, including for writes with uncertain outcomes. */
+export function boundedFetch(url:string,init:RequestInit={},timeoutMs=init.method&&init.method!=='GET'?60_000:30_000):Promise<Response>{
+ return boundedRead(url,async response=>{
+  if(response.type==='opaqueredirect')throw Error('انتهت جلسة الدخول. سجّل الدخول وأعد المحاولة.');
+  const body=await response.arrayBuffer();
+  return new Response([204,205,304].includes(response.status)?null:body,
+   {status:response.status,statusText:response.statusText,headers:response.headers});
+ },{init,signal:init.signal??undefined,timeoutMs});
 }
 
 export function readJson<T>(url:string,signal?:AbortSignal):Promise<T>{

@@ -1,15 +1,14 @@
 'use client';
+import {boundedFetch} from '../lib/bounded-read';
 import {useEffect,useMemo,useRef,useState} from 'react';
 import SapDocumentSearch from './SapDocumentSearch';
 import SapFiles from './SapFiles';
-import {listSapFiles,readSapArchive,sapRequest} from '../lib/sap-files-client';
-import type {SapJob} from '../lib/sap-processing';
 import InstantMatch from './InstantMatch';
 import {isAqabaBranch} from '../lib/aqaba-instant-reference';
 import CatalogReplacement from './CatalogReplacement';
 import {auditInstitutionReference} from '../lib/reference-audit';
 import {parseSapImport,sapBranchFromRemarks,canUseSelectedBranchForSapMember,type SapImportGroup} from '../lib/sap-import';
-import {readSavedSapImport} from '../lib/saved-sap-import';
+import {readCurrentSapImport} from '../lib/approved-sap-client';
 import GroupLookup from './GroupLookup';
 import InvoiceRegister,{InvoiceRegisterPrint} from './InvoiceRegister';
 import SerialSoldier from './SerialSoldier';
@@ -40,7 +39,7 @@ async function api(body?:any,url='',signal?:AbortSignal){
  const attempts=body?1:3;
  for(let attempt=0;attempt<attempts;attempt++){
    let response:Response;
-   try{response=await fetch(endpoint,options)}
+   try{response=await boundedFetch(endpoint,options)}
    catch{
      if(signal?.aborted)throw Error('انتهت مهلة استجابة الخادم. لا تُكرر الحفظ قبل التحقق من القرار المسجل.');
      if(attempt+1<attempts){await new Promise<void>(resolve=>setTimeout(resolve,350*(attempt+1)));continue}
@@ -79,7 +78,7 @@ class BranchExceptionRequired extends Error {
  }
 }
 async function lookupSavedTransfer(number: string): Promise<StoredTransfer | null> {
-  const response = await fetch('/api/reconcile?transfer=' + encodeURIComponent(number), {cache: 'no-store'});
+  const response = await boundedFetch('/api/reconcile?transfer=' + encodeURIComponent(number), {cache: 'no-store'});
   if (response.status === 404) return null;
   if (!response.ok) {
     const data = await response.json() as {error?: string};
@@ -214,12 +213,7 @@ useEffect(()=>{
  if(tab!=='monthly')return;
  let active=true;
  void (async()=>{
-  const results=await Promise.allSettled([listSapFiles(),sapRequest<{jobs:SapJob[]}>('/api/sap-processing')]);
-  const candidates=results[0].status==='fulfilled'?results[0].value:[];
-  const jobs=results[1].status==='fulfilled'?results[1].value.jobs:[];
-  const monthlyKeys=new Set(jobs.filter(x=>x.kind==='monthly').map(x=>x.key));
-  const file=candidates.find(x=>monthlyKeys.has(x.key));
-  const shared=file?{name:file.name,text:await readSapArchive(file)}:await readSavedSapImport();
+  const shared=await readCurrentSapImport();
   if(!active)return;
   if(shared){
     if(monthlyEditorText.current.trim()&&monthlyEditorText.current!==monthlyLoadedText.current){
@@ -398,7 +392,7 @@ async function findTransferForAddition(number: string, saved: StoredTransfer | n
   const savedPaste = saved?.transfer.paste?.trim();
   let file;
   try {
-    file = await readSavedSapImport();
+    file = await readCurrentSapImport();
   } catch (error) {
     if (!savedPaste) throw error;
   }

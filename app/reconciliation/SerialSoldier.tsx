@@ -1,4 +1,5 @@
 'use client';
+import {boundedFetch} from '../lib/bounded-read';
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,CheckCircle2,Download,FileSpreadsheet,RefreshCw,Upload} from 'lucide-react';
 import {serialMergeProposals,previouslyApprovedSerialMerges,evaluateSerial,serialReviewNote,type SerialReport,type SerialRecord,type SerialRow} from '../lib/serial-soldier';
@@ -6,13 +7,16 @@ import {serialMergeProposals,previouslyApprovedSerialMerges,evaluateSerial,seria
 const label={received:'واصل ومطابق',received_difference:'واصلة — فرق في الملاحظات',pending:'الورق غير مؤكد بالسجل',missing:'غير مسجلة بالمشروع',review:'تحتاج مراجعة'};
 const color={received:'light-dark(#d8f3dc, var(--theme-success-surface))',received_difference:'light-dark(#fff0bf, var(--theme-warning-surface))',pending:'light-dark(#fad5e5, var(--theme-pink-surface))',missing:'light-dark(#fad5e5, var(--theme-pink-surface))',review:'light-dark(#fff0bf, var(--theme-warning-surface))'};
 async function getSaved():Promise<SerialRecord[]> {
+ const controller=new AbortController();
+ const deadline=setTimeout(()=>controller.abort(Error('انتهت مهلة قراءة سجل التصدير؛ لم يُنشأ كشف ناقص.')),120_000);
+ try{
  const saved:SerialRecord[]=[];
  const seen=new Set<string>();
  let cursor:{updated:string;id:string}|null=null;
  for(let page=0;page<200;page++){
   const params=new URLSearchParams({serialExport:'1'});
   if(cursor){params.set('afterUpdated',cursor.updated);params.set('afterId',cursor.id);}
-  const response=await fetch('/api/reconcile?'+params.toString(),{cache:'no-store'});
+  const response=await boundedFetch('/api/reconcile?'+params.toString(),{cache:'no-store',signal:controller.signal});
   const contentType=(response.headers.get('content-type')||'').toLowerCase();
   if(!contentType.includes('application/json')){
    if(response.redirected||[401,403].includes(response.status))
@@ -35,6 +39,7 @@ async function getSaved():Promise<SerialRecord[]> {
   cursor={updated:data.nextCursor.updated,id:data.nextCursor.id};
  }
  throw Error('سجل المشروع تجاوز حد صفحات التصدير المسموح؛ لا يجوز تسليم كشف غير مكتمل.');
+ }finally{clearTimeout(deadline);controller.abort()}
 }
 export default function SerialSoldier({branches,syncVersion=0,syncScope='all'}:{
  branches:string[];syncVersion?:number;syncScope?:string;

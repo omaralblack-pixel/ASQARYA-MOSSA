@@ -41,7 +41,10 @@ jobs:
             node "$test"
           done
       - name: SAP source authenticity and reference integrity tests
-        run: node scripts/test-sap-source-integrity.mjs
+        run: |
+          node scripts/test-sap-source-integrity.mjs
+          node scripts/test-approved-sap-client.mjs
+          node scripts/test-lieutenant-feedback.mjs
       - name: Blue invoice and SAP transfer lookup regressions
         run: node scripts/test-blue-invoice-lookup.mjs
       - name: TypeScript validation

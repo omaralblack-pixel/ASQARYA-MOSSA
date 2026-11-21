@@ -11,7 +11,7 @@ function load(file){file=resolve(file);if(cache.has(file))return cache.get(file)
  const js=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
  new Function('exports','require',js)(exports,name=>name==='cloudflare:workers'?{env:{DB:{prepare:wrap,async batch(queries){return Promise.all(queries.map(q=>q.run()))}}}}:name.startsWith('.')&&!name.endsWith('.json')?load(resolve(dirname(file),name+'.ts')):createRequire(file)(name));return exports;
 }
-const {boundedRead,readJson,mapBounded,readAllRecords}=load('app/lib/bounded-read.ts');
+const {boundedRead,boundedFetch,readJson,mapBounded,readAllRecords}=load('app/lib/bounded-read.ts');
 let passed=0;
 async function test(name,fn){await fn();passed++;console.log('PASS: '+name)}
 const originalFetch=globalThis.fetch;
@@ -23,6 +23,17 @@ try{
  await test('A hanging response body is also bounded',async()=>{
   globalThis.fetch=async()=>new Response(new ReadableStream({start(){}}));
   await assert.rejects(boundedRead('/body',r=>r.text(),{timeoutMs:15}),/مهلة/);
+ });
+ await test('Fetch-compatible transport preserves status, headers and empty responses',async()=>{
+  globalThis.fetch=async()=>new Response('busy',{status:503,headers:{'x-proof':'preserved'}});
+  const result=await boundedFetch('/status');assert.equal(result.status,503);assert.equal(result.headers.get('x-proof'),'preserved');assert.equal(await result.text(),'busy');
+  globalThis.fetch=async()=>new Response(null,{status:204});assert.equal((await boundedFetch('/empty')).status,204);
+ });
+ await test('Write transport never retries an uncertain result and bounds body reads',async()=>{
+  let calls=0;globalThis.fetch=async()=>{calls++;throw Error('lost response')};
+  await assert.rejects(boundedFetch('/write',{method:'POST',body:'saved once'}),/الاتصال/);assert.equal(calls,1);
+  globalThis.fetch=async()=>new Response(new ReadableStream({start(){}}));
+  await assert.rejects(boundedFetch('/body',{},15),/مهلة/);
  });
  await test('Superseded and already aborted reads cannot apply stale results',async()=>{
   const controller=new AbortController();let calls=0;
