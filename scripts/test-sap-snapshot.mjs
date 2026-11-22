@@ -85,6 +85,15 @@ try{
  const current=await (await replaceSapSnapshot(get('?rows=1'),env)).json();
  assert.equal(current.snapshot.documents,1);assert.equal(current.rows.length,1);assert.equal(current.hasMore,false);
  assert.equal(current.rows[0].transfer_no,'2616732');
+ const comparison=await (await replaceSapSnapshot(get('?comparison=1'),env)).json();
+ assert.equal(comparison.snapshot.documents,1);
+ assert.equal(comparison.rows.length,1);
+ assert.equal(comparison.rows[0].number,'2616732');
+ assert.equal(comparison.rows[0].hash,createHash('sha256').update(saved.payload).digest('hex'));
+ assert.equal(Array.isArray(comparison.branches),true);
+ // The comparison is read-only: no activation, receipts or manual edits change.
+ assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),manualBefore);
+
  const compact=await (await replaceSapSnapshot(get('?numbers=1'),env)).json();
  assert.deepEqual(compact.numbers,['2616732']);
  assert.equal(compact.hasMore,false);
