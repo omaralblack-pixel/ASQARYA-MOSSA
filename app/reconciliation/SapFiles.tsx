@@ -112,12 +112,50 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   const startedAt=performance.now();
   // Avoid the CPU-limited monolithic Supabase parse (HTTP 546).
   const sections=splitUnifiedSapSource(text);
+  const scannedTransfers=parseLieutenantTransfers(sections.transfers,[]);
+  if(scannedTransfers.issues.length)
+   throw Error('كشف SAP يحتوي أخطاء ترحيلات، ولم يبدأ الاعتماد: '+scannedTransfers.issues.slice(0,4).join('، '));
+  const currentNumbers=new Set(scannedTransfers.transfers.map(row=>row.transfer.number));
+  if(!currentNumbers.size||currentNumbers.size!==scannedTransfers.transfers.length)
+   throw Error('تعذّر إثبات مجموعة أرقام الترحيلات الجديدة كاملة، أوقفت التحديث.');
   // Verify the live pointer just once for the entire import. Repeating a
   // COUNT over all active transfers for every chunk would exhaust D1 reads.
   const active=(await sapRequest<{snapshot:ActiveSapSnapshot|null}>('/api/sap-snapshot')).snapshot;
   if(active&&active.activeCount!==active.documents)
    throw Error('عدد ترحيلات النسخة المعتمدة لا يطابق سجلها. أوقفت التحديث لحماية المطابقات.');
   if(active?.key===file.key){M('هذا الكشف معتمد فعلًا وجميع ترحيلاته مثبتة؛ لا يلزم تكرار المعالجة.');return;}
+  if(active){
+   // Compare compact transfer numbers with the ACTIVE snapshot before
+   // processing any new batches; counts alone cannot detect replacement of
+   // one old transfer with a different new document.
+   let after='',checked=0,hasMore=true;
+   const missing:string[]=[];
+   while(hasMore){
+    if(checked>50_000)throw Error('تجاوز تدقيق أرقام SAP الحد الآمن؛ أوقفت الاعتماد.');
+    const path='/api/sap-snapshot?numbers=1&key='+encodeURIComponent(active.key)+
+     (after?'&after='+encodeURIComponent(after):'');
+    const page=await sapRequest<{
+     snapshot:ActiveSapSnapshot;numbers:string[];hasMore:boolean;next:string|null
+    }>(path);
+    if(page.snapshot?.key!==active.key||page.snapshot.activeCount!==active.activeCount||
+       !Array.isArray(page.numbers)||!page.numbers.length||page.numbers.length>250)
+     throw Error('تعذّر إثبات اكتمال أرقام SAP المعتمدة، أوقفت الاستيراد.');
+    for(const number of page.numbers){
+     if(!/^\d{4,20}$/.test(number)||after&&number<=after)
+      throw Error('ترتيب أرقام SAP من الخادم غير صالح.');
+     if(!currentNumbers.has(number)&&missing.length<20)missing.push(number);
+     after=number;checked++;
+    }
+    hasMore=page.hasMore===true;
+    if(hasMore&&page.next!==after)
+     throw Error('تسلسل صفحات أرقام SAP غير مكتمل.');
+   }
+   if(checked!==active.documents)
+    throw Error('عدد أرقام الترحيلات المقروءة لا يطابق اعتماد النسخة السابقة.');
+   if(missing.length)
+    throw Error('توقف اعتماد كشف SAP: توجد ترحيلات معتمدة سابقًا اختفت من الكشف الجديد. '+
+     'أمثلة: '+missing.slice(0,10).join('، ')+'. افحص كشف SAP الكامل؛ لن تُحذف الترحيلات القديمة.');
+  }
   const sources:{kind:UnifiedChunkKind;body:string;count:number;label:string}[]=[
    {kind:'transfers',body:sections.transfers,count:sections.counts.TRANSFER,label:'الترحيلات'},
    {kind:'official',body:sections.official,count:sections.counts.OFFICIAL,label:'المستندات الرسمية'},
@@ -169,9 +207,9 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   if(review)throw Error('اكتملت الدفعات مع أخطاء قراءة؛ راجعها قبل استبدال النسخة السابقة.');
   await archiveUnifiedParts(file,text);
   await sapRequest<{deleted:number}>('/api/sap-snapshot',{
-   key:file.key,children:transferKeys,documents:parseLieutenantTransfers(sections.transfers,[]).transfers.length,
+   key:file.key,children:transferKeys,documents:scannedTransfers.transfers.length,
   });
-  await verifyActiveSnapshot(file.key,parseLieutenantTransfers(sections.transfers,[]).transfers.length);
+  await verifyActiveSnapshot(file.key,scannedTransfers.transfers.length);
   await publishShared(file,text);
   M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة خلال '+
    ((performance.now()-startedAt)/1000).toFixed(1)+' ثانية (باستثناء رفع الأصل الأولي).'+
