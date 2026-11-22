@@ -33,6 +33,8 @@ function readText(path){
  return t;
 }
 function snapshot(path){
+ const bytes=readFileSync(path);
+ const sourceSha256=hash(bytes),sizeBytes=bytes.length;
  const lines=readText(path).replace(/\r/g,'').split('\n').filter(l=>l.trim());
  if(lines.length<2)throw Error('كشف SAP غير مكتمل: '+path);
  const rawHeaders=lines[0].split('\t');
@@ -104,7 +106,7 @@ function snapshot(path){
  const from=String(windowValues[positions.get('DocumentDate')]||'').trim();
  const to=String(windowValues[positions.get('BaseRef')]||'').trim();
  if(!isDay(from)||!isDay(to)||to<from)throw Error('نافذة تاريخ SAP غير صالحة.');
- return {path,from,to,headers:used,counts,collections,cancellations};
+ return {path,from,to,headers:used,counts,collections,cancellations,sourceSha256,sizeBytes};
 }
 function compareMaps(before,after){
  const added=[],removed=[],modified=[];
@@ -121,6 +123,8 @@ export function compareSapSources(oldPath,newPath){
  const allHeaders=[...new Set([...old.headers,...now.headers])];
  const difference=allHeaders.filter(x=>old.headers.includes(x)!==now.headers.includes(x));
  const warnings=[];
+ if(now.counts.TRANSFER>0&&now.cancellations.unknown>0)
+  warnings.push('حالة إلغاء غير معروفة في '+now.cancellations.unknown+' سطر ترحيل من الكشف الجديد.');
  if(critical.length)warnings.push('مخطط الأعمدة تغيّر: '+critical.join(', '));
  if(difference.length)warnings.push('اختلاف الأعمدة: '+difference.join(', '));
  if(old.from!==now.from)warnings.push('تاريخ بداية الكشفين مختلف.');
@@ -130,11 +134,14 @@ export function compareSapSources(oldPath,newPath){
   kinds[kind]=compareMaps(old.collections[kind],now.collections[kind]);
  if(kinds.TRANSFER.disappeared)warnings.push('اختفاء سطور ترحيل من الكشف الجديد: يتطلب تدقيقًا في المصدر.');
  if(kinds.OFFICIAL.disappeared)warnings.push('اختفاء سطور مستندات رسمية: يتطلب تدقيقًا.');
+ if(kinds.OINM.disappeared)warnings.push('اختفاء حركات مخزون OINM من الكشف الجديد: يتطلب مراجعة.');
  // Older opening balance date must be stable when the from-date is unchanged.
  if(old.from===now.from&&kinds.OPENING.modified+ kinds.OPENING.disappeared)
   warnings.push('تغيّر الرصيد الافتتاحي لنفس تاريخ البداية: يلزم تدقيق.');
  const safeForManualReview=warnings.length===0;
  return {scope:{before:{from:old.from,to:old.to},after:{from:now.from,to:now.to}},
+  originals:{before:{sha256:old.sourceSha256,sizeBytes:old.sizeBytes},
+   after:{sha256:now.sourceSha256,sizeBytes:now.sizeBytes}},
   sourceLines:{before:old.counts,after:now.counts},
   cancellations:{before:old.cancellations,after:now.cancellations},
   kinds,warnings,safeForManualReview,
