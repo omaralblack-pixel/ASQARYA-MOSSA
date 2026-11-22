@@ -59,6 +59,9 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sap_snapshot_rows
     (root_key TEXT NOT NULL,child_key TEXT NOT NULL,number TEXT NOT NULL,doc_date TEXT NOT NULL,payload TEXT NOT NULL,
     PRIMARY KEY(root_key,number))`).run();
+  // Indexed exact chunk-hash lookup: avoid scanning the full monthly snapshot
+  // for each unchanged chunk (D1 row-read quota grows with file size).
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS sap_snapshot_rows_root_child ON sap_snapshot_rows(root_key,child_key)').run();
   const validChild=(key:string)=>typeof key==='string'&&
     (key===body.key&&body.key.startsWith('lieutenant/transfers__')||
       new RegExp('^lieutenant/transfers__[a-f0-9]{32}__sap-'+body.key.split('__')[1]+'-transfers-\\d{4}-of-\\d{4}\\.txt$').test(key));
@@ -86,15 +89,10 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    if(!current?.key||current.key===body.key||current.processorVersion!==sapProcessorVersion||
       !Number.isSafeInteger(current.documents)||!current.documents)
     return reply({reused:false,reason:'no_compatible_baseline'});
-   const count=await env.DB.prepare('SELECT COUNT(*) AS count FROM lieutenant_queue WHERE source_file=?')
-    .bind(current.key).first<{count:number}>();
-   if(Number(count?.count)!==current.documents)
-    return reply({error:'عدد الترحيلات في النسخة السابقة غير مطابق؛ أوقفت إعادة الاستخدام.'},409);
    const oldRows=await env.DB.prepare(
-    'SELECT child_key,COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=? GROUP BY child_key'
-   ).bind(current.key).all<{child_key:string;count:number}>();
-   const matches=oldRows.results.filter(row=>
-    row.child_key.startsWith('lieutenant/transfers__'+digest+'__')&&row.count>0);
+    'SELECT child_key,COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=? AND child_key GLOB ? GROUP BY child_key'
+   ).bind(current.key,'lieutenant/transfers__'+digest+'__*').all<{child_key:string;count:number}>();
+   const matches=oldRows.results.filter(row=>row.count>0);
    if(matches.length!==1)return reply({reused:false,reason:'no_unique_identical_chunk'});
    const old=matches[0];
    const previous=await env.DB.prepare('SELECT version,total FROM sap_file_jobs WHERE key=?')
