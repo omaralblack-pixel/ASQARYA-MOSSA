@@ -84,11 +84,19 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    const pointer=await env.DB.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'")
     .first<{value:string}>();
    const current=pointer?JSON.parse(pointer.value) as {
-    key?:string;documents?:number;processorVersion?:number
+    key?:string;documents?:number;processorVersion?:number;branchConfigHash?:string
    }:null;
    if(!current?.key||current.key===body.key||current.processorVersion!==sapProcessorVersion||
       !Number.isSafeInteger(current.documents)||!current.documents)
     return reply({reused:false,reason:'no_compatible_baseline'});
+   const branchSetting=await env.DB.prepare("SELECT value FROM settings WHERE key='branches'")
+    .first<{value:string}>();
+   const branchValue=branchSetting?.value??JSON.stringify(branches);
+   const branchHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(branchValue))),byte=>byte.toString(16).padStart(2,'0'))
+    .join('').slice(0,32);
+   if(current.branchConfigHash!==branchHash)
+    return reply({reused:false,reason:'branch_configuration_changed'});
    const oldRows=await env.DB.prepare(
     'SELECT child_key,COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=? AND child_key GLOB ? GROUP BY child_key'
    ).bind(current.key,'lieutenant/transfers__'+digest+'__*').all<{child_key:string;count:number}>();
@@ -192,6 +200,12 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    env.DB.prepare('CREATE TABLE IF NOT EXISTS sap_snapshot_history (id TEXT PRIMARY KEY,metadata TEXT NOT NULL,created TEXT NOT NULL)'),
    env.DB.prepare('CREATE TABLE IF NOT EXISTS sap_snapshot_history_rows (snapshot_id TEXT NOT NULL,transfer_no TEXT NOT NULL,doc_date TEXT NOT NULL,payload TEXT NOT NULL,source_file TEXT NOT NULL,created TEXT NOT NULL,PRIMARY KEY(snapshot_id,transfer_no))'),
   ]);
+  const currentBranch=await env.DB.prepare("SELECT value FROM settings WHERE key='branches'")
+   .first<{value:string}>();
+  const branchValue=currentBranch?.value??JSON.stringify(branches);
+  const branchConfigHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
+   new TextEncoder().encode(branchValue))),byte=>byte.toString(16).padStart(2,'0'))
+   .join('').slice(0,32);
   const now=new Date().toISOString();
   const backupId=crypto.randomUUID();
   // One D1 transaction switches every SAP queue row together. Reviewed records,
@@ -209,7 +223,7 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    env.DB.prepare(`INSERT INTO lieutenant_queue(transfer_no,doc_date,payload,source_file,created)
     SELECT number,doc_date,payload,?,? ${source}`).bind(body.key,now,body.key,keys),
    env.DB.prepare("INSERT INTO settings(key,value) VALUES('sapCurrentSnapshot',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-    .bind(JSON.stringify({key:body.key,created:root.created,committed:now,documents:body.documents,processorVersion:sapProcessorVersion})),
+    .bind(JSON.stringify({key:body.key,created:root.created,committed:now,documents:body.documents,processorVersion:sapProcessorVersion,branchConfigHash})),
    ...(root.kind==='unified'?[
     env.DB.prepare('DELETE FROM sap_file_batches WHERE file_key=?').bind(body.key),
     env.DB.prepare(`INSERT INTO sap_file_jobs(key,version,generation,kind,plan,total,updated)
