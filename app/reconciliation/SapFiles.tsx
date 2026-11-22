@@ -161,7 +161,53 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    {kind:'official',body:sections.official,count:sections.counts.OFFICIAL,label:'المستندات الرسمية'},
    {kind:'journal',body:sections.journal,count:sections.counts.OINM,label:'حركات المخزون'},
   ];
-  const parts=sources.filter(x=>x.count>0).map(x=>({...x,chunks:splitSapSectionIntoChunks(x.body,x.kind)}));
+  // Compare two complete, document-safe layouts against digest-only proof
+  // from the ACTIVE snapshot. This is a speed decision, not a trust decision:
+  // every selected chunk is still uploaded and rehashed server-side.
+  const transferSection=sources.find(x=>x.kind==='transfers')!;
+  const stableChunks=splitSapSectionIntoChunks(transferSection.body,'transfers');
+  const sequentialChunks=splitSapSectionIntoChunks(transferSection.body,'transfers',
+   undefined,'sequential');
+  let chosenMode:'content-defined'|'sequential'='sequential';
+  let transferChunks=sequentialChunks;
+  if(active&&stableChunks.length&&sequentialChunks.length){
+   try{
+    const manifest=await sapRequest<{
+     snapshot:ActiveSapSnapshot;compatible:boolean;digests:string[]
+    }>('/api/sap-snapshot?manifest=1&key='+encodeURIComponent(active.key));
+    if(manifest.compatible&&manifest.snapshot?.key===active.key&&
+       manifest.snapshot.activeCount===active.documents&&
+       Array.isArray(manifest.digests)&&manifest.digests.every(x=>/^[a-f0-9]{32}$/.test(x))){
+     const hashes=new Set(manifest.digests);
+     const encoder=new TextEncoder();
+     const score=async(chunks:string[])=>{
+      let matchingBytes=0;
+      for(const chunk of chunks){
+       const bytes=encoder.encode(chunk);
+       const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
+        b=>b.toString(16).padStart(2,'0')).join('').slice(0,32);
+       if(hashes.has(digest))matchingBytes+=bytes.byteLength;
+      }
+      return matchingBytes;
+     };
+     const [stableReuse,sequentialReuse]=await Promise.all([
+      score(stableChunks),score(sequentialChunks)
+     ]);
+     if(stableReuse>sequentialReuse||
+        stableReuse===sequentialReuse&&stableChunks.length<sequentialChunks.length){
+      chosenMode='content-defined';transferChunks=stableChunks;
+     }
+    }
+   }catch(error){
+    // Optional optimization failed: continue with the regular verified import.
+    console.warn('SAP chunk optimization unavailable; using full safe fallback.',error);
+   }
+  }else if(stableChunks.length<sequentialChunks.length){
+   chosenMode='content-defined';transferChunks=stableChunks;
+  }
+  const parts=sources.filter(x=>x.count>0).map(x=>({...x,
+   chunks:x.kind==='transfers'?transferChunks:splitSapSectionIntoChunks(x.body,x.kind)
+  }));
   const total=parts.reduce((n,x)=>n+x.chunks.length,0);
   const hash=file.key.split('__')[1];
   if(!/^[a-f0-9]{32}$/.test(hash))throw Error('بصمة أصل SAP غير صالحة.');
@@ -213,6 +259,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   await publishShared(file,text);
   M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة خلال '+
    ((performance.now()-startedAt)/1000).toFixed(1)+' ثانية (باستثناء رفع الأصل الأولي).'+
+   ' نمط تقسيم الترحيلات: '+(chosenMode==='sequential'?'المتتابع':'الحدود الثابتة')+'.'+
    (reused?' أُعيد استخدام '+reused+' جزء مطابق من النسخة السابقة دون معالجته مجددًا.':'')+
    (review?' توجد ملاحظات قراءة في '+review+' أجزاء.':' جميع الدفعات ناجحة.')+
    ' تم تفعيل النسخة الجديدة مع الاحتفاظ بالأصول والنسخة السابقة للرجوع.');
