@@ -51,7 +51,8 @@ function splitTransfersContentDefined(
 }
 
 export function splitSapSectionIntoChunks(
- text:string,kind:UnifiedChunkKind,maxBytes=SAP_CHUNK_MAX_BYTES
+ text:string,kind:UnifiedChunkKind,maxBytes=SAP_CHUNK_MAX_BYTES,
+ transferMode:'content-defined'|'sequential'='content-defined'
 ):string[]{
  if(!Number.isSafeInteger(maxBytes)||maxBytes<1000)
   throw Error('حد حجم دفعة SAP غير صالح.');
@@ -82,7 +83,8 @@ export function splitSapSectionIntoChunks(
   if(!group){group={lines:[],bytes:0};groups.set(key,group);}
   group.lines.push(lines[i]);group.bytes+=rowBytes;
  }
- if(kind==='transfers')return splitTransfersContentDefined(header,groups,maxBytes);
+ if(kind==='transfers'&&transferMode==='content-defined')
+  return splitTransfersContentDefined(header,groups,maxBytes);
  const headerBytes=size(header)+1,parts:string[]=[];
  let chunk:string[]=[],chunkBytes=headerBytes;
  for(const [key,group] of groups){
