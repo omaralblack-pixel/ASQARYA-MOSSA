@@ -50,6 +50,9 @@ try{
  assert.equal(result.kinds.OPENING.modified,0);
  assert.equal(result.kinds.OFFICIAL.modified,0);
  assert.equal(result.safeForManualReview,true);
+ assert.equal(result.originals.before.sha256.length,64);
+ assert.equal(result.originals.after.sha256.length,64);
+ assert.ok(result.originals.before.sizeBytes>result.originals.after.sizeBytes/2);
  assert.equal(result.cancellations.before.N,1);
  assert.equal(result.cancellations.after.Y,1);
  writeFileSync(wrong,makeSource('2026-11-22',false,true));
@@ -57,6 +60,11 @@ try{
  assert.equal(missing.kinds.TRANSFER.disappeared,1);
  assert.equal(missing.safeForManualReview,false);
  assert.ok(missing.warnings.some(x=>x.includes('اختفاء')));
+ // An export with an unknown cancellation state must not pass manual-review guards.
+ writeFileSync(wrong,makeSource('2026-11-22').replace(/\tN\t2621000000/, '\t\t2621000000'));
+ const unknown=compareSapSources(old,wrong);
+ assert.equal(unknown.safeForManualReview,false);
+ assert.equal(unknown.cancellations.after.unknown,1);
  writeFileSync(wrong,body.replace('TRANSFER','BROKEN'));
  assert.throws(()=>compareSapSources(wrong,next),/نوع سجل غير معروف/);
  // SAP export line numbers must not affect original document fingerprints.
