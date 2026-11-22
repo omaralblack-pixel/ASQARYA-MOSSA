@@ -18,7 +18,7 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
   try{
    const row=await env.DB.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'")
     .first<{value:string}>();
-   if(!row)return reply({snapshot:null});
+   if(!row)return reply({snapshot:null,rows:[],branches});
    const source=JSON.parse(row.value) as {key?:unknown;created?:unknown;committed?:unknown;documents?:unknown;processorVersion?:unknown;branchConfigHash?:unknown};
    if(typeof source.key!=='string'||typeof source.documents!=='number'||
       !Number.isSafeInteger(source.documents)||source.documents<1)
@@ -37,6 +37,35 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    // Only manifest DIGESTS (not source rows) leave the active SAP snapshot.
    // This lets the browser choose the faster of sequential/content-defined
    // chunk layouts while final byte verification remains server-side.
+   // One lightweight, read-only comparison of the committed snapshot.
+   // Never trust a browser diff to activate or erase SAP: the existing
+   // server-side staging and full-count checks remain the write authority.
+   if(url.searchParams.get('comparison')==='1'){
+    if(snapshot.activeCount!==snapshot.documents)
+     return reply({error:'عدد الترحيلات المعتمدة غير متطابق؛ لا يمكن مقارنة نسخة ناقصة.'},409);
+    if(snapshot.documents>20000)return reply({error:'النسخة كبيرة جدًا للمقارنة المباشرة.'},413);
+    const savedBranches=await env.DB.prepare("SELECT value FROM settings WHERE key='branches'").first<{value:string}>();
+    let branchList=branches;
+    if(savedBranches){
+     const parsed=JSON.parse(savedBranches.value) as unknown;
+     if(Array.isArray(parsed)&&parsed.every(x=>typeof x==='string'))branchList=parsed;
+    }
+    const baseline=await env.DB.prepare(
+     'SELECT transfer_no,payload FROM lieutenant_queue WHERE source_file=? ORDER BY transfer_no'
+    ).bind(source.key).all<{transfer_no:string;payload:string}>();
+    if(baseline.results.length!==snapshot.documents)
+     return reply({error:'تغيّر عدد السجلات أثناء قراءة المقارنة؛ أعد المحاولة.'},409);
+    const encoder=new TextEncoder(),rows:{number:string;hash:string}[]=[];
+    for(let i=0;i<baseline.results.length;i+=64){
+     const slice=baseline.results.slice(i,i+64);
+     const block=await Promise.all(slice.map(async record=>{
+      const bytes=await crypto.subtle.digest('SHA-256',encoder.encode(record.payload));
+      return {number:record.transfer_no,hash:Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('')};
+     }));
+     rows.push(...block);
+    }
+    return reply({snapshot,rows,branches:branchList});
+   }
    if(url.searchParams.get('manifest')==='1'){
     if(url.searchParams.has('key')&&url.searchParams.get('key')!==source.key)
      return reply({error:'تغيّرت نسخة SAP أثناء فحص بصمات الأجزاء.'},409);
