@@ -65,7 +65,7 @@ try{
  assert.equal((await replaceSapSnapshot(request({key:root,children:[child],documents:1}),env)).status,409);
  assert.equal(sqlite.prepare('SELECT payload FROM lieutenant_queue').get().payload,'{"remarks":"old","invoiceNumbers":[]}');
  assert.equal((await replaceSapSnapshot(request({action:'stage',key:root,child}),env)).status,200);
- sqlite.prepare('INSERT INTO sap_file_jobs(key,total) VALUES(?,1)').run(child);
+ sqlite.prepare('INSERT INTO sap_file_jobs(key,total,version) VALUES(?,1,2)').run(child);
  sqlite.prepare('INSERT INTO sap_file_batches VALUES(?,0,?,?)').run(child,'complete','{}');
  assert.equal((await replaceSapSnapshot(request({key:root,children:[child],documents:2}),env)).status,409);
  const committed=await replaceSapSnapshot(request({key:root,children:[child],documents:1}),env);
