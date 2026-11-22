@@ -127,7 +127,7 @@ try{
  sqlite.prepare("UPDATE lieutenant_queue SET source_file=? WHERE source_file='corrupted'").run(root);
 
  // An old transfer whose cancellation changes must be reprocessed (not reused).
- const changedText=text.replace(/\\tN$/, '\\tY');
+ const changedText=text.replace(/\tN$/, '\tY');
  const changedDigest=createHash('sha256').update(changedText).digest('hex').slice(0,32);
  const changedRoot='lieutenant/unified__'+'f'.repeat(32)+'__changed.txt';
  const changedChild='lieutenant/transfers__'+changedDigest+'__sap-'+'f'.repeat(32)+'-transfers-0001-of-0001.txt';
