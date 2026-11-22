@@ -125,8 +125,8 @@ const repeatedRows=Array.from({length:160},(_,i)=>transferLine.replace('2615754'
 const longTransfer=transferHeader+'\n'+repeatedRows.join('\n');
 const split=splitSapSectionIntoChunks(longTransfer,'transfers',1500);
 assert.ok(split.length>1,'Large SAP transfer source must split under the CPU budget');
-assert.deepEqual(split.flatMap(part=>part.split('\n').slice(1)),repeatedRows,
- 'Every SAP line must appear once and retain its order');
+assert.deepEqual(split.flatMap(part=>part.split('\n').slice(1)).sort(),[...repeatedRows].sort(),
+ 'Every SAP line must appear exactly once in the hash buckets');
 const groups=new Map();
 for(const [i,part] of split.entries())for(const line of part.split('\n').slice(1)){
  const doc=line.split('\t')[0];assert.ok(!groups.has(doc)||groups.get(doc)===i,
@@ -134,6 +134,31 @@ for(const [i,part] of split.entries())for(const line of part.split('\n').slice(1
 }
 assert.ok(split.every(part=>new TextEncoder().encode(part).length<=1500),
  'Every derived chunk must obey the physical byte limit');
+// The same unchanged SAP documents must yield the same chunk bytes after
+// new transfers are appended or a different document is canceled.
+const transferColumns=transferHeader.split('\t');
+const cancelIndex=transferColumns.indexOf('CANCELED');
+assert.ok(cancelIndex>=0);
+const docLine=i=>transferLine.replace('2615754',String(2640000+i));
+const baselineRows=Array.from({length:1280},(_,i)=>[docLine(i),docLine(i)]).flat();
+const baseline=splitSapSectionIntoChunks(transferHeader+'\n'+baselineRows.join('\n'),'transfers');
+const alteredRows=[...baselineRows];
+const changedCells=alteredRows[100].split('\t');
+changedCells[cancelIndex]=changedCells[cancelIndex]==='N'?'Y':'N';
+alteredRows[100]=changedCells.join('\t');
+alteredRows.push(docLine(1280),docLine(1281),docLine(1282));
+const next=splitSapSectionIntoChunks(transferHeader+'\n'+alteredRows.join('\n'),'transfers');
+assert.equal(baseline.length,16,'The base dataset should occupy sixteen stable hash buckets');
+const same=new Set(baseline);
+const reused=next.filter(chunk=>same.has(chunk)).length;
+assert.ok(reused>=13,'At most four hash buckets may change after 3 appends + 1 edit: '+reused);
+assert.deepEqual(next.flatMap(chunk=>chunk.split('\n').slice(1)).sort(),[...alteredRows].sort(),
+ 'New and changed SAP records must not be dropped or duplicated');
+assert.deepEqual(splitSapSectionIntoChunks(transferHeader+'\n'+
+ baselineRows.slice(100).concat(baselineRows.slice(0,100)).join('\n'),'transfers'),baseline,
+ 'Reordering whole SAP documents must not invalidate unchanged content-addressed chunks');
+console.log('PASS: deterministic SAP bucket reuse: '+reused+'/'+baseline.length+
+ ' chunks reused after three new transfers and one cancellation; every line preserved.');
 assert.equal(splitSapSectionIntoChunks(parts.official,'official',1500).length,1);
 assert.equal(splitSapSectionIntoChunks(parts.journal,'journal',1500).length,1);
 assert.match(fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8'),
