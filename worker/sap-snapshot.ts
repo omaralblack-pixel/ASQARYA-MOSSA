@@ -182,13 +182,17 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
   if(files.some(file=>file.kind===root.kind&&file.key!==root.key&&file.created>root.created))
    return reply({error:'توجد نسخة أحدث؛ استكمل النسخة الأحدث قبل الاستبدال.'},409);
   const keys=JSON.stringify(body.children);
-  const jobs=await env.DB.prepare(`SELECT j.key,j.total,COUNT(b.idx) AS actual,
+  const jobs=await env.DB.prepare(`SELECT j.key,j.version,j.total,COUNT(b.idx) AS actual,
     SUM(CASE WHEN b.state='complete' THEN 1 ELSE 0 END) AS done
     FROM sap_file_jobs j LEFT JOIN sap_file_batches b ON b.file_key=j.key
     WHERE j.key IN (SELECT value FROM json_each(?)) GROUP BY j.key`).bind(keys)
-   .all<{key:string;total:number;actual:number;done:number}>();
+   .all<{key:string;version:number|null;total:number;actual:number;done:number}>();
   if(jobs.results.length!==body.children.length||jobs.results.some(job=>job.total!==job.actual||job.done!==job.total))
    return reply({error:'لم تكتمل جميع دفعات النسخة الجديدة؛ النسخة السابقة ما زالت فعّالة.'},409);
+  // Old v1 jobs can still activate using the existing importer, but must
+  // not pretend to be a v2 content-verified baseline for subsequent reuse.
+  const compatibleVersion=jobs.results.every(job=>job.version===sapProcessorVersion)?
+   sapProcessorVersion:0;
   const source=`FROM sap_snapshot_rows WHERE root_key=? AND child_key IN (SELECT value FROM json_each(?))`;
   const counts=await env.DB.prepare(`SELECT COUNT(*) AS count,COUNT(DISTINCT number) AS uniqueCount ${source}`)
    .bind(body.key,keys).first<{count:number;uniqueCount:number}>();
@@ -223,7 +227,7 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    env.DB.prepare(`INSERT INTO lieutenant_queue(transfer_no,doc_date,payload,source_file,created)
     SELECT number,doc_date,payload,?,? ${source}`).bind(body.key,now,body.key,keys),
    env.DB.prepare("INSERT INTO settings(key,value) VALUES('sapCurrentSnapshot',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-    .bind(JSON.stringify({key:body.key,created:root.created,committed:now,documents:body.documents,processorVersion:sapProcessorVersion,branchConfigHash})),
+    .bind(JSON.stringify({key:body.key,created:root.created,committed:now,documents:body.documents,processorVersion:compatibleVersion,branchConfigHash})),
    ...(root.kind==='unified'?[
     env.DB.prepare('DELETE FROM sap_file_batches WHERE file_key=?').bind(body.key),
     env.DB.prepare(`INSERT INTO sap_file_jobs(key,version,generation,kind,plan,total,updated)
