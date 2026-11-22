@@ -85,6 +85,12 @@ try{
  const current=await (await replaceSapSnapshot(get('?rows=1'),env)).json();
  assert.equal(current.snapshot.documents,1);assert.equal(current.rows.length,1);assert.equal(current.hasMore,false);
  assert.equal(current.rows[0].transfer_no,'2616732');
+ const compact=await (await replaceSapSnapshot(get('?numbers=1'),env)).json();
+ assert.deepEqual(compact.numbers,['2616732']);
+ assert.equal(compact.hasMore,false);
+ assert.equal(compact.snapshot.documents,1);
+ assert.equal((await replaceSapSnapshot(get('?numbers=1&key=wrong'),env)).status,409);
+ assert.equal((await replaceSapSnapshot(get('?numbers=1&after=not-a-document'),env)).status,400);
  assert.equal((await replaceSapSnapshot(get('?rows=1&key=wrong'),env)).status,409);
  const {readActiveSap}=load('app/lib/active-sap.ts');
  globalThis.fetch=async url=>replaceSapSnapshot(new Request('https://example.com'+url),env);
