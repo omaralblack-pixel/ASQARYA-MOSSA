@@ -47,3 +47,28 @@ node scripts/audit-sap-monthly-sources.mjs "/path/to/21.11.txt" "/path/to/22.11.
 The script only reads the two local files and prints a JSON summary. It reports full-file SHA-256 values (the archive key contains their first 32 hex characters), transfer/official/OINM record changes, missing records, canceled-state counts, opening/closing balances, date-window mismatches and unknown statuses. The SAP display index column (`#`) and column-order changes are intentionally ignored; unknown columns trigger warnings instead of silent assumptions. The program neither modifies the files nor uploads their contents.
 
 This audit is a *necessary check, not sufficient proof* of correct business reconciliation; anomalies must be reviewed against SAP and the project's existing blue invoices, branch exceptions and cancellation decisions before a production rollout. If a newer 22-Nov archive exists, compare the latest immutable version separately and do not silently assume all 22-Nov versions are equivalent.
+
+## VERIFIED 21-Nov vs 22-Nov private SAP exports (2026-11-22)
+
+Both customer-provided originals were read in a trusted analysis container. Their full SHA-256 digests start with `2d2b4e0dabb1cef83fa656617c38a441` (21-Nov) and `38e0dceaf165fdf82ca4c67a4215fe18` (22-Nov), **matching** the keys of the immutable originals already in the private Supabase archive. Full source bytes and any private invoice rows are **not** checked into GitHub.
+
+| Verified criterion | 21-Nov | 22-Nov |
+|---|---:|---:|
+| Transfer documents | 1,247 | 1,393 |
+| Transfer lines | 11,290 | 12,487 |
+| OINM journal rows | 11,459 | 12,656 |
+| Official invoice rows | 169 | 169 |
+| Opening stock items | 119 | 119 |
+| Closing stock items | 120 | 120 |
+
+- **146 new transfer documents**, **zero missing old transfer documents**, **1,197 new transfer lines**, **zero removed old lines**.
+- Of 1,247 prior documents, **1,239 are completely unchanged**. The remaining 8 are: **6 N→Y cancellation status corrections** and **2 branch corrections**; 105 old rows differ in those exact fields plus cancellation JournalRemarks.
+- **1,197 new OINM rows** corresponding to exactly the 146 new transfer documents. All 11,459 prior OINM rows are unchanged.
+- All 169 official invoice rows and all 119 opening balances are unchanged. **69 closing SKU quantities changed**; every one of the **120 SKU-specific closing balance deltas** matches the sum of its new OINM in/out movements to six decimal places.
+- **Two newly visible transfer documents** carry earlier posting dates (16-Nov and 19-Nov) and must not be filtered out by a query restricted to today only.
+- Real-world candidate chunk reuse on these exact pair of files:
+  - Content-defined: **11 matching chunks out of 17** on 22-Nov, **2,422,682 reused source bytes** in modeled transfer-only chunks.
+  - Legacy sequential: **9 matching chunks out of 14**, **2,503,225 reused source bytes**. Sequential is slightly better for this pair and requires fewer chunk requests.
+- An **adaptive selector** is now included: read only the active snapshot's digest manifest, evaluate both layouts in the browser, and select the layout with the most byte-identical reusable content. If the manifest is incompatible/unavailable, fall back to verified full processing with fewer chunks. Both layouts must pass the same archived-byte and atomic snapshot checks.
+
+**Important limits:** these are source-comparison and local chunk-reuse measurements, not live Cloudflare CPU/timing metrics. A full original and each derived chunk are still uploaded. The first full v2 baseline is required before chunk reuse can engage. Six cancellations and two branch changes must still be validated against the actual project's manual invoice/exception decisions before enabling on production. This read-only verification caused **no production writes**.
