@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {createRequire} from 'node:module';
+import {createHash} from 'node:crypto';
 import {resolve,dirname} from 'node:path';
 import ts from 'typescript';
 
@@ -100,5 +101,38 @@ try{
  globalThis.fetch=async()=>Response.json({...current,rows:[{transfer_no:'2616732',payload:JSON.stringify({...payload,transfer:{...payload.transfer,number:'wrong'}})}]});
  await assert.rejects(readActiveSap(new AbortController().signal),/غير مكتملة/);
 
- console.log('PASS: atomic daily SAP replacement, exact invoice/transfer recovery, incomplete snapshot protection, rollback queue and all originals retained, manual corrections preserved.');
+
+ // The original archive and its existing snapshot rows are authoritative.
+ // Identical *bytes*, not document numbers, permit safe stage reuse.
+ const oldDigest=createHash('sha256').update(text).digest('hex').slice(0,32);
+ const originalChunk='lieutenant/transfers__'+oldDigest+'__sap-'+'a'.repeat(32)+'-transfers-0001-of-0001.txt';
+ sqlite.prepare('UPDATE sap_snapshot_rows SET child_key=? WHERE root_key=?').run(originalChunk,root);
+ const nextRoot='lieutenant/unified__'+'d'.repeat(32)+'__next.txt';
+ const nextChild='lieutenant/transfers__'+oldDigest+'__sap-'+'d'.repeat(32)+'-transfers-0001-of-0001.txt';
+ files.push({key:nextRoot,name:'next.txt',kind:'unified',created:'2026-11-20T00:00:00Z'});
+ files.push({key:nextChild,name:nextChild.split('__').at(-1),kind:'transfers',created:'2026-11-20T00:00:01Z'});
+ const reuseRequest=request({action:'reuse',key:nextRoot,child:nextChild});
+ const reuse=await replaceSapSnapshot(reuseRequest,env);
+ assert.equal(reuse.status,200,await reuse.clone().text());
+ assert.deepEqual(await reuse.json(),{reused:true,staged:1});
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=?').get(nextRoot).count,1);
+ assert.equal(sqlite.prepare('SELECT total FROM sap_file_jobs WHERE key=?').get(nextChild).total,0);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM lieutenant_queue').get().count,1,
+  'Copying unchanged rows must not touch the live approved snapshot');
+ assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),manualBefore);
+ const replay=await (await replaceSapSnapshot(request({action:'reuse',key:nextRoot,child:nextChild}),env)).json();
+ assert.equal(replay.reused,true,'Interrupted response can be replayed without duplicate writes');
+ assert.equal(replay.alreadyStaged,true);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=?').get(nextRoot).count,1);
+ const fakeChild='lieutenant/transfers__'+'f'.repeat(32)+'__sap-'+'e'.repeat(32)+'-transfers-0001-of-0001.txt';
+ const tampered=await replaceSapSnapshot(request({action:'reuse',
+  key:'lieutenant/unified__'+'e'.repeat(32)+'__fake.txt',child:fakeChild}),env);
+ assert.equal(tampered.status,409,'Unverified archive hash must never be reused');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_file_jobs WHERE key=?').get(fakeChild).count,0);
+ const committedReuse=await replaceSapSnapshot(request({key:nextRoot,children:[nextChild],documents:1}),env);
+ assert.equal(committedReuse.status,200,await committedReuse.clone().text());
+ assert.equal(sqlite.prepare('SELECT source_file FROM lieutenant_queue').get().source_file,nextRoot);
+ assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),manualBefore);
+
+ console.log('PASS: atomic daily SAP replacement, exact invoice/transfer recovery, incomplete snapshot protection, rollback queue, verified incremental reuse and all originals retained, manual corrections preserved.');
 }finally{globalThis.fetch=originalFetch;sqlite.close();}
