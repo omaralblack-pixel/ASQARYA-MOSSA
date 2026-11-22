@@ -113,7 +113,8 @@ try{
  files.push({key:nextRoot,name:'next.txt',kind:'unified',created:'2026-11-20T00:00:00Z'});
  files.push({key:nextChild,name:nextChild.split('__').at(-1),kind:'transfers',created:'2026-11-20T00:00:01Z'});
 
- // Version incompatibility and corrupted active counts refuse reuse.
+ // A version mismatch must force the normal importer; live count is checked
+ // once for the whole source by the caller, not once per chunk.
  const oldPointer=sqlite.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'").get().value;
  sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'")
   .run(JSON.stringify({...JSON.parse(oldPointer),processorVersion:-1}));
@@ -122,9 +123,6 @@ try{
  assert.equal(incompatible.reused,false);
  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=?').get(nextRoot).count,0);
  sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'").run(oldPointer);
- sqlite.prepare("UPDATE lieutenant_queue SET source_file='corrupted' WHERE source_file=?").run(root);
- assert.equal((await replaceSapSnapshot(request({action:'reuse',key:nextRoot,child:nextChild}),env)).status,409);
- sqlite.prepare("UPDATE lieutenant_queue SET source_file=? WHERE source_file='corrupted'").run(root);
 
  // An old transfer whose cancellation changes must be reprocessed (not reused).
  const changedText=text.replace(/\tN$/, '\tY');
