@@ -2,6 +2,7 @@ import {lieutenantFiles} from './institution';
 import {parseLieutenantTransfers} from '../app/lib/lieutenant';
 import {decodeArchivedSapSource} from '../app/lib/sap-source-integrity';
 import branches from '../app/branches.json';
+import {sapProcessorVersion} from '../app/lib/sap-processor-version';
 
 type ArchiveFile={key:string;name:string;kind:string;created:string};
 
@@ -61,6 +62,72 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
   const validChild=(key:string)=>typeof key==='string'&&
     (key===body.key&&body.key.startsWith('lieutenant/transfers__')||
       new RegExp('^lieutenant/transfers__[a-f0-9]{32}__sap-'+body.key.split('__')[1]+'-transfers-\\d{4}-of-\\d{4}\\.txt$').test(key));
+  // Copy only byte-identical chunks from the ACTIVE, fully verified SAP
+  // snapshot; every new chunk must already be archived and hash-verified.
+  if(body.action==='reuse'){
+   if(!/^lieutenant\\/(unified|transfers)__[a-f0-9]{32}__[^/\\\\]{1,120}$/.test(body.key)||
+      typeof body.child!=='string'||!validChild(body.child))
+    return reply({error:'أصل أو جزء SAP غير صالح.'},400);
+   const archived=await lieutenantFiles(new Request(
+    new URL('/api/lieutenant-files?key='+encodeURIComponent(body.child),request.url)),env);
+   if(!archived.ok)return reply({error:'تعذّر إثبات وجود الجزء الأصلي المحفوظ.'},409);
+   const bytes=await archived.arrayBuffer();
+   if(!bytes.byteLength||bytes.byteLength>350_000)
+    return reply({error:'حجم جزء SAP غير صالح لإعادة الاستخدام.'},409);
+   const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
+    value=>value.toString(16).padStart(2,'0')).join('').slice(0,32);
+   if(digest!==body.child.split('__')[1])
+    return reply({error:'بصمة جزء SAP لا تطابق الأرشيف؛ لا يمكن إعادة استخدامه.'},409);
+   const pointer=await env.DB.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'")
+    .first<{value:string}>();
+   const current=pointer?JSON.parse(pointer.value) as {
+    key?:string;documents?:number;processorVersion?:number
+   }:null;
+   if(!current?.key||current.key===body.key||current.processorVersion!==sapProcessorVersion||
+      !Number.isSafeInteger(current.documents)||!current.documents)
+    return reply({reused:false,reason:'no_compatible_baseline'});
+   const count=await env.DB.prepare('SELECT COUNT(*) AS count FROM lieutenant_queue WHERE source_file=?')
+    .bind(current.key).first<{count:number}>();
+   if(Number(count?.count)!==current.documents)
+    return reply({error:'عدد الترحيلات في النسخة السابقة غير مطابق؛ أوقفت إعادة الاستخدام.'},409);
+   const oldRows=await env.DB.prepare(
+    'SELECT child_key,COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=? GROUP BY child_key'
+   ).bind(current.key).all<{child_key:string;count:number}>();
+   const matches=oldRows.results.filter(row=>
+    row.child_key.startsWith('lieutenant/transfers__'+digest+'__')&&row.count>0);
+   if(matches.length!==1)return reply({reused:false,reason:'no_unique_identical_chunk'});
+   const old=matches[0];
+   const previous=await env.DB.prepare('SELECT version,total FROM sap_file_jobs WHERE key=?')
+    .bind(body.child).first<{version:number;total:number}>();
+   if(previous){
+    const staged=await env.DB.prepare(
+     'SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=? AND child_key=?'
+    ).bind(body.key,body.child).first<{count:number}>();
+    if(previous.version===sapProcessorVersion&&previous.total===0&&
+       Number(staged?.count)===Number(old.count))
+     return reply({reused:true,staged:Number(old.count),alreadyStaged:true});
+    return reply({reused:false,reason:'existing_processing_job'});
+   }
+   const now=new Date().toISOString();
+   // Guard and both writes share one transaction: a concurrent activation
+   // cannot silently mix rows from two different approved baselines.
+   await env.DB.batch([
+    env.DB.prepare(`SELECT json(CASE WHEN
+     (SELECT json_extract(value,'$.key') FROM settings WHERE key='sapCurrentSnapshot')=?
+     AND (SELECT json_extract(value,'$.processorVersion') FROM settings WHERE key='sapCurrentSnapshot')=?
+     AND NOT EXISTS(SELECT 1 FROM sap_file_jobs WHERE key=?)
+     AND NOT EXISTS(SELECT 1 FROM sap_snapshot_rows WHERE root_key=? AND child_key=?)
+     THEN '{}' ELSE 'SAP baseline changed before reuse' END)`)
+     .bind(current.key,sapProcessorVersion,body.child,body.key,body.child),
+    env.DB.prepare(`INSERT INTO sap_file_jobs(key,version,generation,kind,plan,total,updated)
+     VALUES(?,? ,?,'transfers',?,0,?)`).bind(body.child,sapProcessorVersion,crypto.randomUUID(),
+     JSON.stringify({kind:'transfers',count:Number(old.count),issues:[],documents:[]}),now),
+    env.DB.prepare(`INSERT INTO sap_snapshot_rows(root_key,child_key,number,doc_date,payload)
+     SELECT ?,?,number,doc_date,payload FROM sap_snapshot_rows WHERE root_key=? AND child_key=?`)
+     .bind(body.key,body.child,current.key,old.child_key),
+   ]);
+   return reply({reused:true,staged:Number(old.count)});
+  }
   if(body.action==='stage'){
    if(!/^lieutenant\/(unified|transfers)__[a-f0-9]{32}__[^/\\]{1,120}$/.test(body.key)||!body.child||!validChild(body.child))
     return reply({error:'جزء SAP غير صالح.'},400);
@@ -144,7 +211,7 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    env.DB.prepare(`INSERT INTO lieutenant_queue(transfer_no,doc_date,payload,source_file,created)
     SELECT number,doc_date,payload,?,? ${source}`).bind(body.key,now,body.key,keys),
    env.DB.prepare("INSERT INTO settings(key,value) VALUES('sapCurrentSnapshot',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-    .bind(JSON.stringify({key:body.key,created:root.created,committed:now,documents:body.documents})),
+    .bind(JSON.stringify({key:body.key,created:root.created,committed:now,documents:body.documents,processorVersion:sapProcessorVersion})),
    ...(root.kind==='unified'?[
     env.DB.prepare('DELETE FROM sap_file_batches WHERE file_key=?').bind(body.key),
     env.DB.prepare(`INSERT INTO sap_file_jobs(key,version,generation,kind,plan,total,updated)
