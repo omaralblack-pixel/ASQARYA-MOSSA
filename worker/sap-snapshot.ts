@@ -19,7 +19,7 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
    const row=await env.DB.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'")
     .first<{value:string}>();
    if(!row)return reply({snapshot:null});
-   const source=JSON.parse(row.value) as {key?:unknown;created?:unknown;committed?:unknown;documents?:unknown};
+   const source=JSON.parse(row.value) as {key?:unknown;created?:unknown;committed?:unknown;documents?:unknown;processorVersion?:unknown;branchConfigHash?:unknown};
    if(typeof source.key!=='string'||typeof source.documents!=='number'||
       !Number.isSafeInteger(source.documents)||source.documents<1)
     return reply({error:'سجل النسخة المعتمدة غير صالح؛ لا يمكن تأكيد الاعتماد.'},500);
@@ -34,6 +34,30 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
     activeCount:Number(count?.count||0),
    };
    const url=new URL(request.url);
+   // Only manifest DIGESTS (not source rows) leave the active SAP snapshot.
+   // This lets the browser choose the faster of sequential/content-defined
+   // chunk layouts while final byte verification remains server-side.
+   if(url.searchParams.get('manifest')==='1'){
+    if(url.searchParams.has('key')&&url.searchParams.get('key')!==source.key)
+     return reply({error:'تغيّرت نسخة SAP أثناء فحص بصمات الأجزاء.'},409);
+    if(snapshot.activeCount!==snapshot.documents)
+     return reply({error:'النسخة السابقة غير مكتملة؛ أوقفت إعادة الاستخدام.'},409);
+    const currentBranches=await env.DB.prepare("SELECT value FROM settings WHERE key='branches'")
+     .first<{value:string}>();
+    const branchBytes=new TextEncoder().encode(currentBranches?.value??JSON.stringify(branches));
+    const branchHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',branchBytes)),
+     b=>b.toString(16).padStart(2,'0')).join('').slice(0,32);
+    if(source.processorVersion!==sapProcessorVersion||source.branchConfigHash!==branchHash)
+     return reply({snapshot,compatible:false,digests:[]});
+    const partRows=await env.DB.prepare(
+     'SELECT child_key FROM sap_snapshot_rows WHERE root_key=? GROUP BY child_key ORDER BY child_key LIMIT 201'
+    ).bind(source.key).all<{child_key:string}>();
+    if(partRows.results.length>200)
+     return reply({error:'عدد أجزاء SAP السابقة يتجاوز حد المقارنة الآمن.'},409);
+    const digests=[...new Set(partRows.results.map(x=>x.child_key.match(
+     /^lieutenant\/transfers__([a-f0-9]{32})__/ )?.[1]).filter((x):x is string=>!!x))];
+    return reply({snapshot,compatible:true,digests});
+   }
    // Fast, compact coverage audit before an incremental import begins.
    // A monthly SAP export is cumulative: an approved document must not
    // silently disappear even if a new number balances the total count.
