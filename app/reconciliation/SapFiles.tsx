@@ -111,6 +111,12 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
  async function processUnifiedFile(file:SapArchiveFile,text:string):Promise<void>{
   // Avoid the CPU-limited monolithic Supabase parse (HTTP 546).
   const sections=splitUnifiedSapSource(text);
+  // Verify the live pointer just once for the entire import. Repeating a
+  // COUNT over all active transfers for every chunk would exhaust D1 reads.
+  const active=(await sapRequest<{snapshot:ActiveSapSnapshot|null}>('/api/sap-snapshot')).snapshot;
+  if(active&&active.activeCount!==active.documents)
+   throw Error('عدد ترحيلات النسخة المعتمدة لا يطابق سجلها. أوقفت التحديث لحماية المطابقات.');
+  if(active?.key===file.key){M('هذا الكشف معتمد فعلًا وجميع ترحيلاته مثبتة؛ لا يلزم تكرار المعالجة.');return;}
   const sources:{kind:UnifiedChunkKind;body:string;count:number;label:string}[]=[
    {kind:'transfers',body:sections.transfers,count:sections.counts.TRANSFER,label:'الترحيلات'},
    {kind:'official',body:sections.official,count:sections.counts.OFFICIAL,label:'المستندات الرسمية'},
