@@ -48,6 +48,11 @@ try{
  assert.equal(result.kinds.TRANSFER.modified,1);
  assert.equal(result.kinds.TRANSFER.disappeared,0);
  assert.equal(result.kinds.OPENING.modified,0);
+ assert.equal(result.kinds.CLOSING.added,0,
+  'The 22-Nov closing date must not manufacture new stock items');
+ assert.equal(result.kinds.CLOSING.disappeared,0);
+ assert.equal(result.kinds.CLOSING.modified,0,
+  'Closing stocks with equal quantities and changed day are unchanged');
  assert.equal(result.kinds.OFFICIAL.modified,0);
  assert.equal(result.safeForManualReview,true);
  assert.equal(result.originals.before.sha256.length,64);
@@ -55,6 +60,10 @@ try{
  assert.ok(result.originals.before.sizeBytes>result.originals.after.sizeBytes/2);
  assert.equal(result.cancellations.before.N,1);
  assert.equal(result.cancellations.after.Y,1);
+ writeFileSync(wrong,makeSource('2026-11-22').replace('25.000','26.000'));
+ const stockChange=compareSapSources(old,wrong);
+ assert.equal(stockChange.kinds.CLOSING.modified,1,
+  'Changed closing quantity must be detected despite advancing snapshot date');
  writeFileSync(wrong,makeSource('2026-11-22',false,true));
  const missing=compareSapSources(old,wrong);
  assert.equal(missing.kinds.TRANSFER.disappeared,1);
