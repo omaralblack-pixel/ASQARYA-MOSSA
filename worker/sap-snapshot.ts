@@ -65,7 +65,7 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
   // Copy only byte-identical chunks from the ACTIVE, fully verified SAP
   // snapshot; every new chunk must already be archived and hash-verified.
   if(body.action==='reuse'){
-   if(!/^lieutenant\\/(unified|transfers)__[a-f0-9]{32}__[^/\\\\]{1,120}$/.test(body.key)||
+   if(!/^lieutenant\/(unified|transfers)__[a-f0-9]{32}__[^/\\]{1,120}$/.test(body.key)||
       typeof body.child!=='string'||!validChild(body.child))
     return reply({error:'أصل أو جزء SAP غير صالح.'},400);
    const archived=await lieutenantFiles(new Request(
