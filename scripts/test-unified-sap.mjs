@@ -141,24 +141,24 @@ const cancelIndex=transferColumns.indexOf('CANCELED');
 assert.ok(cancelIndex>=0);
 const docLine=i=>transferLine.replace('2615754',String(2640000+i));
 const baselineRows=Array.from({length:1280},(_,i)=>[docLine(i),docLine(i)]).flat();
-const baseline=splitSapSectionIntoChunks(transferHeader+'\n'+baselineRows.join('\n'),'transfers');
+const baseline=splitSapSectionIntoChunks(transferHeader+'\n'+baselineRows.join('\n'),'transfers',20_000);
 const alteredRows=[...baselineRows];
 const changedCells=alteredRows[100].split('\t');
 changedCells[cancelIndex]=changedCells[cancelIndex]==='N'?'Y':'N';
 alteredRows[100]=changedCells.join('\t');
 alteredRows.push(docLine(1280),docLine(1281),docLine(1282));
-const next=splitSapSectionIntoChunks(transferHeader+'\n'+alteredRows.join('\n'),'transfers');
-assert.equal(baseline.length,16,'The base dataset should occupy sixteen stable hash buckets');
+const next=splitSapSectionIntoChunks(transferHeader+'\n'+alteredRows.join('\n'),'transfers',20_000);
+assert.ok(baseline.length>=6,'Synthetic transfers should span multiple independently reusable chunks');
 const same=new Set(baseline);
 const reused=next.filter(chunk=>same.has(chunk)).length;
-assert.ok(reused>=13,'At most four hash buckets may change after 3 appends + 1 edit: '+reused);
+assert.ok(reused>=baseline.length-3,'Unrelated content-defined chunks must remain identical: '+reused+'/'+baseline.length);
 assert.deepEqual(next.flatMap(chunk=>chunk.split('\n').slice(1)).sort(),[...alteredRows].sort(),
  'New and changed SAP records must not be dropped or duplicated');
 assert.deepEqual(splitSapSectionIntoChunks(transferHeader+'\n'+
- baselineRows.slice(100).concat(baselineRows.slice(0,100)).join('\n'),'transfers'),baseline,
+ baselineRows.slice(100).concat(baselineRows.slice(0,100)).join('\n'),'transfers',20_000),baseline,
  'Reordering whole SAP documents must not invalidate unchanged content-addressed chunks');
 console.log('PASS: deterministic SAP bucket reuse: '+reused+'/'+baseline.length+
- ' chunks reused after three new transfers and one cancellation; every line preserved.');
+ ' content-defined chunks reused after three new transfers and one cancellation; every line preserved.');
 assert.equal(splitSapSectionIntoChunks(parts.official,'official',1500).length,1);
 assert.equal(splitSapSectionIntoChunks(parts.journal,'journal',1500).length,1);
 assert.match(fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8'),
