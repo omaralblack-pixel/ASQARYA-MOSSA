@@ -123,6 +123,11 @@ try{
  assert.equal(incompatible.reused,false);
  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=?').get(nextRoot).count,0);
  sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'").run(oldPointer);
+ sqlite.prepare("INSERT INTO settings(key,value) VALUES('branches','[\"6 — Different Branch Name\"]')").run();
+ const changedBranches=await (await replaceSapSnapshot(
+  request({action:'reuse',key:nextRoot,child:nextChild}),env)).json();
+ assert.equal(changedBranches.reused,false,'Updated branch interpretation must force a fresh parse');
+ sqlite.prepare("DELETE FROM settings WHERE key='branches'").run();
 
  // An old transfer whose cancellation changes must be reprocessed (not reused).
  const changedText=text.replace(/\tN$/, '\tY');
