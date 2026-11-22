@@ -61,7 +61,10 @@ function snapshot(path){
   const get=k=>String(values[positions.get(k)]??'').trim();
   const kind=get('RecordType');
   if(!allowed.has(kind))throw Error('نوع سجل غير معروف في سطر '+(i+1)+': '+kind);
-  const relevant=indices.map(x=>x.header+':'+JSON.stringify(values[x.i]??'')).join('|');
+  // Closing stock is a daily balance snapshot. Its date must agree with
+  // WINDOW, but the date alone must not make all 120 SKUs appear modified.
+  const relevant=indices.filter(x=>kind!=='CLOSING'||x.header!=='DocumentDate')
+   .map(x=>x.header+':'+JSON.stringify(values[x.i]??'')).join('|');
   counts[kind]++;
   const items=collections[kind];
   let key='';
@@ -85,7 +88,7 @@ function snapshot(path){
    key='WINDOW';
   }else{
    // Opening/closing are date-scoped balances (not transfer documents).
-   key=[get('DocumentDate'),get('ItemCode')].join('|');
+   key=[get('ItemCode'),get('Warehouse')].join('|');
    if(!get('ItemCode')||!isDay(get('DocumentDate')))
     throw Error('رصيد SAP بلا تاريخ أو صنف سليم في '+(i+1));
   }
@@ -136,8 +139,11 @@ export function compareSapSources(oldPath,newPath){
  if(kinds.OFFICIAL.disappeared)warnings.push('اختفاء سطور مستندات رسمية: يتطلب تدقيقًا.');
  if(kinds.OINM.disappeared)warnings.push('اختفاء حركات مخزون OINM من الكشف الجديد: يتطلب مراجعة.');
  // Older opening balance date must be stable when the from-date is unchanged.
- if(old.from===now.from&&kinds.OPENING.modified+ kinds.OPENING.disappeared)
-  warnings.push('تغيّر الرصيد الافتتاحي لنفس تاريخ البداية: يلزم تدقيق.');
+ if(kinds.CLOSING.disappeared)
+  warnings.push('اختفت أصناف من كشف الرصيد الختامي: يتطلب مراجعة.');
+ if(old.from===now.from&&(kinds.OPENING.added+kinds.OPENING.modified+
+     kinds.OPENING.disappeared)>0)
+  warnings.push('تغيّرت أصناف أو كميات الرصيد الافتتاحي لنفس تاريخ البداية: يلزم تدقيق.');
  const safeForManualReview=warnings.length===0;
  return {scope:{before:{from:old.from,to:old.to},after:{from:now.from,to:now.to}},
   originals:{before:{sha256:old.sourceSha256,sizeBytes:old.sizeBytes},
