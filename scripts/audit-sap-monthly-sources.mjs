@@ -40,7 +40,9 @@ function snapshot(path){
  // exports an empty trailing column. Neither is part of the SAP evidence.
  const headers=rawHeaders.map(x=>x.trim());
  const indices=headers.map((header,i)=>({header,i}))
-  .filter(x=>x.header&&x.header!=='#');
+  .filter(x=>x.header&&x.header!=='#')
+  .sort((a,b)=>a.header.localeCompare(b.header,'en'));
+ // Canonical column order prevents false changes when SAP reorders headers.
  const used=indices.map(x=>x.header);
  if(new Set(used).size!==used.length)throw Error('أعمدة مكررة في '+path);
  for(const name of REQUIRED)if(!used.includes(name))throw Error('عمود مطلوب ناقص: '+name);
