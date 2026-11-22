@@ -7,7 +7,7 @@ This feature is a **conservative acceleration of the existing monthly SAP import
 1. Archive and read back the immutable original in private Supabase Storage.
 2. Split each validated unified section into document-complete chunks and archive/verify each chunk.
 3. For transfer chunks only, request a **reuse** decision from the server.
-4. The server fetches the archived new chunk and recomputes SHA-256. Reuse is possible only when an identical hash has **exactly one** staged chunk in the **active approved** previous snapshot and the processor version and active row count match.
+4. The server fetches the archived new chunk and recomputes SHA-256. Reuse is possible only when an identical hash has **exactly one** staged chunk in the **active approved** previous snapshot and the processor version and saved branch-configuration fingerprint match. The live active row count is verified once at the start of the daily import, not on each chunk.
 5. In one database transaction, guard the active snapshot pointer, create a completed receipt for the new chunk and copy the old staged rows to the new root. Repeated requests recognize the completed receipt.
 6. New, changed, ambiguous, unmatched, or incompatible chunks follow the existing full import + stage path. Official invoices, OINM and daily balances still follow their original workflow.
 7. The new daily snapshot activates only after the complete expected chunk sequence, completed receipts, exact document counts and unique transfer numbers are verified. Previous queue/history and all originals remain available.
