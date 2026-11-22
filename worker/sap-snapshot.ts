@@ -34,6 +34,23 @@ export async function replaceSapSnapshot(request:Request,env:Cloudflare.Env):Pro
     activeCount:Number(count?.count||0),
    };
    const url=new URL(request.url);
+   // Fast, compact coverage audit before an incremental import begins.
+   // A monthly SAP export is cumulative: an approved document must not
+   // silently disappear even if a new number balances the total count.
+   if(url.searchParams.get('numbers')==='1'){
+    if(url.searchParams.has('key')&&url.searchParams.get('key')!==source.key)
+     return reply({error:'تغيّرت نسخة SAP المعتمدة أثناء فحص الأرقام.'},409);
+    if(snapshot.activeCount!==snapshot.documents)
+     return reply({error:'أرقام ترحيلات النسخة المعتمدة غير مكتملة.'},409);
+    const after=url.searchParams.get('after')||'';
+    if(after.length>40||after&&!/^\d{4,20}$/.test(after))
+     return reply({error:'مؤشر ترحيل SAP غير صالح.'},400);
+    const data=await env.DB.prepare(
+     'SELECT transfer_no FROM lieutenant_queue WHERE source_file=? AND transfer_no>? ORDER BY transfer_no LIMIT 251'
+    ).bind(source.key,after).all<{transfer_no:string}>();
+    const numbers=data.results.slice(0,250).map(row=>row.transfer_no);
+    return reply({snapshot,numbers,hasMore:data.results.length>250,next:numbers.at(-1)||null});
+   }
    if(url.searchParams.get('rows')==='1'){
     if(url.searchParams.has('key')&&url.searchParams.get('key')!==source.key)
      return reply({error:'تغيّرت نسخة SAP أثناء القراءة؛ أعد الفحص.'},409);
