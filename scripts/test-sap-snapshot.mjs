@@ -39,13 +39,14 @@ const env={DB:{prepare:statement,async batch(statements){
  }catch(error){sqlite.exec('ROLLBACK');throw error;}
 }},SUPABASE_URL:'https://example.supabase.co',SUPABASE_STORAGE_SECRET:'test-only'};
 const cache=new Map();
+const archiveTexts=new Map();
 function load(file){
  file=resolve(file);if(cache.has(file))return cache.get(file);
  const exports={};cache.set(file,exports);
  const js=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
  new Function('exports','require',js)(exports,name=>{
   if(name==='./institution')return {lieutenantFiles:async request=>new URL(request.url).searchParams.has('key')?
-   new Response(text):Response.json({files,nextPage:null})};
+   new Response(archiveTexts.get(new URL(request.url).searchParams.get('key'))||text):Response.json({files,nextPage:null})};
   if(name.endsWith('.json'))return JSON.parse(fs.readFileSync(resolve(dirname(file),name),'utf8'));
   return name.startsWith('.')?load(resolve(dirname(file),name+'.ts')):createRequire(file)(name);
  });return exports;
@@ -111,6 +112,31 @@ try{
  const nextChild='lieutenant/transfers__'+oldDigest+'__sap-'+'d'.repeat(32)+'-transfers-0001-of-0001.txt';
  files.push({key:nextRoot,name:'next.txt',kind:'unified',created:'2026-11-20T00:00:00Z'});
  files.push({key:nextChild,name:nextChild.split('__').at(-1),kind:'transfers',created:'2026-11-20T00:00:01Z'});
+
+ // Version incompatibility and corrupted active counts refuse reuse.
+ const oldPointer=sqlite.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'").get().value;
+ sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'")
+  .run(JSON.stringify({...JSON.parse(oldPointer),processorVersion:-1}));
+ const incompatible=await (await replaceSapSnapshot(
+  request({action:'reuse',key:nextRoot,child:nextChild}),env)).json();
+ assert.equal(incompatible.reused,false);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=?').get(nextRoot).count,0);
+ sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'").run(oldPointer);
+ sqlite.prepare("UPDATE lieutenant_queue SET source_file='corrupted' WHERE source_file=?").run(root);
+ assert.equal((await replaceSapSnapshot(request({action:'reuse',key:nextRoot,child:nextChild}),env)).status,409);
+ sqlite.prepare("UPDATE lieutenant_queue SET source_file=? WHERE source_file='corrupted'").run(root);
+
+ // An old transfer whose cancellation changes must be reprocessed (not reused).
+ const changedText=text.replace(/\\tN$/, '\\tY');
+ const changedDigest=createHash('sha256').update(changedText).digest('hex').slice(0,32);
+ const changedRoot='lieutenant/unified__'+'f'.repeat(32)+'__changed.txt';
+ const changedChild='lieutenant/transfers__'+changedDigest+'__sap-'+'f'.repeat(32)+'-transfers-0001-of-0001.txt';
+ archiveTexts.set(changedChild,changedText);
+ const changed=await (await replaceSapSnapshot(
+  request({action:'reuse',key:changedRoot,child:changedChild}),env)).json();
+ assert.equal(changed.reused,false,'Cancellation changes must use the full importer');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_file_jobs WHERE key=?').get(changedChild).count,0);
+
  const reuseRequest=request({action:'reuse',key:nextRoot,child:nextChild});
  const reuse=await replaceSapSnapshot(reuseRequest,env);
  assert.equal(reuse.status,200,await reuse.clone().text());
