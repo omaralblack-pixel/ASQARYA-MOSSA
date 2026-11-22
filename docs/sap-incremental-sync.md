@@ -35,3 +35,15 @@ In a **simulation** using this baseline, appending 30 synthetic new transfer doc
 - Content-defined splitter (280 KB cap, document-number hash anchors): 13 old chunks, 11 byte-identical chunks reused.
 
 These are **chunk-count estimates**, not elapsed-time measurements. They do not show a verified comparison between the full private 21-Nov and 22-Nov archives. More chunks mean additional storage/read requests, so actual latency and Cloudflare cost must be measured before production rollout.
+
+## Auditing actual daily private SAP exports without publishing their data
+
+Download the exact immutable originals for both days from the existing authenticated SAP files screen. On a trusted workstation with Node.js 22+, run:
+
+```sh
+node scripts/audit-sap-monthly-sources.mjs "/path/to/21.11.txt" "/path/to/22.11.txt"
+```
+
+The script only reads the two local files and prints a JSON summary. It reports full-file SHA-256 values (the archive key contains their first 32 hex characters), transfer/official/OINM record changes, missing records, canceled-state counts, opening/closing balances, date-window mismatches and unknown statuses. The SAP display index column (`#`) and column-order changes are intentionally ignored; unknown columns trigger warnings instead of silent assumptions. The program neither modifies the files nor uploads their contents.
+
+This audit is a *necessary check, not sufficient proof* of correct business reconciliation; anomalies must be reviewed against SAP and the project's existing blue invoices, branch exceptions and cancellation decisions before a production rollout. If a newer 22-Nov archive exists, compare the latest immutable version separately and do not silently assume all 22-Nov versions are equivalent.
