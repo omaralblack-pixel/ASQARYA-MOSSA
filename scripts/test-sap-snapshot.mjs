@@ -129,6 +129,10 @@ try{
  const oldDigest=createHash('sha256').update(text).digest('hex').slice(0,32);
  const originalChunk='lieutenant/transfers__'+oldDigest+'__sap-'+'a'.repeat(32)+'-transfers-0001-of-0001.txt';
  sqlite.prepare('UPDATE sap_snapshot_rows SET child_key=? WHERE root_key=?').run(originalChunk,root);
+ const manifest=await (await replaceSapSnapshot(get('?manifest=1'),env)).json();
+ assert.equal(manifest.compatible,true);
+ assert.deepEqual(manifest.digests,[oldDigest]);
+ assert.equal((await replaceSapSnapshot(get('?manifest=1&key=stale'),env)).status,409);
  const nextRoot='lieutenant/unified__'+'d'.repeat(32)+'__next.txt';
  const nextChild='lieutenant/transfers__'+oldDigest+'__sap-'+'d'.repeat(32)+'-transfers-0001-of-0001.txt';
  files.push({key:nextRoot,name:'next.txt',kind:'unified',created:'2026-11-20T00:00:00Z'});
