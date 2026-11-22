@@ -109,6 +109,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   await saveSapImport({name:file.name,text:sharedText});
  }
  async function processUnifiedFile(file:SapArchiveFile,text:string):Promise<void>{
+  const startedAt=performance.now();
   // Avoid the CPU-limited monolithic Supabase parse (HTTP 546).
   const sections=splitUnifiedSapSource(text);
   // Verify the live pointer just once for the entire import. Repeating a
@@ -172,7 +173,8 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   });
   await verifyActiveSnapshot(file.key,parseLieutenantTransfers(sections.transfers,[]).transfers.length);
   await publishShared(file,text);
-  M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة.'+
+  M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة خلال '+
+   ((performance.now()-startedAt)/1000).toFixed(1)+' ثانية (باستثناء رفع الأصل الأولي).'+
    (reused?' أُعيد استخدام '+reused+' جزء مطابق من النسخة السابقة دون معالجته مجددًا.':'')+
    (review?' توجد ملاحظات قراءة في '+review+' أجزاء.':' جميع الدفعات ناجحة.')+
    ' تم تفعيل النسخة الجديدة مع الاحتفاظ بالأصول والنسخة السابقة للرجوع.');
