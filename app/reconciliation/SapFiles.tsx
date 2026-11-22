@@ -120,7 +120,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   const total=parts.reduce((n,x)=>n+x.chunks.length,0);
   const hash=file.key.split('__')[1];
   if(!/^[a-f0-9]{32}$/.test(hash))throw Error('بصمة أصل SAP غير صالحة.');
-  let finished=0,review=0;
+  let finished=0,review=0,reused=0;
   const transferKeys:string[]=[];
   for(const part of parts)for(let i=0;i<part.chunks.length;i++){
    if(!mounted.current)return;
@@ -137,6 +137,15 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    if(!saved.key)throw Error('الخادم لم يؤكد أرشفة الجزء '+(finished+1));
    if(part.kind==='transfers')transferKeys.push(saved.key);
    await verifyArchivedSource(saved.key,bytes.buffer as ArrayBuffer);
+   // Reuse only exact, already-approved source bytes. The server rehashes
+   // this archived part and atomically copies the verified active rows.
+   // Any new, altered or ambiguous part follows the existing full importer.
+   if(part.kind==='transfers'){
+    const check=await sapRequest<{reused:boolean;staged?:number}>('/api/sap-snapshot',{
+     action:'reuse',key:file.key,child:saved.key,
+    });
+    if(check.reused){reused++;finished++;continue;}
+   }
    const child:SapArchiveFile={key:saved.key,name,
     kind:part.kind==='transfers'?'transfers':'other',
     created:new Date().toISOString(),size:bytes.byteLength};
@@ -158,6 +167,7 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   await verifyActiveSnapshot(file.key,parseLieutenantTransfers(sections.transfers,[]).transfers.length);
   await publishShared(file,text);
   M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة.'+
+   (reused?' أُعيد استخدام '+reused+' جزء مطابق من النسخة السابقة دون معالجته مجددًا.':'')+
    (review?' توجد ملاحظات قراءة في '+review+' أجزاء.':' جميع الدفعات ناجحة.')+
    ' تم تفعيل النسخة الجديدة مع الاحتفاظ بالأصول والنسخة السابقة للرجوع.');
  }
