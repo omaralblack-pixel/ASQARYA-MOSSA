@@ -91,6 +91,21 @@ try{
  assert.equal(compact.snapshot.documents,1);
  assert.equal((await replaceSapSnapshot(get('?numbers=1&key=wrong'),env)).status,409);
  assert.equal((await replaceSapSnapshot(get('?numbers=1&after=not-a-document'),env)).status,400);
+ // Paginated coverage must include every last number, without gaps or overlap.
+ const originalPointer=sqlite.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'").get().value;
+ const added=sqlite.prepare("INSERT INTO lieutenant_queue(transfer_no,doc_date,payload,source_file,created) VALUES(?,?,?,?,?)");
+ for(let i=0;i<250;i++)added.run(String(2800000+i),'2026-11-17','{}',root,'');
+ sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'").run(
+  JSON.stringify({...JSON.parse(originalPointer),documents:251}));
+ const firstPage=await (await replaceSapSnapshot(get('?numbers=1'),env)).json();
+ assert.equal(firstPage.numbers.length,250);
+ assert.equal(firstPage.hasMore,true);
+ const lastPage=await (await replaceSapSnapshot(get('?numbers=1&after='+firstPage.next),env)).json();
+ assert.equal(lastPage.numbers.length,1);
+ assert.equal(lastPage.hasMore,false);
+ assert.equal(new Set([...firstPage.numbers,...lastPage.numbers]).size,251);
+ sqlite.prepare("DELETE FROM lieutenant_queue WHERE transfer_no LIKE '280%'").run();
+ sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'").run(originalPointer);
  assert.equal((await replaceSapSnapshot(get('?rows=1&key=wrong'),env)).status,409);
  const {readActiveSap}=load('app/lib/active-sap.ts');
  globalThis.fetch=async url=>replaceSapSnapshot(new Request('https://example.com'+url),env);
