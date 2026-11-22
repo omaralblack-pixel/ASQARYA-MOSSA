@@ -159,6 +159,11 @@ assert.deepEqual(splitSapSectionIntoChunks(transferHeader+'\n'+
  'Reordering whole SAP documents must not invalidate unchanged content-addressed chunks');
 console.log('PASS: deterministic SAP bucket reuse: '+reused+'/'+baseline.length+
  ' content-defined chunks reused after three new transfers and one cancellation; every line preserved.');
+// Both layouts are lossless; the caller selects the layout with the highest
+// already-approved byte reuse. Sequential must remain a safe fallback.
+const sequential=splitSapSectionIntoChunks(longTransfer,'transfers',1500,'sequential');
+assert.deepEqual(sequential.flatMap(part=>part.split('\n').slice(1)),repeatedRows);
+assert.ok(sequential.every(part=>new TextEncoder().encode(part).length<=1500));
 assert.equal(splitSapSectionIntoChunks(parts.official,'official',1500).length,1);
 assert.equal(splitSapSectionIntoChunks(parts.journal,'journal',1500).length,1);
 assert.match(fs.readFileSync('app/reconciliation/SapFiles.tsx','utf8'),
