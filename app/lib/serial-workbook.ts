@@ -82,7 +82,13 @@ function rowsFrom(p:Package):{rows:SerialInput[]; errors:string[];period:SerialP
   const invoice=text(getCell(row,'D'+index),p.shared);
   const amount=text(getCell(row,'F'+index),p.shared);
   const serial=text(getCell(row,'B'+index),p.shared);
-  if(!invoice && !(amount&&/^\d+$/.test(serial)))continue;
+  // A cached SUM value in the footer is not an invoice amount.
+  const amountCell=getCell(row,'F'+index);
+  const formula=amountCell?find(amountCell,'f')?.textContent?.trim()||'':'';
+  const hasDateOrBranch=!!(text(getCell(row,'C'+index),p.shared)||text(getCell(row,'E'+index),p.shared));
+  const hasTransfers=Array.from({length:7},(_,i)=>text(getCell(row,columnName(11+i)+index),p.shared)).some(Boolean);
+  if(!invoice&&!hasDateOrBranch&&!hasTransfers&&/^=?\s*(?:SUM|SUBTOTAL|AGGREGATE)\s*\(/i.test(formula))continue;
+  if(!invoice&&!hasDateOrBranch&&!hasTransfers&&!(amount&&/^\d+$/.test(serial)))continue;
   const number=digits(invoice).replace(/\s/g,'');
   if(!/^\d{8,20}$/.test(number))errors.push('صف '+index+': رقم فاتورة مفقود أو غير صالح ('+(invoice||'فارغ')+').');
   if(!amount)errors.push('صف '+index+': مبلغ الفاتورة '+(number||'غير معروف')+' مفقود.');
