@@ -6,6 +6,31 @@ import { handleInstitution } from "./institution";
 import {replaceSapSnapshot} from './sap-snapshot';
 import {projectSyncScope,shouldPublishProjectChange} from "../app/lib/project-sync-core";
 
+// Fail closed with a useful maintenance page when D1 or a framework route
+// throws. A gateway failure must never expose stack traces or session secrets.
+function serviceUnavailable(request:Request,apiMessage:string):Response{
+ const api=new URL(request.url).pathname.startsWith('/api/');
+ const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
+ if(api)return Response.json({error:apiMessage},{status:503,headers});
+ const html='<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">'+
+  '<meta name="viewport" content="width=device-width,initial-scale=1">'+
+  '<title>إدارة المؤسسة — تعذّر الاتصال</title>'+
+  '<style>body{font:18px/1.8 system-ui,Tahoma,sans-serif;max-width:42rem;margin:12vh auto;padding:1.5rem;color:#243746}h1{font-size:1.5rem}</style>'+
+  '<h1>تعذّر الاتصال بخدمة إدارة المؤسسة</h1>'+
+  '<p>الخدمة غير متاحة حاليًا. لم تُحمّل بيانات المشروع؛ أعد المحاولة بعد التحقق من قاعدة Cloudflare D1 وإعدادات الدخول.</p>'+
+  '<p>لا تعِد رفع ملفات SAP لتجاوز خطأ الاتصال.</p></html>';
+ return new Response(request.method==='HEAD'?null:html,{status:503,headers:{
+  ...headers,'Content-Type':'text/html; charset=utf-8',
+  'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+ }});
+}
+function logWorkerFailure(label:string,error:unknown,path:string){
+ const cause=error instanceof Error?error.cause:undefined;
+ console.error(label,{path,
+  message:error instanceof Error?error.message:String(error),
+  cause:cause instanceof Error?cause.message:undefined},error);
+}
+
 const changeSchema='CREATE TABLE IF NOT EXISTS institution_sync_events (id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,method TEXT NOT NULL,path TEXT NOT NULL,created_at TEXT NOT NULL)';
 let changeSchemaReady:Promise<unknown>|undefined;
 /** Runs only after a successful authenticated API write. The original request
@@ -39,11 +64,10 @@ const worker = {
       if(!response&&new URL(request.url).pathname==='/api/sap-snapshot')
         response=await replaceSapSnapshot(request,env);
     } catch (error) {
-      console.error("Institution gateway failed before application routing", error);
-      if (!new URL(request.url).pathname.startsWith("/api/")) throw error;
-      return Response.json({
-        error: "تعذّر تشغيل بوابة إدارة المؤسسة (HTTP 503). تحقق من أسرار الجلسة واتصال Cloudflare D1 في سجلات Worker. الملفات المحفوظة على Supabase لم تتغير.",
-      }, { status: 503, headers: { "Cache-Control": "no-store" } });
+      logWorkerFailure("Institution gateway failed before application routing",
+        error,new URL(request.url).pathname);
+      return serviceUnavailable(request,
+        "تعذّر تشغيل بوابة إدارة المؤسسة (HTTP 503). تحقق من سر الجلسة واتصال Cloudflare D1 في سجلات Worker.");
     }
     if (response) {await publishChange(request,response,env);return response;}
     let binding = ctx.props?.CONNECTORS;
@@ -79,11 +103,9 @@ const worker = {
       }
       return downstream;
     } catch (error) {
-      if (!isReconciliationApi) throw error;
-      console.error("Reconciliation API runtime failure", error);
-      return Response.json({
-        error: "تعطلت خدمة المطابقة قبل إكمال الطلب. تحقق من سجلات Cloudflare Worker وربط DB؛ لا تعِد رفع ملف SAP المحفوظ.",
-      }, { status: 503, headers: { "Cache-Control": "no-store" } });
+      logWorkerFailure("Application runtime failure",error,new URL(request.url).pathname);
+      return serviceUnavailable(request,
+        "تعطلت خدمة إدارة المؤسسة قبل إكمال الطلب. تحقق من سجلات Cloudflare Worker وربط DB؛ لا تعِد رفع ملفات SAP المحفوظة.");
     }
   },
 };

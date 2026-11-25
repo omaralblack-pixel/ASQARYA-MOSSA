@@ -20,11 +20,21 @@ function sessionSignature(value: string, secret: string) {
   return createHmac("sha256", secret).update(value).digest("hex");
 }
 
-let securitySchemaReady: Promise<unknown> | undefined;
+let fallbackSessionSecret: Promise<string | null> | undefined;
 async function resolveSessionSecret(env: Cloudflare.Env) {
   if (env.INSTITUTION_SESSION_SECRET && env.INSTITUTION_SESSION_SECRET.length >= 32) {
     return env.INSTITUTION_SESSION_SECRET;
   }
+  if (!env.DB) return null;
+  // Reuse the durable D1 fallback secret within this Worker isolate so
+  // polling /api/project-sync does not query D1 for every authenticated request.
+  return fallbackSessionSecret ??= loadFallbackSessionSecret(env).catch(error=>{
+    fallbackSessionSecret=undefined;
+    throw error;
+  });
+}
+let securitySchemaReady: Promise<unknown> | undefined;
+async function loadFallbackSessionSecret(env: Cloudflare.Env):Promise<string | null>{
   if (!env.DB) return null;
   // Initialize the D1 fallback table once per Worker isolate, not per request.
   await (securitySchemaReady ??= env.DB.prepare(
