@@ -9,6 +9,7 @@ import {fromSapStorageFilename} from '../lib/sap-archive-filename';
 import {parseLieutenantTransfers} from '../lib/lieutenant';
 import {isUnifiedSapSource,splitUnifiedSapSource,unifiedSapQuery} from '../lib/unified-sap-query';
 import {splitSapSectionIntoChunks,type UnifiedChunkKind} from '../lib/sap-unified-chunks';
+import SapLocalEngine from './SapLocalEngine';
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const uploadDay=(date:string)=>date&&Number.isFinite(Date.parse(date))?new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Amman',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)):'';
 const uploadTime=(date:string)=>date&&Number.isFinite(Date.parse(date))?uploadDay(date)+' '+new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Amman',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(date)):'';
@@ -109,18 +110,109 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   await saveSapImport({name:file.name,text:sharedText});
  }
  async function processUnifiedFile(file:SapArchiveFile,text:string):Promise<void>{
+  const startedAt=performance.now();
   // Avoid the CPU-limited monolithic Supabase parse (HTTP 546).
   const sections=splitUnifiedSapSource(text);
+  // Verify the live pointer just once for the entire import. Repeating a
+  // COUNT over all active transfers for every chunk would exhaust D1 reads.
+  const active=(await sapRequest<{snapshot:ActiveSapSnapshot|null}>('/api/sap-snapshot')).snapshot;
+  if(active&&active.activeCount!==active.documents)
+   throw Error('عدد ترحيلات النسخة المعتمدة لا يطابق سجلها. أوقفت التحديث لحماية المطابقات.');
+  if(active?.key===file.key){M('هذا الكشف معتمد فعلًا وجميع ترحيلاته مثبتة؛ لا يلزم تكرار المعالجة.');return;}
+  const scannedTransfers=parseLieutenantTransfers(sections.transfers,[]);
+  if(scannedTransfers.issues.length)
+   throw Error('كشف SAP يحتوي أخطاء ترحيلات، ولم يبدأ الاعتماد: '+scannedTransfers.issues.slice(0,4).join('، '));
+  const currentNumbers=new Set(scannedTransfers.transfers.map(row=>row.transfer.number));
+  if(!currentNumbers.size||currentNumbers.size!==scannedTransfers.transfers.length)
+   throw Error('تعذّر إثبات مجموعة أرقام الترحيلات الجديدة كاملة، أوقفت التحديث.');
+  if(active){
+   // Compare compact transfer numbers with the ACTIVE snapshot before
+   // processing any new batches; counts alone cannot detect replacement of
+   // one old transfer with a different new document.
+   let after='',checked=0,hasMore=true;
+   const missing:string[]=[];
+   while(hasMore){
+    if(checked>50_000)throw Error('تجاوز تدقيق أرقام SAP الحد الآمن؛ أوقفت الاعتماد.');
+    const path='/api/sap-snapshot?numbers=1&key='+encodeURIComponent(active.key)+
+     (after?'&after='+encodeURIComponent(after):'');
+    const page=await sapRequest<{
+     snapshot:ActiveSapSnapshot;numbers:string[];hasMore:boolean;next:string|null
+    }>(path);
+    if(page.snapshot?.key!==active.key||page.snapshot.activeCount!==active.activeCount||
+       !Array.isArray(page.numbers)||!page.numbers.length||page.numbers.length>250)
+     throw Error('تعذّر إثبات اكتمال أرقام SAP المعتمدة، أوقفت الاستيراد.');
+    for(const number of page.numbers){
+     if(!/^\d{4,20}$/.test(number)||after&&number<=after)
+      throw Error('ترتيب أرقام SAP من الخادم غير صالح.');
+     if(!currentNumbers.has(number)&&missing.length<20)missing.push(number);
+     after=number;checked++;
+    }
+    hasMore=page.hasMore===true;
+    if(hasMore&&page.next!==after)
+     throw Error('تسلسل صفحات أرقام SAP غير مكتمل.');
+   }
+   if(checked!==active.documents)
+    throw Error('عدد أرقام الترحيلات المقروءة لا يطابق اعتماد النسخة السابقة.');
+   if(missing.length)
+    throw Error('توقف اعتماد كشف SAP: توجد ترحيلات معتمدة سابقًا اختفت من الكشف الجديد. '+
+     'أمثلة: '+missing.slice(0,10).join('، ')+'. افحص كشف SAP الكامل؛ لن تُحذف الترحيلات القديمة.');
+  }
   const sources:{kind:UnifiedChunkKind;body:string;count:number;label:string}[]=[
    {kind:'transfers',body:sections.transfers,count:sections.counts.TRANSFER,label:'الترحيلات'},
    {kind:'official',body:sections.official,count:sections.counts.OFFICIAL,label:'المستندات الرسمية'},
    {kind:'journal',body:sections.journal,count:sections.counts.OINM,label:'حركات المخزون'},
   ];
-  const parts=sources.filter(x=>x.count>0).map(x=>({...x,chunks:splitSapSectionIntoChunks(x.body,x.kind)}));
+  // Compare two complete, document-safe layouts against digest-only proof
+  // from the ACTIVE snapshot. This is a speed decision, not a trust decision:
+  // every selected chunk is still uploaded and rehashed server-side.
+  const transferSection=sources.find(x=>x.kind==='transfers')!;
+  const stableChunks=splitSapSectionIntoChunks(transferSection.body,'transfers');
+  const sequentialChunks=splitSapSectionIntoChunks(transferSection.body,'transfers',
+   undefined,'sequential');
+  let chosenMode:'content-defined'|'sequential'='sequential';
+  let transferChunks=sequentialChunks;
+  if(active&&stableChunks.length&&sequentialChunks.length){
+   try{
+    const manifest=await sapRequest<{
+     snapshot:ActiveSapSnapshot;compatible:boolean;digests:string[]
+    }>('/api/sap-snapshot?manifest=1&key='+encodeURIComponent(active.key));
+    if(manifest.compatible&&manifest.snapshot?.key===active.key&&
+       manifest.snapshot.activeCount===active.documents&&
+       Array.isArray(manifest.digests)&&manifest.digests.every(x=>/^[a-f0-9]{32}$/.test(x))){
+     const hashes=new Set(manifest.digests);
+     const encoder=new TextEncoder();
+     const score=async(chunks:string[])=>{
+      let matchingBytes=0;
+      for(const chunk of chunks){
+       const bytes=encoder.encode(chunk);
+       const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
+        b=>b.toString(16).padStart(2,'0')).join('').slice(0,32);
+       if(hashes.has(digest))matchingBytes+=bytes.byteLength;
+      }
+      return matchingBytes;
+     };
+     const [stableReuse,sequentialReuse]=await Promise.all([
+      score(stableChunks),score(sequentialChunks)
+     ]);
+     if(stableReuse>sequentialReuse||
+        stableReuse===sequentialReuse&&stableChunks.length<sequentialChunks.length){
+      chosenMode='content-defined';transferChunks=stableChunks;
+     }
+    }
+   }catch(error){
+    // Optional optimization failed: continue with the regular verified import.
+    console.warn('SAP chunk optimization unavailable; using full safe fallback.',error);
+   }
+  }else if(stableChunks.length<sequentialChunks.length){
+   chosenMode='content-defined';transferChunks=stableChunks;
+  }
+  const parts=sources.filter(x=>x.count>0).map(x=>({...x,
+   chunks:x.kind==='transfers'?transferChunks:splitSapSectionIntoChunks(x.body,x.kind)
+  }));
   const total=parts.reduce((n,x)=>n+x.chunks.length,0);
   const hash=file.key.split('__')[1];
   if(!/^[a-f0-9]{32}$/.test(hash))throw Error('بصمة أصل SAP غير صالحة.');
-  let finished=0,review=0;
+  let finished=0,review=0,reused=0;
   const transferKeys:string[]=[];
   for(const part of parts)for(let i=0;i<part.chunks.length;i++){
    if(!mounted.current)return;
@@ -137,6 +229,15 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
    if(!saved.key)throw Error('الخادم لم يؤكد أرشفة الجزء '+(finished+1));
    if(part.kind==='transfers')transferKeys.push(saved.key);
    await verifyArchivedSource(saved.key,bytes.buffer as ArrayBuffer);
+   // Reuse only exact, already-approved source bytes. The server rehashes
+   // this archived part and atomically copies the verified active rows.
+   // Any new, altered or ambiguous part follows the existing full importer.
+   if(part.kind==='transfers'){
+    const check=await sapRequest<{reused:boolean;staged?:number}>('/api/sap-snapshot',{
+     action:'reuse',key:file.key,child:saved.key,
+    });
+    if(check.reused){reused++;finished++;continue;}
+   }
    const child:SapArchiveFile={key:saved.key,name,
     kind:part.kind==='transfers'?'transfers':'other',
     created:new Date().toISOString(),size:bytes.byteLength};
@@ -153,11 +254,14 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   if(review)throw Error('اكتملت الدفعات مع أخطاء قراءة؛ راجعها قبل استبدال النسخة السابقة.');
   await archiveUnifiedParts(file,text);
   await sapRequest<{deleted:number}>('/api/sap-snapshot',{
-   key:file.key,children:transferKeys,documents:parseLieutenantTransfers(sections.transfers,[]).transfers.length,
+   key:file.key,children:transferKeys,documents:scannedTransfers.transfers.length,
   });
-  await verifyActiveSnapshot(file.key,parseLieutenantTransfers(sections.transfers,[]).transfers.length);
+  await verifyActiveSnapshot(file.key,scannedTransfers.transfers.length);
   await publishShared(file,text);
-  M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة.'+
+  M('اكتملت معالجة الملف الكبير على '+total+' أجزاء مستقلة خلال '+
+   ((performance.now()-startedAt)/1000).toFixed(1)+' ثانية (باستثناء رفع الأصل الأولي).'+
+   ' نمط تقسيم الترحيلات: '+(chosenMode==='sequential'?'المتتابع':'الحدود الثابتة')+'.'+
+   (reused?' أُعيد استخدام '+reused+' جزء مطابق من النسخة السابقة دون معالجته مجددًا.':'')+
    (review?' توجد ملاحظات قراءة في '+review+' أجزاء.':' جميع الدفعات ناجحة.')+
    ' تم تفعيل النسخة الجديدة مع الاحتفاظ بالأصول والنسخة السابقة للرجوع.');
  }
@@ -316,6 +420,9 @@ export default function SapFiles({syncVersion=0,syncScope='all'}:{syncVersion?:n
   </div>}<p className="hint">التاريخ مطلوب لكشوف الرصيد فقط: الختامي بنهاية اليوم، والافتتاحي قبل أول حركة في اليوم. تاريخ الرفع مستقل ولا يُستخدم بدل تاريخ الرصيد. التصنيف يعتمد الأعمدة الفعلية.</p>
   <details><summary>لصق كشف SAP بدل إرفاق ملف</summary><SapPaste disabled={busy} onFile={file=>{void upload({currentTarget:{files:[file],value:''}} as unknown as ChangeEvent<HTMLInputElement>);}}/></details>
   </section>
+  <SapLocalEngine onUploadFile={file=>{
+   if(!busy)void upload({currentTarget:{files:[file],value:''}} as unknown as ChangeEvent<HTMLInputElement>);
+  }}/>
   <section className="panel" aria-label="حالة معالجة ملفات SAP"><div className="section-title"><h2>حالة التحديث والمعالجة</h2><button className="button secondary" disabled={busy||loading} onClick={()=>void exclusive(refresh)}><RefreshCw size={16}/>تحديث الحالة والأرشيف</button></div>
    {loading&&<p role="status">جارٍ قراءة الأرشيف والحالات المحفوظة…</p>}
    {busy&&<p role="status">جارٍ حفظ الملف أو معالجة الدفعات. يمكن استكمال الدفعات المحفوظة بعد تحديث الصفحة.</p>}

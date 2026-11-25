@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {createRequire} from 'node:module';
+import {createHash} from 'node:crypto';
 import {resolve,dirname} from 'node:path';
 import ts from 'typescript';
 
@@ -38,13 +39,14 @@ const env={DB:{prepare:statement,async batch(statements){
  }catch(error){sqlite.exec('ROLLBACK');throw error;}
 }},SUPABASE_URL:'https://example.supabase.co',SUPABASE_STORAGE_SECRET:'test-only'};
 const cache=new Map();
+const archiveTexts=new Map();
 function load(file){
  file=resolve(file);if(cache.has(file))return cache.get(file);
  const exports={};cache.set(file,exports);
  const js=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
  new Function('exports','require',js)(exports,name=>{
   if(name==='./institution')return {lieutenantFiles:async request=>new URL(request.url).searchParams.has('key')?
-   new Response(text):Response.json({files,nextPage:null})};
+   new Response(archiveTexts.get(new URL(request.url).searchParams.get('key'))||text):Response.json({files,nextPage:null})};
   if(name.endsWith('.json'))return JSON.parse(fs.readFileSync(resolve(dirname(file),name),'utf8'));
   return name.startsWith('.')?load(resolve(dirname(file),name+'.ts')):createRequire(file)(name);
  });return exports;
@@ -63,7 +65,7 @@ try{
  assert.equal((await replaceSapSnapshot(request({key:root,children:[child],documents:1}),env)).status,409);
  assert.equal(sqlite.prepare('SELECT payload FROM lieutenant_queue').get().payload,'{"remarks":"old","invoiceNumbers":[]}');
  assert.equal((await replaceSapSnapshot(request({action:'stage',key:root,child}),env)).status,200);
- sqlite.prepare('INSERT INTO sap_file_jobs(key,total) VALUES(?,1)').run(child);
+ sqlite.prepare('INSERT INTO sap_file_jobs(key,total,version) VALUES(?,1,2)').run(child);
  sqlite.prepare('INSERT INTO sap_file_batches VALUES(?,0,?,?)').run(child,'complete','{}');
  assert.equal((await replaceSapSnapshot(request({key:root,children:[child],documents:2}),env)).status,409);
  const committed=await replaceSapSnapshot(request({key:root,children:[child],documents:1}),env);
@@ -83,6 +85,36 @@ try{
  const current=await (await replaceSapSnapshot(get('?rows=1'),env)).json();
  assert.equal(current.snapshot.documents,1);assert.equal(current.rows.length,1);assert.equal(current.hasMore,false);
  assert.equal(current.rows[0].transfer_no,'2616732');
+ const comparison=await (await replaceSapSnapshot(get('?comparison=1'),env)).json();
+ assert.equal(comparison.snapshot.documents,1);
+ assert.equal(comparison.rows.length,1);
+ assert.equal(comparison.rows[0].number,'2616732');
+ assert.equal(comparison.rows[0].hash,createHash('sha256').update(saved.payload).digest('hex'));
+ assert.equal(Array.isArray(comparison.branches),true);
+ // The comparison is read-only: no activation, receipts or manual edits change.
+ assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),manualBefore);
+
+ const compact=await (await replaceSapSnapshot(get('?numbers=1'),env)).json();
+ assert.deepEqual(compact.numbers,['2616732']);
+ assert.equal(compact.hasMore,false);
+ assert.equal(compact.snapshot.documents,1);
+ assert.equal((await replaceSapSnapshot(get('?numbers=1&key=wrong'),env)).status,409);
+ assert.equal((await replaceSapSnapshot(get('?numbers=1&after=not-a-document'),env)).status,400);
+ // Paginated coverage must include every last number, without gaps or overlap.
+ const originalPointer=sqlite.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'").get().value;
+ const added=sqlite.prepare("INSERT INTO lieutenant_queue(transfer_no,doc_date,payload,source_file,created) VALUES(?,?,?,?,?)");
+ for(let i=0;i<250;i++)added.run(String(2800000+i),'2026-11-17','{}',root,'');
+ sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'").run(
+  JSON.stringify({...JSON.parse(originalPointer),documents:251}));
+ const firstPage=await (await replaceSapSnapshot(get('?numbers=1'),env)).json();
+ assert.equal(firstPage.numbers.length,250);
+ assert.equal(firstPage.hasMore,true);
+ const lastPage=await (await replaceSapSnapshot(get('?numbers=1&after='+firstPage.next),env)).json();
+ assert.equal(lastPage.numbers.length,1);
+ assert.equal(lastPage.hasMore,false);
+ assert.equal(new Set([...firstPage.numbers,...lastPage.numbers]).size,251);
+ sqlite.prepare("DELETE FROM lieutenant_queue WHERE transfer_no LIKE '280%'").run();
+ sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'").run(originalPointer);
  assert.equal((await replaceSapSnapshot(get('?rows=1&key=wrong'),env)).status,409);
  const {readActiveSap}=load('app/lib/active-sap.ts');
  globalThis.fetch=async url=>replaceSapSnapshot(new Request('https://example.com'+url),env);
@@ -100,5 +132,70 @@ try{
  globalThis.fetch=async()=>Response.json({...current,rows:[{transfer_no:'2616732',payload:JSON.stringify({...payload,transfer:{...payload.transfer,number:'wrong'}})}]});
  await assert.rejects(readActiveSap(new AbortController().signal),/غير مكتملة/);
 
- console.log('PASS: atomic daily SAP replacement, exact invoice/transfer recovery, incomplete snapshot protection, rollback queue and all originals retained, manual corrections preserved.');
+
+ // The original archive and its existing snapshot rows are authoritative.
+ // Identical *bytes*, not document numbers, permit safe stage reuse.
+ const oldDigest=createHash('sha256').update(text).digest('hex').slice(0,32);
+ const originalChunk='lieutenant/transfers__'+oldDigest+'__sap-'+'a'.repeat(32)+'-transfers-0001-of-0001.txt';
+ sqlite.prepare('UPDATE sap_snapshot_rows SET child_key=? WHERE root_key=?').run(originalChunk,root);
+ const manifest=await (await replaceSapSnapshot(get('?manifest=1'),env)).json();
+ assert.equal(manifest.compatible,true);
+ assert.deepEqual(manifest.digests,[oldDigest]);
+ assert.equal((await replaceSapSnapshot(get('?manifest=1&key=stale'),env)).status,409);
+ const nextRoot='lieutenant/unified__'+'d'.repeat(32)+'__next.txt';
+ const nextChild='lieutenant/transfers__'+oldDigest+'__sap-'+'d'.repeat(32)+'-transfers-0001-of-0001.txt';
+ files.push({key:nextRoot,name:'next.txt',kind:'unified',created:'2026-11-20T00:00:00Z'});
+ files.push({key:nextChild,name:nextChild.split('__').at(-1),kind:'transfers',created:'2026-11-20T00:00:01Z'});
+
+ // A version mismatch must force the normal importer; live count is checked
+ // once for the whole source by the caller, not once per chunk.
+ const oldPointer=sqlite.prepare("SELECT value FROM settings WHERE key='sapCurrentSnapshot'").get().value;
+ sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'")
+  .run(JSON.stringify({...JSON.parse(oldPointer),processorVersion:-1}));
+ const incompatible=await (await replaceSapSnapshot(
+  request({action:'reuse',key:nextRoot,child:nextChild}),env)).json();
+ assert.equal(incompatible.reused,false);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=?').get(nextRoot).count,0);
+ sqlite.prepare("UPDATE settings SET value=? WHERE key='sapCurrentSnapshot'").run(oldPointer);
+ sqlite.prepare("INSERT INTO settings(key,value) VALUES('branches','[\"6 — Different Branch Name\"]')").run();
+ const changedBranches=await (await replaceSapSnapshot(
+  request({action:'reuse',key:nextRoot,child:nextChild}),env)).json();
+ assert.equal(changedBranches.reused,false,'Updated branch interpretation must force a fresh parse');
+ sqlite.prepare("DELETE FROM settings WHERE key='branches'").run();
+
+ // An old transfer whose cancellation changes must be reprocessed (not reused).
+ const changedText=text.replace(/\tN$/, '\tY');
+ const changedDigest=createHash('sha256').update(changedText).digest('hex').slice(0,32);
+ const changedRoot='lieutenant/unified__'+'f'.repeat(32)+'__changed.txt';
+ const changedChild='lieutenant/transfers__'+changedDigest+'__sap-'+'f'.repeat(32)+'-transfers-0001-of-0001.txt';
+ archiveTexts.set(changedChild,changedText);
+ const changed=await (await replaceSapSnapshot(
+  request({action:'reuse',key:changedRoot,child:changedChild}),env)).json();
+ assert.equal(changed.reused,false,'Cancellation changes must use the full importer');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_file_jobs WHERE key=?').get(changedChild).count,0);
+
+ const reuseRequest=request({action:'reuse',key:nextRoot,child:nextChild});
+ const reuse=await replaceSapSnapshot(reuseRequest,env);
+ assert.equal(reuse.status,200,await reuse.clone().text());
+ assert.deepEqual(await reuse.json(),{reused:true,staged:1});
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=?').get(nextRoot).count,1);
+ assert.equal(sqlite.prepare('SELECT total FROM sap_file_jobs WHERE key=?').get(nextChild).total,0);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM lieutenant_queue').get().count,1,
+  'Copying unchanged rows must not touch the live approved snapshot');
+ assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),manualBefore);
+ const replay=await (await replaceSapSnapshot(request({action:'reuse',key:nextRoot,child:nextChild}),env)).json();
+ assert.equal(replay.reused,true,'Interrupted response can be replayed without duplicate writes');
+ assert.equal(replay.alreadyStaged,true);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_snapshot_rows WHERE root_key=?').get(nextRoot).count,1);
+ const fakeChild='lieutenant/transfers__'+'f'.repeat(32)+'__sap-'+'e'.repeat(32)+'-transfers-0001-of-0001.txt';
+ const tampered=await replaceSapSnapshot(request({action:'reuse',
+  key:'lieutenant/unified__'+'e'.repeat(32)+'__fake.txt',child:fakeChild}),env);
+ assert.equal(tampered.status,409,'Unverified archive hash must never be reused');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sap_file_jobs WHERE key=?').get(fakeChild).count,0);
+ const committedReuse=await replaceSapSnapshot(request({key:nextRoot,children:[nextChild],documents:1}),env);
+ assert.equal(committedReuse.status,200,await committedReuse.clone().text());
+ assert.equal(sqlite.prepare('SELECT source_file FROM lieutenant_queue').get().source_file,nextRoot);
+ assert.deepEqual(sqlite.prepare('SELECT * FROM reconciliations').all(),manualBefore);
+
+ console.log('PASS: atomic daily SAP replacement, exact invoice/transfer recovery, incomplete snapshot protection, rollback queue, verified incremental reuse and all originals retained, manual corrections preserved.');
 }finally{globalThis.fetch=originalFetch;sqlite.close();}

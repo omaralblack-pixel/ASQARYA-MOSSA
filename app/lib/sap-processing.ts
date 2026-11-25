@@ -4,7 +4,7 @@ import {parseLieutenantTransfers} from './lieutenant';
 import {lieutenantImportPlan} from './lieutenant-import-plan';
 import {readAqabaOfficial,readAqabaTransfers,readAqabaJournal} from './aqaba';
 
-export const sapProcessorVersion=1;
+export {sapProcessorVersion} from './sap-processor-version';
 export const sapKinds={unified:'الكويري الشامل — SAP 011',transfers:'جميع ترحيلات SAP من وإلى 011',opening:'رصيد 011 الافتتاحي الفعلي',balance:'رصيد 011 الفعلي بنهاية الفترة',official:'فواتير ومستندات SAP الرسمية — العقبة',inventory:'حركات المخزون والإلغاءات OINM',aqabaTransfer:'ترحيلات SAP بتنسيق العقبة',monthly:'كشف أرقام ترحيلات M2026',other:'كشف SAP مساعد — غير معروف'};
 export type SapKind=keyof typeof sapKinds;
 export type SapBatch={action:string;items:unknown[]};

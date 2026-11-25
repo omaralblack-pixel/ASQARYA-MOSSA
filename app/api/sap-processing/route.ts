@@ -93,6 +93,43 @@ export async function POST(req:Request){try{
   if(decoded!==body.text)return json({error:'نص SAP لا يطابق الملف الأصلي المحفوظ. أعد فتح الأصل من «ملفات SAP» قبل المعالجة.'},409);
   plan=buildSapPlan(decoded,branches);
   }
+  // A unified export repeats historic Aqaba rows every day. The importer
+  // already treats byte-identical JSON payloads as "unchanged"; avoid writing
+  // and POSTing those same rows in 50-item batches at all. Check the primary
+  // key + exact canonical payload in the authoritative DB, not a browser flag.
+  const aqabaTables:Record<string,string>={
+   aqabaTransfer:'aqaba_transfers',aqabaOfficial:'aqaba_official',aqabaJournal:'aqaba_oinm',
+  };
+  const replacements=new Map<string,SapBatch[]>();
+  for(const [action,table] of Object.entries(aqabaTables)){
+   const all=plan.batches.filter(batch=>batch.action===action).flatMap(batch=>batch.items);
+   if(!all.length)continue;
+   try{
+    const ids=all.map(item=>(item as {key:string}).key);
+    const existingRows=await db().prepare('SELECT id,payload FROM '+table+
+      ' WHERE id IN (SELECT value FROM json_each(?))')
+     .bind(JSON.stringify(ids)).all<{id:string;payload:string}>();
+    const existing=new Map(existingRows.results.map(row=>[row.id,row.payload]));
+    const changed=all.filter(item=>{
+     const record=item as {key:string};
+     return existing.get(record.key)!==JSON.stringify(item);
+    });
+    replacements.set(action,buildSapBatches(action,changed));
+   }catch(error){
+    // On old D1/schema versions this optimization is optional. Preserve the
+    // original validated plan and fall back to the existing importer safely.
+    console.warn('SAP Aqaba delta prefilter unavailable; full safe import retained',action,error);
+   }
+  }
+  if(replacements.size){
+   const inserted=new Set<string>();
+   plan.batches=plan.batches.flatMap(batch=>{
+    if(!replacements.has(batch.action))return [batch];
+    if(inserted.has(batch.action))return [];
+    inserted.add(batch.action);
+    return replacements.get(batch.action)!;
+   });
+  }
   // Reuse only exact document fingerprints with a live queue/invoice key.
   // If an operator removed a record, its old receipt cannot hide missing data.
   if(plan.kind==='transfers'||plan.kind==='unified'){
